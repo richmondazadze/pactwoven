@@ -75,6 +75,25 @@ async function fixture(){
  return{service,dependencies,verifier,observation,scope,specification,specificationRef,operations,records,evidence,append,original,resolveOwner,readSpec,readRecord,mutate,get,recover,observe,verifyFactors,prepare,prepared,challenged,confirmedChallenge,setNow:(value:number)=>{now=value;}};
 }
 
+describe('custody recovery context observation',()=>{
+ it('returns current owner scope without appending evidence or reading setup records',async()=>{
+  const f=await fixture();expect(await f.service.recoveryContext(token,rid,trace)).toEqual({schemaVersion:1,...f.scope,observedAt:iso(at-1000),expiresAt:iso(at+19000)});
+  expect(f.observe).toHaveBeenCalledOnce();expect(f.resolveOwner).toHaveBeenCalledOnce();
+  for(const call of [f.append,f.mutate,f.get,f.recover,f.original,f.readSpec,f.readRecord,f.verifyFactors])expect(call).not.toHaveBeenCalled();
+  expect(f.evidence.size).toBe(0);expect(f.operations.size).toBe(0);
+ });
+ it('caps the context at actual identity expiry',async()=>{const f=await fixture();f.observe.mockResolvedValue({...f.observation,observation:{...f.observation.observation,expiresAt:iso(at+500)}});expect((await f.service.recoveryContext(token,rid,trace)).expiresAt).toBe(iso(at+500));});
+ it('rechecks observation freshness after a delayed owner lookup',async()=>{const f=await fixture();f.resolveOwner.mockImplementation(async()=>{f.setNow(at+21000);return structuredClone(f.scope);});await expect(f.service.recoveryContext(token,rid,trace)).rejects.toMatchObject({code:'CUSTODY_EXPIRED'});expect(f.append).not.toHaveBeenCalled();});
+ it.each(['responsibility','organization','subject','membership','session','extra'])('rejects a changed %s owner projection',async field=>{
+  const f=await fixture(),scope=structuredClone(f.scope);
+  if(field==='responsibility')scope.responsibilityId='other';if(field==='organization')scope.externalOrganizationId='other';
+  if(field==='subject')scope.owner.subject='other';if(field==='membership')scope.owner.externalMembershipId='other';if(field==='session')scope.owner.sessionId='other';
+  const raw=field==='extra'?{...scope,issuer:'private'}:scope;f.resolveOwner.mockResolvedValue(raw);
+  await expect(f.service.recoveryContext(token,rid,trace)).rejects.toBeInstanceOf(DomainError);expect(f.append).not.toHaveBeenCalled();
+ });
+ it('validates the responsibility before invoking observation',async()=>{const f=await fixture();await expect(f.service.recoveryContext(token,'../other',trace)).rejects.toMatchObject({code:'CUSTODY_INPUT_INVALID'});expect(f.observe).not.toHaveBeenCalled();});
+});
+
 describe('custody setup service with pure injected storage and cryptography',()=>{
  it('runs prepare, wallet challenge, confirmation, MFA binding, read and exact-key recovery',async()=>{const f=await fixture(),b=await f.confirmedChallenge(),bound=await f.service.confirm(token,rid,b.setupId,b.confirm,trace);
   expect(bound.operation.kind).toBe('confirm');expect(bound.operation.financialState).toBeNull();expect(f.verifyFactors).toHaveBeenCalledOnce();expect(f.mutate).toHaveBeenCalledTimes(4);

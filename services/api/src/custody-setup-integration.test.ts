@@ -20,7 +20,7 @@ const headers = { Authorization: 'Bearer custody-integration-fixture', Origin: o
 function fixture(configured = true) {
   const verifyIdentity = vi.fn(async () => identity);
   const reject = () => vi.fn(async () => { throw new DomainError('CUSTODY_SCOPE_CHANGED', 409, 'The exact setup or authority scope changed.'); });
-  const gateway: CustodySetupGateway = { prepare: reject(), challenge: reject(), confirmation: reject(),
+  const gateway: CustodySetupGateway = { recoveryContext: reject(), prepare: reject(), challenge: reject(), confirmation: reject(),
     confirm: reject(), cancel: reject(), get: reject(), recover: reject() };
   // Intentionally omit the foundation repository: these routes use their own private service boundary.
   const app = createApp({ allowedOrigins: [origin], verifyIdentity, ...(configured ? { custodySetupGateway: gateway } : {}) });
@@ -28,6 +28,29 @@ function fixture(configured = true) {
 }
 
 describe('custody setup integration into the common API', () => {
+  it('routes owner recovery context through common authentication without a foundation repository', async () => {
+    const f = fixture();
+    const context = { schemaVersion: 1 as const, environment: 'development' as const, organizationId: 'org_a', externalOrganizationId: 'external_org_a', responsibilityId: 'responsibility_a',
+      owner: { actorId: 'owner_a', subject: 'user_a', sessionId: 'session_a', externalMembershipId: 'membership_a', membershipVersion: 1 },
+      observedAt: '2026-11-15T00:00:00.000Z', expiresAt: '2026-11-15T00:00:20.000Z' };
+    vi.mocked(f.gateway.recoveryContext).mockResolvedValue(context);
+    const response = await f.app.request(root + '/recovery-context', { headers });
+    expect(response.status).toBe(200); expect(await response.json()).toEqual(context);
+    expect(f.verifyIdentity).toHaveBeenCalledOnce();
+    expect(f.gateway.recoveryContext).toHaveBeenCalledWith('custody-integration-fixture', 'responsibility_a', expect.any(String));
+    expect(f.gateway.get).not.toHaveBeenCalled();
+  });
+  it('rejects missing identity and disallowed origin before recovery context', async () => {
+    const f = fixture();
+    expect((await f.app.request(root + '/recovery-context')).status).toBe(401);
+    expect((await f.app.request(root + '/recovery-context', { headers: { ...headers, Origin: 'https://denied.example' } })).status).toBe(403);
+    expect(f.verifyIdentity).not.toHaveBeenCalled(); expect(f.gateway.recoveryContext).not.toHaveBeenCalled();
+  });
+  it('keeps recovery context unavailable when the optional development gateway is disabled', async () => {
+    const f = fixture(false), response = await f.app.request(root + '/recovery-context', { headers });
+    expect(response.status).toBe(503); expect((await response.json()).error.code).toBe('SETUP_REQUIRED');
+    expect(f.gateway.recoveryContext).not.toHaveBeenCalled();
+  });
   it('uses the branded strict body before live identity and reaches the custody gateway', async () => {
     const f = fixture();
     const response = await f.app.request(challengePath, { method: 'POST', headers, body: JSON.stringify(command) });

@@ -10,3 +10,4 @@ export * from './financial-fences';
 export * from './custody-setup';
 export * from './custody-setup-http';
 export * from './custody-setup-responses';
+export * from './custody-setup-context';

@@ -3,6 +3,7 @@ import {z} from 'zod';
 import {CustodyPrepareHttpSchema,CustodyChallengeHttpSchema,CustodyConfirmationHttpSchema,CustodyConfirmHttpSchema,CustodyCancelHttpSchema,
  CustodyCommandSchema,CustodyResultSchema,CustodyReadSchema,CustodyRefSchema,CustodySetupSpecificationSchema,
  CustodyUuidSchema,IdSchema,CustodyApiRecoveryQuerySchema,CustodyApiMutationResponseSchema,CustodyApiReadResponseSchema,CustodyApiRecoveryResponseSchema,
+ CustodyApiRecoveryContextSchema,type CustodyApiRecoveryContext,
  type CustodyApiMutationResponse,type CustodyApiReadResponse,type CustodyApiRecoveryResponse,type CustodyCommand,type CustodyResult,type CustodyRecord,type CustodySetupSpecification} from '@pactwoven/contracts';
 import {CustodyAuthEvidenceSchema,CustodyPrivateRecordSchema,CustodyOriginalOperationSchema,
  type CustodySetupReaders,type CustodySetupRepository,type CustodyAuthEvidence} from '@pactwoven/db';
@@ -22,6 +23,7 @@ export interface CustodyApiReaders {
 export type CustodyApiDependencies={verifier:CustodyApiVerifier;repository:CustodySetupRepository;readers:CustodyApiReaders;
  authentication:{append(evidence:CustodyAuthEvidence,challenge?:Extract<CustodyRecord,{kind:'wallet_challenge'}>):Promise<Ref>}};
 export interface CustodySetupGateway {
+ recoveryContext(token:string,responsibilityId:string,trace:string):Promise<CustodyApiRecoveryContext>;
  prepare(token:string,responsibilityId:string,input:unknown,trace:string):Promise<CustodyApiMutationResponse>;
  challenge(token:string,responsibilityId:string,setupId:string,input:unknown,trace:string):Promise<CustodyApiMutationResponse>;
  confirmation(token:string,responsibilityId:string,setupId:string,input:unknown,trace:string):Promise<CustodyApiMutationResponse>;
@@ -144,10 +146,14 @@ export function createCustodySetupService(dependencies:CustodyApiDependencies):C
   const snapshot=CustodyAuthEvidenceSchema.parse(evidence),hash=await commandDigest({namespace:'pactwoven:custody-auth-evidence:v1',record:snapshot}),id=snapshot.id;
   fresh(c);const r=CustodyRefSchema.safeParse(await authentication.append(structuredClone(snapshot),challenge?structuredClone(challenge):undefined));fresh(c);if(!r.success||r.data.id!==id||r.data.version!==1||r.data.recordHash!==hash)throw unknown();return r.data;
  }
- async function context(token:string,responsibilityId:string,trace:string):Promise<Context>{
+ async function ownerContext(token:string,responsibilityId:string,trace:string):Promise<Pick<Context,'observation'|'scope'>>{
   const observation=structuredClone(await verifier.observe(token)),parsed=CustodyApiOwnerScopeSchema.safeParse(await readers.resolveOwner(structuredClone(observation),responsibilityId,trace));if(!parsed.success)throw unknown();const scope=parsed.data;
   if(scope.responsibilityId!==responsibilityId||scope.externalOrganizationId!==observation.identity.externalOrganizationId)throw unknown();const c={observation,scope};fresh(c);
-  const evidence=verifier.identityEvidence(structuredClone(observation),structuredClone(scope)),stored=await append(evidence,c);return {...c,identityEvidenceId:stored.id,identityEvidence:stored};
+  return c;
+ }
+ async function context(token:string,responsibilityId:string,trace:string):Promise<Context>{
+  const c=await ownerContext(token,responsibilityId,trace);
+  const evidence=verifier.identityEvidence(structuredClone(c.observation),structuredClone(c.scope)),stored=await append(evidence,c);return {...c,identityEvidenceId:stored.id,identityEvidence:stored};
  }
  async function specification(c:Context,reference:Ref,trace:string):Promise<CustodySetupSpecification>{
   fresh(c);const raw=await readers.specification(c.identityEvidenceId,structuredClone(c.scope),structuredClone(reference),trace);fresh(c);if(raw===null)throw notFound();const s=CustodySetupSpecificationSchema.safeParse(raw);
@@ -244,6 +250,13 @@ export function createCustodySetupService(dependencies:CustodyApiDependencies):C
  const parseInput=<T>(schema:z.ZodType<T>,value:unknown):T=>{const parsed=schema.safeParse(value);if(!parsed.success)throw new DomainError('CUSTODY_INPUT_INVALID',422,'Check the custody setup request.');return parsed.data;};
  const id=(v:string)=>parseInput(IdSchema,v),sid=(v:string)=>parseInput(CustodyUuidSchema,v);
  return {
+  recoveryContext:(token,rid,trace)=>guarded(async()=>{
+   const c=await ownerContext(token,id(rid),trace);
+   const observedAt=new Date(Math.min(Date.parse(c.observation.observation.observedAt),Date.parse(c.observation.identity.membershipObservedAt))).toISOString();
+   const expiresAt=new Date(Math.min(Date.parse(c.observation.observation.expiresAt),Date.parse(observedAt)+20000)).toISOString();
+   const response=CustodyApiRecoveryContextSchema.parse({schemaVersion:1,...c.scope,observedAt,expiresAt});
+   fresh(c);return response;
+  }),
   prepare:(token,rid,input,trace)=>guarded(()=>mutate(token,{kind:'prepare',responsibilityId:id(rid),body:parseInput(CustodyPrepareHttpSchema,input)},trace)),
   challenge:(token,rid,setupId,input,trace)=>guarded(()=>mutate(token,{kind:'challenge',responsibilityId:id(rid),setupId:sid(setupId),body:parseInput(CustodyChallengeHttpSchema,input)},trace)),
   confirmation:(token,rid,setupId,input,trace)=>guarded(()=>mutate(token,{kind:'confirmation',responsibilityId:id(rid),setupId:sid(setupId),body:parseInput(CustodyConfirmationHttpSchema,input)},trace)),

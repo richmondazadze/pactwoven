@@ -1,6 +1,6 @@
 import type {Context,Hono} from 'hono';
 import {CustodyPrepareHttpSchema,CustodyChallengeHttpSchema,CustodyConfirmationHttpSchema,CustodyConfirmHttpSchema,CustodyCancelHttpSchema,
- custodyHttpBodyLimits,CustodyUuidSchema,IdSchema,IdempotencyKeySchema} from '@pactwoven/contracts';
+ custodyHttpBodyLimits,CustodyUuidSchema,IdSchema,IdempotencyKeySchema,CustodyApiRecoveryContextSchema} from '@pactwoven/contracts';
 import {custodyRecordHash,custodySpecificationHash,canonicalJson,DomainError} from '@pactwoven/domain';
 import type {ApiEnv} from './app.js';
 import {CustodyApiReadResponseSchema,CustodyApiRecoveryQuerySchema,CustodyApiRecoveryResponseSchema,
@@ -62,6 +62,14 @@ export function registerCustodySetupRoutes(app:Hono<ApiEnv>,gateway:CustodySetup
  const run=(work:(c:Context<ApiEnv>)=>Promise<Response>)=>async(c:Context<ApiEnv>)=>{c.header('Cache-Control','private, no-store');c.header('Referrer-Policy','no-referrer');
   try{return await work(c);}catch(error){const safe=safeCustodyApiError(error);return c.json({error:{code:safe.code,message:safe.message,correlationId:trace(c)}},safe.status);}};
  const root='/v1/responsibilities/:id/custody-setups';
+ app.all(root+'/recovery-context',run(async c=>{
+  if(c.req.method!=='GET')throw new DomainError('NOT_FOUND',404,'Resource not found.');noQuery(c.req.url);
+  if(c.req.raw.body!==null||c.req.header('Transfer-Encoding')||!['0',undefined].includes(c.req.header('Content-Length')))throw invalid();
+  const responsibilityId=IdSchema.parse(c.req.param('id'));
+  const parsed=CustodyApiRecoveryContextSchema.safeParse(await invoke(()=>service().recoveryContext(token(c.req.header('Authorization')),responsibilityId,trace(c))));
+  if(!parsed.success||parsed.data.responsibilityId!==responsibilityId)throw new DomainError('CUSTODY_OUTCOME_UNKNOWN',503,'The owner recovery context was not verified.');
+  return c.json(parsed.data);
+ }));
  const actions=[['prepare','',CustodyPrepareHttpSchema],['challenge','/:setupId/owner-challenge',CustodyChallengeHttpSchema],
   ['confirmation','/:setupId/owner-confirmation-challenge',CustodyConfirmationHttpSchema],['confirm','/:setupId/confirm-owner',CustodyConfirmHttpSchema],
   ['cancel','/:setupId/cancel',CustodyCancelHttpSchema]] as const;

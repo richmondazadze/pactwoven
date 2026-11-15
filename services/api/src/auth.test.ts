@@ -1,6 +1,6 @@
 import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { createClerkIdentityVerifier } from './auth.js';
+import { createClerkIdentityVerifier, createClerkStepUpVerifier } from './auth.js';
 
 describe('Clerk session verifier', () => {
   let privateKey: KeyObject;
@@ -28,6 +28,37 @@ describe('Clerk session verifier', () => {
     return createClerkIdentityVerifier({ secretKey: 'sk_test_local_fixture', issuer, authorizedParties: [origin], jwtKey: publicPem },
       async () => observedSession, async () => observedMembership);
   }
+  function stepUpVerifier(observedSession = session(), observedMembership = membershipResult()) {
+    return createClerkStepUpVerifier({ secretKey: 'sk_test_local_fixture', issuer, authorizedParties: [origin], jwtKey: publicPem },
+      async () => observedSession, async () => observedMembership);
+  }
+  it('requires both signed factors without downgrade and binds sanitized evidence to the verified token', async () => {
+    const jwt = token({ fva: [0, 0] });
+    const verified = await stepUpVerifier()(jwt);
+    expect(verified.evidence).toMatchObject({ purpose: 'member_access', subject: 'user_test', sessionId: 'sess_test', firstFactorAgeMinutes: 0, secondFactorAgeMinutes: 0 });
+    expect(verified.evidence.tokenHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(verified)).not.toContain(jwt);
+    expect(Date.parse(verified.evidence.verifiedAt)).toBe(Date.parse(verified.evidence.tokenIssuedAt) - 60_000);
+    expect(Date.parse(verified.evidence.expiresAt)).toBeLessThanOrEqual(Date.parse(verified.evidence.verifiedAt) + 300_000);
+    for (const fva of [undefined, [-1, -1], [0, -1], [-1, 0], [0], [0, 0, 0], ['0', 0], [0, 0.1], [0, 5]]) {
+      await expect(stepUpVerifier()(token({ fva }))).rejects.toMatchObject({ code: 'STEP_UP_REQUIRED' });
+    }
+  });
+  it('ages both factors from signed issue time and denies exact freshness boundaries, refresh and forged sessions', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-14T12:00:00.000Z'));
+    try {
+      const iat = Math.floor(Date.now() / 1000);
+      await expect(stepUpVerifier()(token({ fva: [3, 3], iat: iat - 60 }))).rejects.toMatchObject({ code: 'STEP_UP_REQUIRED' });
+      await expect(stepUpVerifier()(token({ fva: [3, 3], iat: iat - 59 }))).resolves.toHaveProperty('evidence');
+      await expect(stepUpVerifier()(token({ fva: [4, 0], iat }))).rejects.toMatchObject({ code: 'STEP_UP_REQUIRED' });
+      await expect(stepUpVerifier()(token({ fva: [0, 4], iat }))).rejects.toMatchObject({ code: 'STEP_UP_REQUIRED' });
+      await expect(stepUpVerifier()(token({ fva: [0, 0], iat: undefined }))).rejects.toMatchObject({ code: 'STEP_UP_REQUIRED' });
+      await expect(stepUpVerifier()(token({ fva: [0, 0], iat: iat + 1 }))).rejects.toBeDefined();
+      await expect(stepUpVerifier({ ...session(), status: 'revoked' })(token({ fva: [0, 0] }))).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+      await expect(stepUpVerifier()(token({ fva: [0, 0], act: { sub: 'other' } }))).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+    } finally { vi.useRealTimers(); }
+  });
   it('verifies a signature and takes organization from the signed claim, not a role claim', async () => {
     const result = await verifier()(token());
     expect(result).toMatchObject({ subject: 'user_test', externalOrganizationId: 'org_test', sessionId: 'sess_test' });

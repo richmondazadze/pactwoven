@@ -55,6 +55,7 @@ dbSuite('Postgres foundation — real runtime role and transactions', () => {
     await admin.query('DROP SCHEMA IF EXISTS pactwoven CASCADE');
     await admin.query(await readFile(new URL('../migrations/0001_foundation.sql', import.meta.url), 'utf8'));
     await admin.query(await readFile(new URL('../migrations/0002_organization_bootstrap.sql', import.meta.url), 'utf8'));
+    await admin.query(await readFile(new URL('../migrations/0003_identity_access.sql', import.meta.url), 'utf8'));
     const grant = await admin.query<{ statement: string }>("SELECT format('GRANT pactwoven_runtime TO %I', $1::text) AS statement", [decodeURIComponent(runtimeTarget.username)]);
     await admin.query(grant.rows[0]!.statement);
     const provisionerGrant = await admin.query<{ statement: string }>("SELECT format('GRANT pactwoven_provisioner TO %I', $1::text) AS statement", [decodeURIComponent(provisionerTarget.username)]);
@@ -91,6 +92,10 @@ dbSuite('Postgres foundation — real runtime role and transactions', () => {
       ('simulation','org_a','site_a1','Simulated Site','America/Chicago')`);
     await admin.query(`INSERT INTO pactwoven.site_memberships(environment,organization_id,actor_id,site_id) VALUES
       ('development','org_a','actor_ops','site_a1'), ('development','org_a','actor_receiver','site_a1')`);
+    await admin.query(`INSERT INTO pactwoven.member_action_sites(environment,organization_id,actor_id,site_id) VALUES
+      ('development','org_a','actor_a','site_a1'), ('development','org_a','actor_a','site_a2'),
+      ('development','org_a','actor_ops','site_a1'), ('development','org_a','actor_receiver','site_a1'),
+      ('development','org_b','actor_b','site_b'), ('simulation','org_a','actor_a','site_a1')`);
   });
 
   afterAll(async () => { await runtime?.end(); await provisionerPool?.end(); await admin?.end(); });

@@ -2,9 +2,10 @@ import { createClerkClient, verifyToken } from '@clerk/backend';
 import { TokenVerificationError } from '@clerk/backend/errors';
 import { z } from 'zod';
 import { DomainError } from '@pactwoven/domain';
-import type { VerifiedIdentity } from '@pactwoven/db';
+import { AccessMfaEvidenceSchema, type VerifiedIdentity, type VerifiedStepUpIdentity } from '@pactwoven/db';
 
 export type IdentityVerifier = (token: string) => Promise<VerifiedIdentity>;
+export type StepUpIdentityVerifier = (token: string) => Promise<VerifiedStepUpIdentity>;
 export type ClerkIdentityConfig = { secretKey: string; issuer: string; authorizedParties: string[]; jwtKey?: string };
 type SessionObservation = {
   id: string; userId: string; status: string; expireAt: number; createdAt: number;
@@ -19,16 +20,17 @@ type MembershipLookup = (organizationId: string, userId: string) => Promise<{ da
 const ClaimsSchema = z.object({
   sub: z.string().min(1).max(128), sid: z.string().min(1).max(256),
   azp: z.string().url(), iss: z.string().url(),
+  iat: z.number().int().optional(), fva: z.unknown().optional(),
   exp: z.number().int(), nbf: z.number().int().optional(),
   org_id: z.string().min(1).max(128).optional(), o: z.object({ id: z.string().min(1).max(128) }).optional(),
   act: z.unknown().optional(),
 });
 
-export function createClerkIdentityVerifier(
+function createClerkVerification(
   config: ClerkIdentityConfig,
   sessionLookup?: (sessionId: string) => Promise<SessionObservation>,
   membershipLookup?: MembershipLookup,
-): IdentityVerifier {
+) {
   if (!config.secretKey || !config.issuer || config.authorizedParties.length === 0) {
     throw new DomainError('SETUP_REQUIRED', 503, 'Development identity is not configured.');
   }
@@ -36,7 +38,7 @@ export function createClerkIdentityVerifier(
   const lookup = sessionLookup ?? (sessionId => client.sessions.getSession(sessionId));
   const lookupMembership = membershipLookup ?? ((organizationId, userId) =>
     client.organizations.getOrganizationMembershipList({ organizationId, userId: [userId], limit: 2 }));
-  return async token => {
+  return async (token: string) => {
     let verified: unknown;
     try {
       verified = await verifyToken(token, {
@@ -88,13 +90,41 @@ export function createClerkIdentityVerifier(
         (session.lastActiveOrganizationId && session.lastActiveOrganizationId !== externalOrganizationId)) {
       throw new DomainError('AUTH_REQUIRED', 401, 'Sign in again to continue.');
     }
-    return {
+    const identity: VerifiedIdentity = {
       subject: claims.sub, externalOrganizationId, sessionId: claims.sid,
       externalOrganizationName: membership.organization.name.trim(), externalMembershipId: membership.id,
       externalRole: membership.role, membershipObservedAt,
-      // Token issue time is not authentication time. Session creation is a
-      // conservative bound until the separate step-up evidence contract exists.
+      // This is general session metadata, never step-up evidence.
       authenticatedAt: new Date(session.createdAt).toISOString(),
     };
+    return { identity, claims, session, observedAt: now };
+  };
+}
+
+export function createClerkIdentityVerifier(config: ClerkIdentityConfig, sessionLookup?: (sessionId: string) => Promise<SessionObservation>, membershipLookup?: MembershipLookup): IdentityVerifier {
+  const verify = createClerkVerification(config, sessionLookup, membershipLookup);
+  return async token => (await verify(token)).identity;
+}
+
+export function createClerkStepUpVerifier(config: ClerkIdentityConfig, sessionLookup?: (sessionId: string) => Promise<SessionObservation>, membershipLookup?: MembershipLookup): StepUpIdentityVerifier {
+  const verify = createClerkVerification(config, sessionLookup, membershipLookup);
+  return async token => {
+    const { identity, claims, session, observedAt } = await verify(token);
+    const factors = z.tuple([z.number().int().nonnegative().max(1_000_000), z.number().int().nonnegative().max(1_000_000)]).safeParse(claims.fva);
+    if (!factors.success || claims.iat === undefined || claims.iat * 1000 > observedAt) {
+      throw new DomainError('STEP_UP_REQUIRED', 403, 'Verify both authentication factors before changing access.');
+    }
+    const maximumAgeMs = 300_000;
+    const verifiedAt = claims.iat * 1000 - (Math.max(...factors.data) + 1) * 60_000;
+    const expiresAt = Math.min(claims.exp * 1000, session.expireAt, verifiedAt + maximumAgeMs);
+    if (observedAt >= expiresAt) throw new DomainError('STEP_UP_REQUIRED', 403, 'Fresh verification of both factors is required.');
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+    const tokenHash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+    return { identity, evidence: AccessMfaEvidenceSchema.parse({ id: crypto.randomUUID(), purpose: 'member_access',
+      subject: identity.subject, externalOrganizationId: identity.externalOrganizationId, externalMembershipId: identity.externalMembershipId,
+      sessionId: identity.sessionId, issuer: config.issuer, tokenHash, tokenIssuedAt: new Date(claims.iat * 1000).toISOString(),
+      firstFactorAgeMinutes: factors.data[0], secondFactorAgeMinutes: factors.data[1], verifiedAt: new Date(verifiedAt).toISOString(),
+      observedAt: new Date(observedAt).toISOString(), expiresAt: new Date(expiresAt).toISOString(),
+    }) };
   };
 }

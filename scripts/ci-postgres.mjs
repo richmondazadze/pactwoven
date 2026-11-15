@@ -48,19 +48,24 @@ try {
   }
   const runtimePassword = randomBytes(32).toString('base64url');
   const provisionerPassword = randomBytes(32).toString('base64url');
-  for (const [name, password] of [['pactwoven_ci_app', runtimePassword], ['pactwoven_ci_identity', provisionerPassword]]) {
+  const accessPassword = randomBytes(32).toString('base64url');
+  for (const [name, password] of [['pactwoven_ci_app', runtimePassword], ['pactwoven_ci_identity', provisionerPassword], ['pactwoven_ci_access', accessPassword]]) {
     const sql = await admin.query("SELECT format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L', $1::text, $2::text) AS statement", [name, password]);
     await admin.query(sql.rows[0].statement);
   }
   const backend = {
     PACTWOVEN_RUN_DB_TESTS: '1',
+    PACTWOVEN_RUN_ACCESS_DB_TESTS: '1',
     PACTWOVEN_TEST_ADMIN_DATABASE_URL_FILE: await protectedUrl('backend-admin', 'pactwoven_backend_test'),
     PACTWOVEN_TEST_DATABASE_URL_FILE: await protectedUrl('backend-runtime', 'pactwoven_backend_test', 'pactwoven_ci_app', runtimePassword),
     PACTWOVEN_TEST_PROVISIONER_DATABASE_URL_FILE: await protectedUrl('backend-provisioner', 'pactwoven_backend_test', 'pactwoven_ci_identity', provisionerPassword),
+    PACTWOVEN_TEST_ACCESS_DATABASE_URL_FILE: await protectedUrl('backend-access', 'pactwoven_backend_test', 'pactwoven_ci_access', accessPassword),
   };
-  // The guard suite needs the schema installed by repository.test.ts; do not race its reset.
+  // Resetting repository suites run sequentially; guards and API integration use the final schema.
   await run(['packages/db/src/repository.test.ts'], backend);
+  await run(['packages/db/src/access-repository.test.ts'], backend);
   await run(['packages/db/src/pool-guards.test.ts'], backend);
+  await run(['services/api/src/access-postgres.test.ts'], backend);
   await run(['packages/db/src/migrate.test.ts'], {
     PACTWOVEN_RUN_MIGRATION_TESTS: '1',
     PACTWOVEN_MIGRATION_TEST_DATABASE_URL_FILE: await protectedUrl('migration-admin', 'pactwoven_migration_test'),

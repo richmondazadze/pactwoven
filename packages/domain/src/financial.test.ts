@@ -19,7 +19,7 @@ const mandatePolicy = (): MandatePolicy => ({ mode: 'PREPARE_FOR_APPROVAL', site
 const mandateContext = { id: 'mandate_a', organizationId: 'org_a', environment: 'development' as const, responsibilityId: 'responsibility_a',
   authorId: 'owner_a', organizationEpoch: 0, currentMandateEpoch: 0, expectedVersion: 0, now };
 const approver: ActorContext = { actorId: 'finance_a', principalKind: 'human', organizationId: 'org_a', environment: 'development',
-  roles: ['finance'], siteIds: ['site_a'], sessionId: 'finance_session', authenticatedAt: '2026-11-14T00:00:00.000Z', correlationId: 'trace_test' };
+  roles: ['finance'], siteIds: ['site_a'], actionSiteIds: ['site_a'], sessionId: 'finance_session', authenticatedAt: '2026-11-14T00:00:00.000Z', correlationId: 'trace_test' };
 const approvalPolicy: ApprovalPolicy = { reference, organizationId: 'org_a', environment: 'development', eligibleRoles: ['finance'],
   independentApprover: true, maximumStepUpAgeMs: 300_000, maximumApprovalAgeMs: 300_000, expiresAt: expiry };
 const stepUp: StepUpEvidence = { id: 'step_up_a', actorId: approver.actorId, sessionId: approver.sessionId,
@@ -93,15 +93,19 @@ describe('mandate versions and exact independent approvals', () => {
     const receipt = await approveExactAction({ ...approveContext, actor: scopedActor, policy }, action);
     await expect(assertApprovalCurrent(receipt, action, { ...checkContext, approver: scopedActor, policy })).resolves.toBeUndefined();
     for (const siteIds of [[], ['site_b']]) {
-      await expect(approveExactAction({ ...approveContext, actor: { ...scopedActor, siteIds }, policy }, action)).rejects.toMatchObject({ code: 'FORBIDDEN' });
-      await expect(assertApprovalCurrent(receipt, action, { ...checkContext, approver: { ...scopedActor, siteIds }, policy })).rejects.toMatchObject({ code: 'APPROVAL_INVALID' });
-      await expect(assertMandateAction(action, head, mandate, now, approval, { ...approver, siteIds })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(approveExactAction({ ...approveContext, actor: { ...scopedActor, actionSiteIds: siteIds }, policy }, action)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(assertApprovalCurrent(receipt, action, { ...checkContext, approver: { ...scopedActor, actionSiteIds: siteIds }, policy })).rejects.toMatchObject({ code: 'APPROVAL_INVALID' });
+      await expect(assertMandateAction(action, head, mandate, now, approval, { ...approver, actionSiteIds: siteIds })).rejects.toMatchObject({ code: 'FORBIDDEN' });
       await expect(assertMandateAction(action, head, mandate, now,
-        { ...checkContext, receipt, policy, approver: { ...scopedActor, siteIds } }, approver)).rejects.toMatchObject({ code: 'APPROVAL_INVALID' });
+        { ...checkContext, receipt, policy, approver: { ...scopedActor, actionSiteIds: siteIds } }, approver)).rejects.toMatchObject({ code: 'APPROVAL_INVALID' });
     }
     // A shape-compatible caller flag cannot stand in for verified approval evidence.
     await expect(assertMandateAction(action, head, mandate, now, true as never, approver)).rejects.toBeDefined();
     await expect(assertMandateAction(action, head, mandate, now, approval, { ...approver, roles: ['auditor'] })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    const broadReader = { ...approver, siteIds: ['site_a', 'site_b'], actionSiteIds: ['site_b'] };
+    await expect(approveExactAction({ ...approveContext, actor: broadReader }, action)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(assertApprovalCurrent(approval.receipt, action, { ...checkContext, approver: broadReader })).rejects.toMatchObject({ code: 'APPROVAL_INVALID' });
+    await expect(assertMandateAction(action, head, mandate, now, approval, broadReader)).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
   it('bounds approval use by proof age as well as every other expiry', async () => {

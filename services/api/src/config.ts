@@ -43,7 +43,7 @@ export function readDevelopmentConfig(values: EnvironmentValues) {
       .split(',').map(value => exactOrigin(value.trim()));
     if (!allowedOrigins.length || new Set(allowedOrigins).size !== allowedOrigins.length) throw new ConfigurationError();
     const bindings = [values.DATABASE_URL, values.CLERK_SECRET_KEY, values.CLERK_ISSUER, values.CLERK_PUBLISHABLE_KEY];
-    if (bindings.every(value => !value) && !values.PROVISIONER_DATABASE_URL) {
+    if (bindings.every(value => !value) && !values.PROVISIONER_DATABASE_URL && !values.ACCESS_DATABASE_URL) {
       return { environment, port, allowedOrigins, credentials: null };
     }
     const databaseUrl = z.string().min(1).parse(values.DATABASE_URL);
@@ -64,7 +64,15 @@ export function readDevelopmentConfig(values: EnvironmentValues) {
           decodeURIComponent(provisioner.username) === decodeURIComponent(database.username)) throw new ConfigurationError();
       provisionerDatabaseUrl = provisioner.href;
     }
+    let accessDatabaseUrl: string | undefined;
+    if (values.ACCESS_DATABASE_URL) {
+      const access = developmentDatabase(values.ACCESS_DATABASE_URL);
+      if (access.host !== database.host || access.pathname !== database.pathname ||
+          decodeURIComponent(access.username) === decodeURIComponent(database.username) ||
+          (provisionerDatabaseUrl && decodeURIComponent(access.username) === decodeURIComponent(new URL(provisionerDatabaseUrl).username))) throw new ConfigurationError();
+      accessDatabaseUrl = access.href;
+    }
     return { environment, port, allowedOrigins, credentials: { databaseUrl: database.href, secretKey, issuer, publishableKey,
-      ...(provisionerDatabaseUrl ? { provisionerDatabaseUrl } : {}) } };
+      ...(provisionerDatabaseUrl ? { provisionerDatabaseUrl } : {}), ...(accessDatabaseUrl ? { accessDatabaseUrl } : {}) } };
   } catch { throw new ConfigurationError(); }
 }

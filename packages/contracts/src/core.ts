@@ -24,6 +24,7 @@ export const ActorContextSchema = z.strictObject({
   environment: EnvironmentSchema,
   roles: z.array(RoleSchema).min(1),
   siteIds: z.array(IdSchema),
+  actionSiteIds: z.array(IdSchema),
   sessionId: z.string().min(1).max(256),
   authenticatedAt: InstantSchema,
   correlationId: z.string().min(1).max(128),

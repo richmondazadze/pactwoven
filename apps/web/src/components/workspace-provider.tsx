@@ -6,22 +6,27 @@ import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tan
 import { SessionSchema, type Session } from '@pactwoven/contracts';
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useState, useRef, useMemo, type ReactNode } from 'react';
 import { apiRequest, RequestError, type TokenSource } from '@/lib/api';
+import { canCreateResponsibility } from '@/lib/access-review';
+import { visibleAccessReceipt } from '@/lib/access-feedback';
+import { AccessFeedbackProvider, useAccessFeedback } from './access-feedback';
 import { getApiBase } from '@/lib/config';
 import { SetupState } from './setup-state';
 import { Alert, LoadingState } from './ui';
 export type DraftMemory = Map<string, unknown>;
 const WorkspaceContext = createContext<{ session: Session; getToken: TokenSource; drafts: DraftMemory } | null>(null);
 export function useWorkspace() { const value = useContext(WorkspaceContext); if (!value) throw new Error('An authorized workspace is required'); return value; }
-export function canCreate(session: Session) { return session.actor.roles.some(role => role === 'owner' || role === 'operations'); }
+export const canCreate = canCreateResponsibility;
 export function canReadResponsibilities(session: Session) { return session.actor.roles.some(role => ['owner','operations','finance','receiver','auditor'].includes(role)); }
 function SessionContent({ children }: { children: ReactNode }) {
   const router = useRouter();
+  const feedback=useAccessFeedback();
   const auth = useAuth(); const { signOut } = useClerk(); const client = useQueryClient();
   const getToken = useCallback(() => auth.getToken(auth.orgId ? { organizationId: auth.orgId } : undefined), [auth.getToken, auth.orgId]);
   const query = useQuery({ queryKey: ['session'], queryFn: ({ signal }) => apiRequest('/v1/session', SessionSchema.refine(value => value.actor.organizationId === value.organization.id, 'Organization context must match the authenticated actor'), getToken, { signal }), retry: false, staleTime: 15_000, refetchOnWindowFocus: true });
+  useEffect(()=>{if(feedback.notice && ((query.data && !visibleAccessReceipt(feedback.notice,query.data)) || (query.error instanceof RequestError && [401,403].includes(query.error.status))))feedback.dismiss();},[feedback,query.data,query.error]);
   const requiresSetup = query.error instanceof RequestError && query.error.status === 409 && query.error.code === 'ORGANIZATION_SETUP_REQUIRED';
   useEffect(() => { if (requiresSetup) router.replace('/app/onboarding'); }, [requiresSetup, router]);
-  const authorizationScope = query.data ? JSON.stringify([query.data.actor.organizationId, query.data.actor.environment, query.data.actor.roles, query.data.actor.siteIds, query.data.organization.authorityEpoch]) : null;
+  const authorizationScope = query.data ? JSON.stringify([query.data.actor.organizationId, query.data.actor.environment, query.data.actor.roles, query.data.actor.siteIds, query.data.actor.actionSiteIds, query.data.organization.authorityEpoch]) : null;
   const drafts = useMemo<DraftMemory>(() => new Map(), [authorizationScope]);
   useEffect(() => { if (query.error instanceof RequestError && [401,403].includes(query.error.status)) { drafts.clear(); void client.cancelQueries({ predicate: q => q.queryKey[0] !== 'session' }); client.removeQueries({ predicate: q => q.queryKey[0] !== 'session' }); } }, [query.error, client, drafts]);
   const previousScope = useRef<string | null>(null);
@@ -41,7 +46,7 @@ function SessionContent({ children }: { children: ReactNode }) {
 function ScopedQueries({ children }: { children: ReactNode }) {
   const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false }, mutations: { retry: false } } }));
   useEffect(() => () => { void client.cancelQueries(); client.clear(); }, [client]);
-  return <QueryClientProvider client={client}><SessionContent>{children}</SessionContent></QueryClientProvider>;
+  return <QueryClientProvider client={client}><AccessFeedbackProvider><SessionContent>{children}</SessionContent></AccessFeedbackProvider></QueryClientProvider>;
 }
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const { isLoaded, isSignedIn, userId, orgId, sessionId } = useAuth();

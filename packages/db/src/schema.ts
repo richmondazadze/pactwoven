@@ -10,12 +10,16 @@ export const memberships = pactwoven.table('memberships', {
   environment: text('environment').notNull(), organizationId: text('organization_id').notNull(), actorId: text('actor_id').notNull(),
   externalSubject: text('external_subject').notNull(), roles: text('roles').array().notNull(), status: text('status').notNull(),
   externalMembershipId: text('external_membership_id'), grantBasis: text('grant_basis').notNull(),
+  version: integer('row_version').notNull(), displayName: text('display_name').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
 }, table => [primaryKey({ columns: [table.environment, table.organizationId, table.actorId] })]);
 export const sites = pactwoven.table('sites', {
   environment: text('environment').notNull(), organizationId: text('organization_id').notNull(), id: text('id').notNull(),
   name: text('name').notNull(), timeZone: text('time_zone').notNull(),
 }, table => [primaryKey({ columns: [table.environment, table.organizationId, table.id] })]);
+export const memberActionSites = pactwoven.table('member_action_sites', {
+  environment: text('environment').notNull(), organizationId: text('organization_id').notNull(), actorId: text('actor_id').notNull(), siteId: text('site_id').notNull(),
+}, table => [primaryKey({ columns: [table.environment, table.organizationId, table.actorId, table.siteId] })]);
 export const responsibilities = pactwoven.table('responsibilities', {
   environment: text('environment').notNull(), organizationId: text('organization_id').notNull(), id: text('id').notNull(),
   ownerId: text('owner_id').notNull(), siteId: text('site_id').notNull(), title: text('title').notNull(), description: text('description').notNull(),

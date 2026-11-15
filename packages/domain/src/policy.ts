@@ -10,7 +10,7 @@ export function assertResponsibilityReader(actor: ActorContext): void {
 }
 
 export function assertResponsibilityCreator(actor: ActorContext, siteId: string): void {
-  if (!actor.roles.some(role => role === 'owner' || role === 'operations') || !actor.siteIds.includes(siteId)) {
+  if (!actor.roles.some(role => role === 'owner' || role === 'operations') || !actor.actionSiteIds.includes(siteId)) {
     throw new DomainError('FORBIDDEN', 403, 'Your current role cannot create a responsibility at this site.');
   }
 }

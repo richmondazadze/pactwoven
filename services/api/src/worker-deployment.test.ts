@@ -5,16 +5,18 @@ import { assertDevelopmentWorkerDeployment } from './worker-deployment.js';
 const apiSource = JSON.parse(await readFile(new URL('../wrangler.api.json', import.meta.url), 'utf8'));
 const provisionerSource = JSON.parse(await readFile(new URL('../wrangler.provisioner.json', import.meta.url), 'utf8'));
 function fixture() {
-  const apiId = 'a'.repeat(32), provisionerId = 'b'.repeat(32);
+  const apiId = 'a'.repeat(32), provisionerId = 'b'.repeat(32), accessId = 'c'.repeat(32);
   return {
     workerSecrets: { api: ['CLERK_ISSUER', 'CLERK_PUBLISHABLE_KEY'], provisioner: ['CLERK_ISSUER', 'CLERK_PUBLISHABLE_KEY', 'CLERK_SECRET_KEY'] },
     api: { ...structuredClone(apiSource), hyperdrive: [{ binding: 'DATABASE', id: apiId }] },
-    provisioner: { ...structuredClone(provisionerSource), hyperdrive: [{ binding: 'DATABASE', id: provisionerId }] },
+    provisioner: { ...structuredClone(provisionerSource), hyperdrive: [{ binding: 'DATABASE', id: provisionerId }, { binding: 'ACCESS_DATABASE', id: accessId }] },
     hyperdrives: [
       { id: apiId, caching: { disabled: true }, mtls: { sslmode: 'verify-full' }, origin_connection_limit: 5,
-        origin: { database: 'pactwoven_dev', user: 'pactwoven_app', scheme: 'postgresql', host: 'ep-fixture.us-east-2.aws.neon.tech', port: 5432 } },
+        origin: { database: 'pactwoven_dev', user: 'pactwoven_dev_app', scheme: 'postgresql', host: 'ep-fixture.us-east-2.aws.neon.tech', port: 5432 } },
       { id: provisionerId, caching: { disabled: true }, mtls: { sslmode: 'verify-full' }, origin_connection_limit: 3,
-        origin: { database: 'pactwoven_dev', user: 'pactwoven_identity', scheme: 'postgresql', host: 'ep-fixture.us-east-2.aws.neon.tech', port: 5432 } },
+        origin: { database: 'pactwoven_dev', user: 'pactwoven_dev_identity', scheme: 'postgresql', host: 'ep-fixture.us-east-2.aws.neon.tech', port: 5432 } },
+      { id: accessId, caching: { disabled: true }, mtls: { sslmode: 'verify-full' }, origin_connection_limit: 3,
+        origin: { database: 'pactwoven_dev', user: 'pactwoven_dev_access', scheme: 'postgresql', host: 'ep-fixture.us-east-2.aws.neon.tech', port: 5432 } },
     ],
   };
 }
@@ -81,6 +83,23 @@ describe('development Worker deployment guard', () => {
       (data: ReturnType<typeof fixture>) => { data.workerSecrets.provisioner = ['CLERK_ISSUER', 'CLERK_PUBLISHABLE_KEY']; },
       (data: ReturnType<typeof fixture>) => { data.workerSecrets.api.push('OTHER_ADMIN_KEY'); },
       (data: ReturnType<typeof fixture>) => { data.workerSecrets.provisioner.push('CLERK_SECRET_KEY'); },
+    ]) { const data = fixture(); change(data); expect(() => assertDevelopmentWorkerDeployment(data)).toThrow(); }
+  });
+
+  it('requires a third distinct private access binding, user, uncached verified origin and secret-free configuration', () => {
+    for (const change of [
+      (data: ReturnType<typeof fixture>) => { data.api.hyperdrive.push(data.provisioner.hyperdrive[1]!); },
+      (data: ReturnType<typeof fixture>) => { data.api.vars.EXPECTED_ACCESS_DATABASE_USER = 'pactwoven_dev_access'; },
+      (data: ReturnType<typeof fixture>) => { delete data.provisioner.vars.EXPECTED_ACCESS_DATABASE_USER; },
+      (data: ReturnType<typeof fixture>) => { data.provisioner.vars.EXPECTED_ACCESS_DATABASE_USER = data.api.vars.EXPECTED_DATABASE_USER; },
+      (data: ReturnType<typeof fixture>) => { data.provisioner.vars.EXPECTED_ACCESS_DATABASE_USER = data.provisioner.vars.EXPECTED_DATABASE_USER; },
+      (data: ReturnType<typeof fixture>) => { data.provisioner.hyperdrive[1]!.id = data.api.hyperdrive[0]!.id; },
+      (data: ReturnType<typeof fixture>) => { data.provisioner.hyperdrive[1]!.binding = 'DATABASE'; },
+      (data: ReturnType<typeof fixture>) => { data.hyperdrives[2]!.origin.user = 'pactwoven_dev_identity'; },
+      (data: ReturnType<typeof fixture>) => { data.hyperdrives[2]!.origin.host = 'ep-other.us-east-2.aws.neon.tech'; },
+      (data: ReturnType<typeof fixture>) => { data.hyperdrives[2]!.caching.disabled = false; },
+      (data: ReturnType<typeof fixture>) => { data.hyperdrives[2]!.mtls.sslmode = 'require'; },
+      (data: ReturnType<typeof fixture>) => { data.workerSecrets.provisioner.push('ACCESS_DATABASE_URL'); },
     ]) { const data = fixture(); change(data); expect(() => assertDevelopmentWorkerDeployment(data)).toThrow(); }
   });
 });

@@ -11,15 +11,18 @@ export interface OrganizationProvisioner {
 
 export async function assertProvisionerPool(pool: Pool): Promise<void> {
   await assertUnprivilegedPool(pool);
-  const result = await pool.query<{ provisioner: boolean; runtime: boolean; table_access: boolean }>(`
+  const result = await pool.query<{ provisioner: boolean; runtime: boolean; table_access: boolean; access: boolean }>(`
     SELECT pg_has_role(current_user,'pactwoven_provisioner','MEMBER') AS provisioner,
       pg_has_role(current_user,'pactwoven_runtime','MEMBER') AS runtime,
+      (EXISTS(SELECT 1 FROM pg_roles r WHERE r.rolname='pactwoven_access_provisioner' AND pg_has_role(current_user,r.oid,'MEMBER'))
+        OR EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='pactwoven'
+          AND p.proname IN ('change_member_access','read_member_access','read_access_operation') AND has_function_privilege(current_user,p.oid,'EXECUTE'))) AS access,
       EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'pactwoven' AND c.relkind IN ('r','p')
           AND has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')) AS table_access
   `);
   const role = result.rows[0];
-  if (!role?.provisioner || role.runtime || role.table_access) {
+  if (!role?.provisioner || role.runtime || role.table_access || role.access) {
     throw new DomainError('UNSAFE_DATABASE_ROLE', 503, 'Organization setup requires the isolated, function-only provisioner role.');
   }
 }

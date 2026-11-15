@@ -61,7 +61,7 @@ export async function assertApprovalCurrent(receiptInput: ApprovalReceipt, actio
       canonicalJson(receipt.policy) !== canonicalJson(policy.reference) || receipt.requesterId !== context.requesterId ||
       receipt.approverId === context.requesterId || receipt.approverId !== actor.actorId || receipt.approverSessionId !== actor.sessionId ||
       actor.principalKind !== 'human' || actor.organizationId !== action.authority.organizationId || actor.environment !== action.authority.environment ||
-      !actor.siteIds.includes(action.siteId) ||
+      !actor.actionSiteIds.includes(action.siteId) ||
       policy.organizationId !== actor.organizationId || policy.environment !== actor.environment || !hasEligibleBuyerApprovalRole(actor, policy) ||
       proof.id !== receipt.stepUpEvidenceId || proof.actorId !== actor.actorId || proof.sessionId !== actor.sessionId ||
       receipt.stepUpVerifiedAt !== proof.verifiedAt || receipt.stepUpExpiresAt !== proof.expiresAt || instant(proof.verifiedAt) > approvalTime ||

@@ -13,3 +13,6 @@ export * from './finance-provenance.js';
 export * from './financial-fences.js';
 export * from './custody-owner-binding.js';
 export * from './financial-policies.js';
+export { FINANCIAL_POLICY_HTTP_REQUEST_NAMESPACE, snapshotFinancialPolicyHttpRequest,
+  financialPolicyHttpRequestHash, financialPolicyHttpRequestFromStoredCommand } from './financial-policy-http.js';
+export type { FinancialPolicyHttpHashScope } from './financial-policy-http.js';

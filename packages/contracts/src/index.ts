@@ -12,3 +12,10 @@ export * from './custody-setup-http';
 export * from './custody-setup-responses';
 export * from './custody-setup-context';
 export * from './financial-policies';
+export { FinancialPolicyHttpAuthorityBasisSchema, FinancialPolicyHttpDraftSchema,
+  FinancialPolicyResponsibilityDocumentHttpSchema, FinancialPolicyGovernanceDocumentHttpSchema,
+  FinancialPolicyDraftHttpSchema, FinancialPolicyWithdrawHttpSchema, FinancialPolicyGovernanceHttpSchema,
+  FinancialPolicyConsentHttpSchema, FinancialPolicyHttpKindSchema, FinancialPolicyHttpRouteIdentitySchema,
+  financialPolicyHttpRoute, FinancialPolicyHttpRequestSchema } from './financial-policy-http';
+export type { FinancialPolicyHttpRouteIdentity, FinancialPolicyHttpRequest,
+  FinancialPolicyHttpAuthorityBasis, FinancialPolicyHttpDraft } from './financial-policy-http';

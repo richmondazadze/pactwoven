@@ -18,3 +18,9 @@ export { PostgresCustodySetupRepository } from './custody-setup-repository.js';
 export { PostgresCustodySetupAuthenticationRepository, verifyCustodyWalletEvidence } from './custody-setup-authentication-repository.js';
 export { CustodyIdentityEvidenceSchema, CustodyWalletEvidenceSchema, CustodyMfaEvidenceSchema, CustodyAuthEvidenceSchema } from './custody-setup-auth-evidence.js';
 export type { CustodyAuthEvidence } from './custody-setup-auth-evidence.js';
+export { CustodyReadObservationSchema, CustodyReadOwnerScopeSchema, CustodyPrivateRecordQuerySchema,
+  CustodyPrivateRecordSchema, CustodyOriginalOperationSchema } from './custody-setup-read-schema.js';
+export type { CustodyReadObservation, CustodyReadOwnerScope, CustodyPrivateRecordQuery,
+  CustodyPrivateRecord, CustodyOriginalOperation, CustodySetupReaders } from './custody-setup-read-schema.js';
+export { PostgresCustodySetupReaders } from './custody-setup-read-repository.js';
+export { createCustodySetupPool } from './custody-setup-pool.js';

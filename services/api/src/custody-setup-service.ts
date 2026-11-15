@@ -1,22 +1,23 @@
 import {createHash} from 'node:crypto';
 import {z} from 'zod';
 import {CustodyPrepareHttpSchema,CustodyChallengeHttpSchema,CustodyConfirmationHttpSchema,CustodyConfirmHttpSchema,CustodyCancelHttpSchema,
- CustodyCommandSchema,CustodyResultSchema,CustodyReadSchema,CustodyRecordSchema,CustodyRefSchema,CustodySetupSpecificationSchema,
+ CustodyCommandSchema,CustodyResultSchema,CustodyReadSchema,CustodyRefSchema,CustodySetupSpecificationSchema,
  CustodyUuidSchema,IdSchema,CustodyApiRecoveryQuerySchema,CustodyApiMutationResponseSchema,CustodyApiReadResponseSchema,CustodyApiRecoveryResponseSchema,
  type CustodyApiMutationResponse,type CustodyApiReadResponse,type CustodyApiRecoveryResponse,type CustodyCommand,type CustodyResult,type CustodyRecord,type CustodySetupSpecification} from '@pactwoven/contracts';
-import {CustodyAuthEvidenceSchema,type CustodySetupRepository,type CustodyAuthEvidence} from '@pactwoven/db';
+import {CustodyAuthEvidenceSchema,CustodyPrivateRecordSchema,CustodyOriginalOperationSchema,
+ type CustodySetupReaders,type CustodySetupRepository,type CustodyAuthEvidence} from '@pactwoven/db';
 import {canonicalJson,commandDigest,custodyCommandHash,custodyRecordHash,custodySpecificationHash,custodyWalletChallengeBytes,DomainError,type ErrorStatus} from '@pactwoven/domain';
 import {CustodyApiOwnerScopeSchema,custodyApiSignatureHash,type CustodyApiOwnerScope,type CustodyApiObservation,type CustodyApiVerifier} from './custody-setup-verifier.js';
 
 type Ref=z.infer<typeof CustodyRefSchema>;
 export {CustodyApiRecoveryQuerySchema,CustodyApiMutationResponseSchema,CustodyApiReadResponseSchema,CustodyApiRecoveryResponseSchema} from '@pactwoven/contracts';
 export type {CustodyApiMutationResponse,CustodyApiReadResponse,CustodyApiRecoveryResponse} from '@pactwoven/contracts';
-/** These reads require dedicated, scope-bound database routines. No adapter is synthesized here. */
+/** Share private read inputs, but validate untrusted adapter results at this boundary. */
 export interface CustodyApiReaders {
- resolveOwner(observation:CustodyApiObservation,responsibilityId:string,trace:string):Promise<unknown>;
- specification(identityEvidenceId:string,scope:CustodyApiOwnerScope,reference:Ref,trace:string):Promise<unknown>;
- record(identityEvidenceId:string,scope:CustodyApiOwnerScope,query:{setupId:string;id:string;kind:'wallet_challenge'|'confirmation'},trace:string):Promise<unknown>;
- original(identityEvidenceId:string,scope:CustodyApiOwnerScope,query:z.infer<typeof CustodyApiRecoveryQuerySchema>,trace:string):Promise<unknown>;
+ resolveOwner(...args:Parameters<CustodySetupReaders['resolveOwner']>):Promise<unknown>;
+ specification(...args:Parameters<CustodySetupReaders['specification']>):Promise<unknown>;
+ record(...args:Parameters<CustodySetupReaders['record']>):Promise<unknown>;
+ original(...args:Parameters<CustodySetupReaders['original']>):Promise<unknown>;
 }
 export type CustodyApiDependencies={verifier:CustodyApiVerifier;repository:CustodySetupRepository;readers:CustodyApiReaders;
  authentication:{append(evidence:CustodyAuthEvidence,challenge?:Extract<CustodyRecord,{kind:'wallet_challenge'}>):Promise<Ref>}};
@@ -155,13 +156,13 @@ export function createCustodySetupService(dependencies:CustodyApiDependencies):C
  }
  async function record(c:Context,setupId:string,id:string,kind:'wallet_challenge'|'confirmation',trace:string){
   fresh(c);const raw=await readers.record(c.identityEvidenceId,structuredClone(c.scope),{setupId,id,kind},trace);fresh(c);if(raw===null)throw notFound();
-  const parsed=z.strictObject({record:CustodyRecordSchema,reference:CustodyRefSchema}).safeParse(raw);if(!parsed.success)throw unknown();const r=parsed.data;
+  const parsed=CustodyPrivateRecordSchema.safeParse(raw);if(!parsed.success)throw unknown();const r=parsed.data;
   if(r.record.id!==id||r.record.kind!==kind||r.record.setupId!==setupId||r.record.organizationId!==c.scope.organizationId||r.record.responsibilityId!==c.scope.responsibilityId||
    r.record.actorId!==c.scope.owner.actorId||r.reference.id!==id||r.reference.version!==r.record.version||r.reference.recordHash!==await custodyRecordHash(r.record))throw unknown();return r;
  }
  async function original(c:Context,kind:Request['kind'],key:string,trace:string){
   fresh(c);const raw=await readers.original(c.identityEvidenceId,structuredClone(c.scope),{kind,key},trace);fresh(c);if(raw===null)return null;
-  const parsed=z.strictObject({command:CustodyCommandSchema,result:CustodyResultSchema}).safeParse(raw);if(!parsed.success)throw unknown();const r=await result(parsed.data.result,c.scope,parsed.data.command);
+  const parsed=CustodyOriginalOperationSchema.safeParse(raw);if(!parsed.success)throw unknown();const r=await result(parsed.data.result,c.scope,parsed.data.command);
   if(r.kind!==kind||r.key!==key||parsed.data.command.responsibilityId!==c.scope.responsibilityId)throw unknown();await linkedResult(c,parsed.data.command,r,trace);return {command:parsed.data.command,result:r};
  }
  async function linkedResult(c:Context,command:CustodyCommand,r:CustodyResult,trace:string):Promise<void>{

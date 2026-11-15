@@ -12,10 +12,14 @@ export function createCustodyLifetime(initial: CustodyScope) {
   const permissions = new WeakMap<object, { generation: number; used: boolean }>();
   const ended = () => new CustodyClientError('scope', 'The custody setup observation ended. Its original outcome remains separate.');
   function invalidate() { generation++; active?.controller.abort(); active = null; }
+  // Observation ownership classifies an abort; it never grants dispatch. assert
+  // separately rejects every aborted ticket, including a transport deadline.
+  const ownsObservation = (ticket: { controller: AbortController; generation: number }, expected: CustodyScope) => alive && visible && active === ticket && generation === ticket.generation && custodySame(scope, expected);
   return {
     authorize(action: CustodyAction, identity: CustodyVisibleIdentity): CustodyPermission { if (!alive || !visible || active || identity.scopeKey !== custodyScopeKey(scope) || !['send', 'retry', 'lookup', 'read'].includes(action)) throw ended(); const permission = freezeCustody({ action, identity: structuredClone(identity) }); permissions.set(permission, { generation, used: false }); return permission; },
     start(permission: CustodyPermission, action: CustodyAction, identity: CustodyVisibleIdentity) { const issued = permissions.get(permission); if (!alive || !visible || active || !issued || issued.used || issued.generation !== generation || permission.action !== action || !custodySame(permission.identity, identity)) throw ended(); issued.used = true; const ticket = { controller: new AbortController(), generation }; active = ticket; return ticket; },
-    assert(ticket: { controller: AbortController; generation: number }, expected: CustodyScope) { if (!alive || !visible || active !== ticket || generation !== ticket.generation || ticket.controller.signal.aborted || !custodySame(scope, expected)) throw ended(); },
+    assert(ticket: { controller: AbortController; generation: number }, expected: CustodyScope) { if (!ownsObservation(ticket, expected) || ticket.controller.signal.aborted) throw ended(); },
+    ownsObservation,
     finish(ticket: { controller: AbortController; generation: number }) { if (active === ticket) active = null; },
     invalidate, hide() { visible = false; invalidate(); }, activate(next: CustodyScope) { if (!alive) throw ended(); invalidate(); scope = freezeCustody(custodyParse(CustodyScopeSchema, structuredClone(next))); visible = true; }, close() { alive = false; visible = false; invalidate(); },
   };
@@ -65,7 +69,8 @@ export function createCustodyTransport(deps: { lifetime: CustodyLifetime; memory
   const timeoutMs = deps.timeoutMs ?? 10000; if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw new CustodyClientError('input', 'A bounded custody request deadline is required.');
   async function run<T>(permission: CustodyPermission, action: CustodyAction, scope: CustodyScope, identity: CustodyVisibleIdentity, work: (call: (url: string, body?: unknown, beforeDispatch?: () => void, key?: string) => Promise<unknown>, guard: () => void) => Promise<T>) {
     const ticket = lifetime.start(permission, action, identity), signal = ticket.controller.signal; const guard = () => { lifetime.assert(ticket, scope); if (getApiBase() !== scope.apiBase || !custodySame(currentScope(), scope)) throw new CustodyClientError('scope', 'The current authenticated custody scope changed.'); };
-    const timer = setTimeout(() => ticket.controller.abort(), timeoutMs);
+    const deadline = {}; // Private identity distinguishes this timer from a scope abort.
+    const timer = setTimeout(() => ticket.controller.abort(deadline), timeoutMs);
     const call = async (path: string, body?: unknown, beforeDispatch?: () => void, key?: string) => {
       guard(); const token = await interrupted(getToken({ organizationId: scope.externalOrganizationId, skipCache: true }), signal); guard(); if (!token || !/^[A-Za-z0-9._~-]{1,8192}$/.test(token)) throw new CustodyClientError('scope', 'Sign in again to check the original setup.');
       const url = scope.apiBase + path, headers: Record<string, string> = { Accept: 'application/json', Authorization: `Bearer ${token}` }; if (body !== undefined) headers['Content-Type'] = 'application/json'; if (key) headers['Idempotency-Key'] = key;
@@ -73,7 +78,15 @@ export function createCustodyTransport(deps: { lifetime: CustodyLifetime; memory
       guard(); beforeDispatch?.(); guard(); const response = await interrupted(fetcher(url, init), signal); guard(); if (response.redirected || (response.url && response.url !== url) || response.status < 200 || response.status >= 300 && response.status < 400) throw unconfirmed(); const value = await boundedJson(response, signal, guard); guard();
       if (!response.ok) { const code = typeof value === 'object' && value !== null && 'error' in value && typeof value.error === 'object' && value.error !== null && 'code' in value.error ? value.error.code : null; const safe = typeof code === 'string' ? safeErrors[code] : undefined; if (safe) throw new CustodyClientError(...safe); throw unconfirmed(); } return value;
     };
-    try { guard(); return await work(call, guard); } catch (error) { throw error instanceof CustodyClientError ? error : unconfirmed(); } finally { clearTimeout(timer); lifetime.finish(ticket); }
+    try { guard(); return await work(call, guard); } catch (error) {
+      if (signal.aborted && signal.reason === deadline) {
+        let stillCurrent = false;
+        try { stillCurrent = lifetime.ownsObservation(ticket, scope) && getApiBase() === scope.apiBase && custodySame(currentScope(), scope); } catch { /* A lost observation remains a scope interruption. */ }
+        if (!stillCurrent) throw new CustodyClientError('scope', 'The current authenticated custody scope changed.');
+        throw new CustodyClientError('unconfirmed', 'The custody request timed out. Preserve its original reference and check it explicitly.');
+      }
+      throw error instanceof CustodyClientError ? error : unconfirmed();
+    } finally { clearTimeout(timer); lifetime.finish(ticket); }
   }
   return {
     async send(input: CustodyAttempt, permission: CustodyPermission) {

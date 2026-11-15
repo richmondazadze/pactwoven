@@ -4,6 +4,7 @@ import { createClerkIdentityVerifier, createClerkStepUpVerifier, createClerkMand
 import { createAccessGateway, createClerkMembershipDirectory } from './access-service.js';
 import { createAccessRecoveryGateway } from './access-recovery-service.js';
 import { createMandateGateway } from './mandate-service.js';
+import { createDevelopmentCustodySetup } from './custody-setup-development.js';
 import { createApp, type AppDependencies } from './app.js';
 import { readDevelopmentConfig } from './config.js';
 
@@ -13,6 +14,7 @@ let pool: Awaited<ReturnType<typeof createRuntimePool>> | undefined;
 let provisionerPool: Awaited<ReturnType<typeof createProvisionerPool>> | undefined;
 let accessPool: Awaited<ReturnType<typeof createAccessPool>> | undefined;
 let mandatePool: Awaited<ReturnType<typeof createMandatePool>> | undefined;
+let custodySetup: Awaited<ReturnType<typeof createDevelopmentCustodySetup>> | undefined;
 if (credentials) {
   try {
     pool = await createRuntimePool(credentials.databaseUrl);
@@ -40,8 +42,13 @@ if (credentials) {
         verifyIdentity: dependencies.verifyIdentity, verifyMandateStepUp: createClerkMandateStepUpVerifier(identityConfig),
         directory: createClerkMembershipDirectory(identityConfig) });
     }
+    if (credentials.custodySetup) {
+      custodySetup = await createDevelopmentCustodySetup({ ...credentials.custodySetup,
+        identity: { secretKey: credentials.secretKey, issuer: credentials.issuer, authorizedParties: allowedOrigins } });
+      dependencies.custodySetupGateway = custodySetup.gateway;
+    }
   } catch {
-    await Promise.allSettled([pool?.end(), provisionerPool?.end(), accessPool?.end(), mandatePool?.end()]);
+    await Promise.allSettled([pool?.end(), provisionerPool?.end(), accessPool?.end(), mandatePool?.end(), custodySetup?.close()]);
     throw new Error('Pactwoven API setup failed. Check the protected identity and runtime database configuration.');
   }
 }
@@ -50,5 +57,5 @@ const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, () => {
   console.info(`Pactwoven development API listening on http://127.0.0.1:${port}`);
 });
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => {
-  server.close(() => { void Promise.allSettled([pool?.end(), provisionerPool?.end(), accessPool?.end(), mandatePool?.end()]).then(() => process.exit(0)); });
+  server.close(() => { void Promise.allSettled([pool?.end(), provisionerPool?.end(), accessPool?.end(), mandatePool?.end(), custodySetup?.close()]).then(() => process.exit(0)); });
 });

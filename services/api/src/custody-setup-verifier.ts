@@ -1,16 +1,15 @@
 import {createHash} from 'node:crypto';
 import {z} from 'zod';
-import {CustodyConfirmationSchema,CustodyInstantSchema,CustodyOwnerSchema,CustodySignatureSchema,
+import {CustodyConfirmationSchema,CustodyInstantSchema,CustodySignatureSchema,
   CustodyUuidSchema,CustodyWalletChallengeSchema,HashSchema,IdSchema} from '@pactwoven/contracts';
-import {MandateIdentitySchema,CustodyIdentityEvidenceSchema,CustodyWalletEvidenceSchema,CustodyMfaEvidenceSchema,verifyCustodyWalletEvidence,type CustodyAuthEvidence,type VerifiedIdentity} from '@pactwoven/db';
+import {MandateIdentitySchema,CustodyIdentityEvidenceSchema,CustodyWalletEvidenceSchema,CustodyMfaEvidenceSchema,verifyCustodyWalletEvidence,
+ CustodyReadObservationSchema as ObservationSchema,CustodyReadOwnerScopeSchema as CustodyApiOwnerScopeSchema,
+ type CustodyReadObservation,type CustodyReadOwnerScope,type CustodyAuthEvidence,type VerifiedIdentity} from '@pactwoven/db';
 import {canonicalJson,commandDigest,custodyRecordHash,DomainError} from '@pactwoven/domain';
 import {createClerkFactorVerification,createClerkIdentityObservationVerifier,type ClerkIdentityConfig,type ClerkIdentityObservation} from './auth.js';
 
-export const CustodyApiOwnerScopeSchema=z.strictObject({environment:z.literal('development'),organizationId:IdSchema,
- externalOrganizationId:IdSchema,responsibilityId:IdSchema,owner:CustodyOwnerSchema});
-export type CustodyApiOwnerScope=z.infer<typeof CustodyApiOwnerScopeSchema>;
-const ObservationSchema=z.strictObject({identity:MandateIdentitySchema,observation:z.strictObject({issuer:z.string().url().max(512),
- tokenHash:HashSchema,tokenIssuedAt:CustodyInstantSchema,observedAt:CustodyInstantSchema,expiresAt:CustodyInstantSchema})});
+export {CustodyApiOwnerScopeSchema};
+export type CustodyApiOwnerScope=CustodyReadOwnerScope;
 const FactorsSchema=z.strictObject({identity:MandateIdentitySchema,evidence:z.strictObject({id:CustodyUuidSchema,subject:IdSchema,
  externalOrganizationId:IdSchema,externalMembershipId:IdSchema,sessionId:z.string().min(1).max(256),issuer:z.string().url().max(512),tokenHash:HashSchema,
  tokenIssuedAt:CustodyInstantSchema,firstFactorAgeMinutes:z.number().int().min(0).max(1000000),secondFactorAgeMinutes:z.number().int().min(0).max(1000000),
@@ -21,7 +20,7 @@ export type CustodyApiMfaEvidence=z.infer<typeof CustodyMfaEvidenceSchema>;
 export type CustodyApiEvidence=CustodyAuthEvidence;
 type PrivateCommon=Pick<CustodyApiIdentityEvidence,'schemaVersion'|'id'|'environment'|'organizationId'|'owner'|'observedAt'|'expiresAt'>;
 type PrivateIdentityFields=Pick<CustodyApiIdentityEvidence,'externalOrganizationId'|'externalRole'|'issuer'|'tokenHash'|'tokenIssuedAt'>;
-export type CustodyApiObservation=z.infer<typeof ObservationSchema>;
+export type CustodyApiObservation=CustodyReadObservation;
 export type CustodyApiVerifier={
  observe(token:string):Promise<CustodyApiObservation>;
  assertFresh(observation:CustodyApiObservation,scope:CustodyApiOwnerScope):void;

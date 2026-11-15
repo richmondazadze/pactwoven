@@ -49,7 +49,7 @@ async function harness() { const f = await fixture(), store = storage(), memory 
   const deps = { lifetime, memory, storage: () => store, currentScope: () => state.scope, getToken, fetch, now: () => clock }; const transport = createCustodyTransport(deps); const permit = (a = f.p, action: 'send' | 'retry' | 'lookup' = 'send') => lifetime.authorize(action, custodyVisibleIdentity(f.scope, a.locator));
   return { ...f, store, memory, lifetime, state, getToken, fetch, transport, permit, deps, setNow: (n: number) => { clock = n; } }; }
 beforeEach(() => vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', 'https://api.example.test'));
-afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 describe('custody explicit authenticated transport', () => {
   it('sends one exact original with trusted no-store/redirect policy and no private proof fields', async () => { const f = await harness(), result = await f.transport.send(f.p, f.permit()); expect(result.operation).toEqual(f.pr); expect(f.fetch).toHaveBeenCalledOnce(); expect(f.getToken).toHaveBeenCalledExactlyOnceWith({ organizationId: 'provider_org', skipCache: true }); const [url, init] = f.fetch.mock.calls[0]!; expect(url).toBe('https://api.example.test/v1/responsibilities/responsibility_a/custody-setups'); expect(init).toMatchObject({ method: 'POST', redirect: 'error', cache: 'no-store', credentials: 'omit' }); expect(init.body).toBe(JSON.stringify(f.p.request.body)); expect(init.headers).toMatchObject({ 'Idempotency-Key': f.p.request.body.key }); expect(f.memory.recorded(f.p.locator)).toEqual(f.pr); expect(listCustodyReferences(f.store, f.scope).references).toEqual([f.p.locator]); });
   it('captures input and injected methods before waits; caller edits cannot reassign the result', async () => { const f = await harness(), token = deferred<string>(), started = deferred<void>(); f.getToken.mockImplementationOnce(() => { started.resolve(); return token.promise; }); const input = structuredClone(f.p), pending = f.transport.send(input, f.permit()); await started.promise; input.request.body.key = 'late_changed_key'; input.draftIdentity = 'new_draft'; f.deps.fetch = vi.fn(async () => { throw new Error('replacement'); }); token.resolve('synthetic.token'); const r = await pending; expect(r.identity.draftIdentity).toBe('draft_ui_a'); expect(f.fetch).toHaveBeenCalledOnce(); expect(f.deps.fetch).not.toHaveBeenCalled(); });
@@ -65,7 +65,7 @@ describe('custody explicit authenticated transport', () => {
   it('captures a late response as an old original rather than assigning it to a newer draft', async () => { const f = await harness(), pendingResponse = deferred<Response>(), started = deferred<void>(); f.fetch.mockImplementationOnce(() => { started.resolve(); return pendingResponse.promise; }); const result = f.transport.send(f.p, f.permit()).catch(e => e); await started.promise; f.lifetime.invalidate(); const newIdentity = { ...custodyVisibleIdentity(f.scope, f.p.locator), draftIdentity: 'new_draft' }; f.lifetime.authorize('send', newIdentity); pendingResponse.resolve(response(await f.mutation(f.pr))); expect(await result).toMatchObject({ code: 'scope' }); expect(f.memory.recorded(f.p.locator)).toBeNull(); expect(listCustodyReferences(f.store, f.scope).references).toEqual([f.p.locator]); });
   it('rejects another original published during token wait and keeps both references', async () => { const f = await harness(), token = deferred<string>(), started = deferred<void>(); f.getToken.mockImplementationOnce(() => { started.resolve(); return token.promise; }); const pending = f.transport.send(f.p, f.permit()); await started.promise; storeCustodyReference(f.store, f.c.locator); token.resolve('synthetic.token'); await expect(pending).rejects.toMatchObject({ code: 'storage' }); expect(f.fetch).not.toHaveBeenCalled(); expect(f.store.length).toBe(2); });
   it('permits an explicit cancel beside an unknown binding attempt without erasing either', async () => { const f = await harness(); storeCustodyReference(f.store, f.b.locator); f.fetch.mockResolvedValueOnce(response(await f.mutation(f.xr))); const r = await f.transport.send(f.x, f.permit(f.x)); expect(r.operation.kind).toBe('cancel'); expect(r.permitsSigning).toBe(false); expect(f.store.length).toBe(2); });
-  it('aborts a bounded token wait and ignores its eventual completion', async () => { const f = await harness(), token = deferred<string>(); f.getToken.mockReturnValue(token.promise); const transport = createCustodyTransport({ ...f.deps, timeoutMs: 10 }); const pending = transport.send(f.p, f.permit()); await expect(pending).rejects.toMatchObject({ code: 'scope' }); token.resolve('synthetic.token'); await Promise.resolve(); expect(f.fetch).not.toHaveBeenCalled(); });
+  it('aborts a bounded token wait as unconfirmed and ignores its eventual completion', async () => { const f = await harness(), token = deferred<string>(); f.getToken.mockReturnValue(token.promise); const transport = createCustodyTransport({ ...f.deps, timeoutMs: 10 }); const pending = transport.send(f.p, f.permit()); await expect(pending).rejects.toMatchObject({ code: 'unconfirmed' }); token.resolve('synthetic.token'); await Promise.resolve(); expect(f.fetch).not.toHaveBeenCalled(); });
   it('refuses untrusted API changes and malformed read targets before fetching a bearer', async () => { const f = await harness(); vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', 'https://other.example.test'); await expect(f.transport.send(f.p, f.permit())).rejects.toMatchObject({ code: 'scope' }); expect(f.getToken).not.toHaveBeenCalled(); vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', f.scope.apiBase); const identity = custodyVisibleIdentity(f.scope, f.p.locator), permission = f.lifetime.authorize('read', identity); await expect(f.transport.read(f.scope, { ...f.target, setupId: '../other' }, identity, permission)).rejects.toThrow(); expect(f.getToken).not.toHaveBeenCalled(); });
   it.each(['{"a":1,"\\u0061":2}', '{"a":1} trailing', '{"a":1e999}', '{"__proto__":{}}', '[' + '1,'.repeat(140) + '1]', '{"a":' + '['.repeat(26) + '1' + ']'.repeat(26) + '}'])('rejects ambiguous or unbounded JSON %s', raw => { expect(() => parseCustodyResponseJson(raw)).toThrow(); });
 });
@@ -76,6 +76,50 @@ describe('custody complete transport progression and read boundaries', () => {
   it('missing original is an explicit GET result, not permission to replace or re-sign', async () => { const f = await harness(); storeCustodyReference(f.store, f.p.locator); f.fetch.mockResolvedValueOnce(response(f.recovery(null, f.p))); expect((await f.transport.lookup(f.p.locator, f.scope, f.permit(f.p, 'lookup'))).operation).toBeNull(); const replacement = await createCustodyAttempt(f.scope, { ...f.p.request, body: { ...f.p.request.body, key: 'replacement_prepare_001' } }, f.p.basis, 'new_draft', at); await expect(f.transport.send(replacement, f.permit(replacement))).rejects.toMatchObject({ code: 'storage' }); expect(f.fetch).toHaveBeenCalledOnce(); expect(f.store.length).toBe(1); });
   it('retries the retained confirm after expiry solely to recover its exact original', async () => { const f = await harness(); await f.memory.retain(f.b); storeCustodyReference(f.store, f.b.locator); f.setNow(at + 600000); f.fetch.mockResolvedValueOnce(response(await f.mutation(f.br))); const result = await f.transport.send(f.b, f.permit(f.b, 'retry')); expect(result.operation).toEqual(f.br); expect(result.historical).toBe(true); expect(result.permitsSigning).toBe(false); expect(f.fetch).toHaveBeenCalledOnce(); });
   it('rejects a first action expiring during token wait while preserving its original', async () => { const f = await harness(), token = deferred<string>(), started = deferred<void>(); f.getToken.mockImplementationOnce(() => { started.resolve(); return token.promise; }); const pending = f.transport.send(f.p, f.permit()); await started.promise; f.setNow(at + 60000); token.resolve('synthetic.token'); await expect(pending).rejects.toMatchObject({ code: 'expired' }); expect(f.fetch).not.toHaveBeenCalled(); expect(f.store.length).toBe(1); });
+});
+
+describe('custody bounded deadline classification', () => {
+  it.each(['token', 'fetch', 'body'] as const)('a %s deadline retains the original and permits only a new explicit lookup', async phase => {
+    const f = await harness(), token = deferred<string>(), fetched = deferred<Response>(); storeCustodyReference(f.store, f.p.locator);
+    const cancel = vi.fn(), body = new ReadableStream({ cancel });
+    if (phase === 'token') f.getToken.mockReturnValueOnce(token.promise);
+    if (phase === 'fetch') f.fetch.mockReturnValueOnce(fetched.promise);
+    if (phase === 'body') f.fetch.mockResolvedValueOnce(new Response(body, { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } }));
+    vi.useFakeTimers();
+    const transport = createCustodyTransport({ ...f.deps, timeoutMs: 100 }), pending = transport.lookup(f.p.locator, f.scope, f.permit(f.p, 'lookup')).catch(error => error);
+    await vi.advanceTimersByTimeAsync(100); expect(await pending).toMatchObject({ code: 'unconfirmed' });
+    const calls = phase === 'token' ? 0 : 1; expect(f.fetch).toHaveBeenCalledTimes(calls); expect(f.memory.recorded(f.p.locator)).toBeNull();
+    expect(listCustodyReferences(f.store, f.scope).references).toEqual([f.p.locator]); if (phase === 'body') expect(cancel).toHaveBeenCalledOnce();
+    token.resolve('synthetic.token'); fetched.resolve(response(f.recovery(f.pr, f.p))); await vi.advanceTimersByTimeAsync(0);
+    expect(f.fetch).toHaveBeenCalledTimes(calls); expect(f.memory.recorded(f.p.locator)).toBeNull();
+    f.fetch.mockResolvedValueOnce(response(f.recovery(f.pr, f.p)));
+    const next = await transport.lookup(f.p.locator, f.scope, f.permit(f.p, 'lookup')); expect(next.operation).toEqual(f.pr); expect(f.fetch).toHaveBeenCalledTimes(calls + 1);
+    expect(listCustodyReferences(f.store, f.scope).references).toEqual([f.p.locator]);
+  });
+  it.each(['hide-return', 'invalidate', 'close', 'session', 'origin'] as const)('a simultaneous %s interruption takes precedence over the timer marker', async change => {
+    const f = await harness(), token = deferred<string>(); storeCustodyReference(f.store, f.p.locator); f.getToken.mockReturnValue(token.promise); vi.useFakeTimers();
+    const transport = createCustodyTransport({ ...f.deps, timeoutMs: 100 }), pending = transport.lookup(f.p.locator, f.scope, f.permit(f.p, 'lookup')).catch(error => error);
+    // Run the timer synchronously, then invalidate before its rejection microtask.
+    vi.advanceTimersByTime(100);
+    if (change === 'hide-return') { f.lifetime.hide(); f.lifetime.activate(f.scope); }
+    else if (change === 'invalidate') f.lifetime.invalidate(); else if (change === 'close') f.lifetime.close();
+    else if (change === 'session') f.state.scope = { ...f.scope, owner: { ...f.scope.owner, sessionId: 'another_session' } };
+    else vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', 'https://other.example.test');
+    expect(await pending).toMatchObject({ code: 'scope' }); token.resolve('synthetic.token'); await Promise.resolve();
+    expect(f.fetch).not.toHaveBeenCalled(); expect(listCustodyReferences(f.store, f.scope).references).toEqual([f.p.locator]);
+  });
+  it('ordinary lifetime abort remains scope and an aborted ticket cannot dispatch despite observation ownership', async () => {
+    const f = await harness(), identity = custodyVisibleIdentity(f.scope, f.p.locator), permission = f.permit(f.p, 'lookup'), ticket = f.lifetime.start(permission, 'lookup', identity);
+    ticket.controller.abort(); expect(f.lifetime.ownsObservation(ticket, f.scope)).toBe(true);
+    expect(() => f.lifetime.assert(ticket, f.scope)).toThrow(); f.lifetime.finish(ticket);
+    storeCustodyReference(f.store, f.p.locator); const token = deferred<string>(); f.getToken.mockReturnValue(token.promise);
+    const pending = f.transport.lookup(f.p.locator, f.scope, f.permit(f.p, 'lookup')).catch(error => error); f.lifetime.invalidate();
+    expect(await pending).toMatchObject({ code: 'scope' }); expect(f.fetch).not.toHaveBeenCalled(); expect(f.store.length).toBe(1);
+  });
+  it.each(['AUTH_REQUIRED', 'FORBIDDEN', 'CUSTODY_ACCESS_DENIED'] as const)('a real %s response remains scope rather than deadline', async code => {
+    const f = await harness(); storeCustodyReference(f.store, f.p.locator); f.fetch.mockResolvedValueOnce(response({ error: { code, message: 'private provider text' } }, 403));
+    await expect(f.transport.lookup(f.p.locator, f.scope, f.permit(f.p, 'lookup'))).rejects.toMatchObject({ code: 'scope' }); expect(f.store.length).toBe(1);
+  });
 });
 
 

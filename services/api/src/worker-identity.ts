@@ -60,7 +60,7 @@ export function serviceIdentityVerifier(binding: ServiceBinding, originalAuthori
       const nonce = crypto.randomUUID();
       const hash = await tokenHash(token);
       const { response, data } = await serviceJsonRequest(binding, new Request(identityUrl, {
-        method: 'POST', redirect: 'error', headers: { Authorization: originalAuthorization, 'Content-Type': 'application/json' },
+        method: 'POST', redirect: 'manual', headers: { Authorization: originalAuthorization, 'Content-Type': 'application/json' },
         body: JSON.stringify({ nonce }),
       }), 8 * 1024);
       if (response.status !== 200) {

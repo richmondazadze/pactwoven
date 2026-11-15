@@ -194,7 +194,7 @@ export function serviceMandateGateway(binding: ServiceBinding, originalRequest: 
       await validateRoute(input);
       if ('key' in input.action && originalRequest.headers.get('Idempotency-Key') !== input.action.key) throw new Error('Command key mismatch');
       const expected = await affinity(input, token);
-      const { response, data } = await serviceJsonRequest(binding, new Request(mandateUrl, { method: 'POST', redirect: 'error',
+      const { response, data } = await serviceJsonRequest(binding, new Request(mandateUrl, { method: 'POST', redirect: 'manual',
         headers: { Authorization: authorization, 'Content-Type': 'application/json' }, body: JSON.stringify(input) }), mandateResponseBytes);
       const result = responseSchema.parse(data), now = Date.now(), respondedAt = Date.parse(result.respondedAt);
       if (response.headers.get('Cache-Control') !== 'private, no-store' || !/^application\/json(?:\s*;|$)/i.test(response.headers.get('Content-Type') ?? '') ||

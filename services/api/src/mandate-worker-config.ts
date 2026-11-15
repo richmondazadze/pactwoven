@@ -20,7 +20,7 @@ export function readMandateWorkerConfig(bindings: WorkerBindings) {
     if (issuerUrl.origin !== issuer || issuerUrl.protocol !== 'https:' || !issuerUrl.hostname.endsWith('.clerk.accounts.dev') ||
         atob(publishableKey.slice(8)) !== `${issuerUrl.hostname}$`) throw new WorkerConfigurationError();
     const expectedUser = z.string().regex(/^[a-z][a-z0-9_]{0,62}$/).parse(bindings.EXPECTED_MANDATE_DATABASE_USER);
-    return { environment: 'development' as const, allowedOrigins, issuer, secretKey,
-      connectionString: readDatabaseBinding(bindings.MANDATE_DATABASE, expectedUser) };
+    return { environment: 'development' as const, allowedOrigins, issuer, secretKey, expectedDatabaseUser: expectedUser,
+      connectionString: readDatabaseBinding(bindings.MANDATE_DATABASE) };
   } catch { throw new WorkerConfigurationError(); }
 }

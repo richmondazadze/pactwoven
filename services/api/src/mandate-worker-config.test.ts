@@ -10,10 +10,15 @@ function bindings(): WorkerBindings {
     EXPECTED_MANDATE_DATABASE_USER: 'pactwoven_mandate', MANDATE_DATABASE: { connectionString: url.href, host: url.hostname, port: 5432, user: url.username, database: 'pactwoven_dev' } };
 }
 describe('isolated development mandate Worker configuration',()=>{
+  it('retains the origin identity separately from the proxy credentials',()=>{
+    const env=bindings(),url=new URL(env.MANDATE_DATABASE!.connectionString);url.username='proxy';url.pathname='/proxy';
+    env.MANDATE_DATABASE={...env.MANDATE_DATABASE!,connectionString:url.href,user:'proxy',database:'proxy'};
+    expect(readMandateWorkerConfig(env)).toMatchObject({connectionString:url.href,expectedDatabaseUser:'pactwoven_mandate'});
+  });
   it('accepts only development identity with the exact dedicated Hyperdrive binding',()=>{
     expect(readMandateWorkerConfig(bindings())).toMatchObject({environment:'development',allowedOrigins:['http://127.0.0.1:3001']});
     for(const changed of [{APP_ENVIRONMENT:'production'},{WORKER_ROLE:'api'},{CLERK_SECRET_KEY:['sk','live','fixture'].join('_')},
-      {CLERK_ISSUER:'https://other.clerk.accounts.dev'},{EXPECTED_MANDATE_DATABASE_USER:'other_user'},
+      {CLERK_ISSUER:'https://other.clerk.accounts.dev'},{EXPECTED_MANDATE_DATABASE_USER:'invalid role'},
       {ALLOWED_ORIGINS:'https://example.com/path'},{ALLOWED_ORIGINS:'*'}, {ALLOWED_ORIGINS:'https://example.com,https://example.com'}]){
       expect(()=>readMandateWorkerConfig({...bindings(),...changed})).toThrow(WorkerConfigurationError);
     }

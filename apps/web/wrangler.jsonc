@@ -17,9 +17,6 @@
       "service": "pactwoven-web-development"
     }
   ],
-  "limits": {
-    "cpu_ms": 10
-  },
   "workers_dev": true,
   "preview_urls": false,
   "observability": {

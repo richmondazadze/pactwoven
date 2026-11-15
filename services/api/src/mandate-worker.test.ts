@@ -84,7 +84,7 @@ async function joined(command: unknown = intent, path?: string) {
 }
 beforeEach(() => {
   vi.resetAllMocks(); identity.membershipObservedAt = new Date().toISOString(); mocks.identity.mockResolvedValue(identity);
-  mocks.pool.mockImplementation(async () => ({ end: vi.fn(async () => {}) }));
+  mocks.pool.mockImplementation(async () => ({ end: vi.fn(async () => {}), query: vi.fn(async () => ({ rows: [{ database_matches: true, current_matches: true, session_matches: true }] })) }));
   mocks.requester.mockResolvedValue({ externalSubject: 'requester_a', externalMembershipId: 'requester_member' });
   mocks.directory.mockResolvedValue({ externalOrganizationId: identity.externalOrganizationId, externalSubject: 'requester_a',
     externalMembershipId: 'requester_member', externalRole: 'org:member', displayName: 'Requester', observedAt: new Date().toISOString() });
@@ -107,6 +107,7 @@ describe('mandate Worker composition', () => {
     expect(mocks.readDocument).toHaveBeenCalledExactlyOnceWith(identity, 'responsibility_a', 'policy_a', { version: 1 }, expect.any(String));
     expect(mocks.mutate).not.toHaveBeenCalled(); expect(mocks.mfa).not.toHaveBeenCalled(); expect(mocks.directory).not.toHaveBeenCalled();
     expect(mocks.runtimePool).not.toHaveBeenCalled(); expect(mocks.pool).toHaveBeenCalledOnce();
+    expect((await mocks.pool.mock.results[0]!.value).query).toHaveBeenCalledWith(expect.stringContaining('current_user'), ['pactwoven_dev', 'pactwoven_mandate']);
     expect((await mocks.pool.mock.results[0]!.value).end).toHaveBeenCalledOnce();
   });
   it('binds original bearer and outer nonce to independently verified identity, original requester, MFA and one private pool', async () => {

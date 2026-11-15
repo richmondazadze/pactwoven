@@ -5,6 +5,7 @@ import { createMandateGateway } from './mandate-service.js';
 import { readMandateWorkerConfig } from './mandate-worker-config.js';
 import { handlePrivateMandateRequest, mandateUrl } from './worker-mandate.js';
 import { requestResource, workerUnavailable, type WorkerBindings, type WorkerContext } from './worker-config.js';
+import { createWorkerPool } from './worker-database.js';
 
 export default {
   async fetch(request: Request, bindings: WorkerBindings, context: WorkerContext): Promise<Response> {
@@ -15,7 +16,7 @@ export default {
     let config: ReturnType<typeof readMandateWorkerConfig>;
     try { config = readMandateWorkerConfig(bindings); } catch { return workerUnavailable(); }
     const identityConfig = { secretKey: config.secretKey, issuer: config.issuer, authorizedParties: config.allowedOrigins };
-    const pool = requestResource(() => createMandatePool(config.connectionString));
+    const pool = requestResource(() => createWorkerPool(() => createMandatePool(config.connectionString), config.expectedDatabaseUser));
     const repository = async () => new PostgresMandateRepository(await pool.get(), config.environment);
     const lazyRepository: MandateRepository = {
       readDocument: async (...args) => (await repository()).readDocument(...args),

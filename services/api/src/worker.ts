@@ -6,12 +6,13 @@ import { serviceIdentityVerifier } from './worker-identity.js';
 import { serviceAccessGateway } from './worker-access.js';
 import { serviceAccessRecoveryGateway } from './worker-access-recovery.js';
 import { serviceMandateGateway } from './worker-mandate.js';
+import { createWorkerPool } from './worker-database.js';
 
 export default {
   async fetch(request: Request, bindings: WorkerBindings, context: WorkerContext): Promise<Response> {
     let config: WorkerRuntimeConfig;
     try { config = readWorkerConfig(bindings, 'api'); } catch { return workerUnavailable(); }
-    const pool = requestResource(() => createRuntimePool(config.connectionString));
+    const pool = requestResource(() => createWorkerPool(() => createRuntimePool(config.connectionString), config.expectedDatabaseUser));
     const repository = async () => new PostgresFoundationRepository(await pool.get(), config.environment);
     const lazyRepository: FoundationRepository = {
       getSession: async (...args) => (await repository()).getSession(...args),

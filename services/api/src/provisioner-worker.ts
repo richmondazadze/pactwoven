@@ -8,6 +8,7 @@ import { accessUrl, handlePrivateAccessRequest } from './worker-access.js';
 import { readWorkerConfig, requestResource, workerUnavailable, type WorkerBindings, type WorkerContext, type PrivateWorkerConfig } from './worker-config.js';
 import { provisionerUrl } from './worker-provisioner.js';
 import { identityUrl, verifyPrivateIdentityRequest } from './worker-identity.js';
+import { createWorkerPool } from './worker-database.js';
 
 export default {
   async fetch(request: Request, bindings: WorkerBindings, context: WorkerContext): Promise<Response> {
@@ -22,7 +23,7 @@ export default {
     const verifyIdentity = createClerkIdentityVerifier(identityConfig);
     if (request.url === identityUrl) return verifyPrivateIdentityRequest(request, config.issuer, verifyIdentity);
     if (request.url === accessRecoveryUrl) {
-      const pool = requestResource(() => createAccessPool(config.accessConnectionString));
+      const pool = requestResource(() => createWorkerPool(() => createAccessPool(config.accessConnectionString), config.expectedAccessDatabaseUser));
       const repository = async () => new PostgresAccessRecoveryRepository(await pool.get(), config.environment);
       const lazyRepository: AccessRecoveryRepository = {
         get: async (...args) => (await repository()).get(...args),
@@ -36,7 +37,7 @@ export default {
       } finally { context.waitUntil(pool.close()); }
     }
     if (request.url === accessUrl) {
-      const pool = requestResource(() => createAccessPool(config.accessConnectionString));
+      const pool = requestResource(() => createWorkerPool(() => createAccessPool(config.accessConnectionString), config.expectedAccessDatabaseUser));
       const repository = async () => new PostgresAccessRepository(await pool.get(), config.environment);
       const lazyRepository: AccessRepository = {
         listMembers: async (...args) => (await repository()).listMembers(...args),
@@ -49,7 +50,7 @@ export default {
       try { return await handlePrivateAccessRequest(request, config.issuer, gateway); }
       finally { context.waitUntil(pool.close()); }
     }
-    const pool = requestResource(() => createProvisionerPool(config.connectionString));
+    const pool = requestResource(() => createWorkerPool(() => createProvisionerPool(config.connectionString), config.expectedDatabaseUser));
     const provisioner: OrganizationProvisioner = {
       bootstrapOrganization: async (...args) => new PostgresOrganizationProvisioner(await pool.get(), config.environment).bootstrapOrganization(...args),
     };

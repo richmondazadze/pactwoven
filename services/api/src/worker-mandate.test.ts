@@ -75,7 +75,7 @@ describe('private mandate transport', () => {
     const fetch = vi.fn(async (request: Request) => {
       expect([...request.headers.keys()].sort()).toEqual(['authorization', 'content-type']);
       expect(request.headers.get('Authorization')).toBe(`Bearer ${token}`); expect(request.url).toBe(mandateUrl);
-      expect(request.redirect).toBe('error'); forwarded = await request.clone().json(); return fetchPrivate(request);
+      expect(request.redirect).toBe('manual'); forwarded = await request.clone().json(); return fetchPrivate(request);
     });
     const response = await adapter(undefined, 'POST', fetch).decide(token, responsibilityId, proposalId, key, intent, trace);
     expect(response.kind).toBe('mandate.authorize'); expect(Object.keys(forwarded!).sort()).toEqual(['action', 'nonce', 'request']);

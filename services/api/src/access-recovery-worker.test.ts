@@ -74,7 +74,7 @@ async function joined(source: Request = request()) {
 }
 beforeEach(() => {
   vi.resetAllMocks(); identity.membershipObservedAt = new Date().toISOString(); mocks.identity.mockResolvedValue(identity);
-  mocks.accessPool.mockImplementation(async () => ({ end: vi.fn(async () => {}) }));
+  mocks.accessPool.mockImplementation(async () => ({ end: vi.fn(async () => {}), query: vi.fn(async () => ({ rows: [{ database_matches: true, current_matches: true, session_matches: true }] })) }));
   mocks.get.mockImplementation(async () => result()); mocks.close.mockImplementation(async () => result('fenced'));
   mocks.mfa.mockImplementation(async (_token: string, input: AccessRecoveryVerificationRequest) => {
     const now = Date.now(), issued = Math.floor(now / 1000) * 1000;
@@ -99,6 +99,7 @@ describe('access recovery Worker composition', () => {
       evidence: { purpose: 'member_access_recovery_close', requestNonce: dispatched[0]!.nonce } });
     expect(mocks.close.mock.calls[0]?.slice(1)).toEqual([key, intent, 'recovery_trace']);
     expect(mocks.accessPool).toHaveBeenCalledOnce(); expect((await mocks.accessPool.mock.results[0]!.value).end).toHaveBeenCalledOnce();
+    expect((await mocks.accessPool.mock.results[0]!.value).query).toHaveBeenCalledWith(expect.stringContaining('session_user'), ['pactwoven_dev', 'pactwoven_access']);
     expect(mocks.runtimePool).not.toHaveBeenCalled(); expect(mocks.provisionerPool).not.toHaveBeenCalled();
   });
   it('uses typed GET without factors or writes and closes its access pool', async () => {

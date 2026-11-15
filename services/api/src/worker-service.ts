@@ -39,8 +39,13 @@ export async function privateDeadline<T>(milliseconds: number, work: (signal: Ab
 export async function serviceJsonRequest(binding: ServiceBinding, request: Request, maxBytes = 64 * 1024) {
   try {
     return await privateDeadline(20_000, async signal => {
-      const response = await binding.fetch(new Request(request, { signal }));
-      if (signal.aborted) { void response.body?.cancel().catch(() => {}); throw new Error('Private exchange was not confirmed'); }
+      // Workerd accepts manual/follow only. Never follow a private response's
+      // Location with the original authorization or command body.
+      const response = await binding.fetch(new Request(request, { signal, redirect: 'manual' }));
+      if (signal.aborted || (response.status >= 300 && response.status < 400) || response.redirected) {
+        void response.body?.cancel().catch(() => {});
+        throw new Error('Private exchange was not confirmed');
+      }
       const data = await readPrivateJson(response.body, signal, maxBytes);
       return { response, data };
     });

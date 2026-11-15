@@ -33,19 +33,23 @@ export type WorkerBindings = {
 export class WorkerConfigurationError extends Error {
   constructor() { super('Development Worker bindings are not configured correctly.'); }
 }
-export type WorkerRuntimeConfig = { environment: 'development'; allowedOrigins: string[]; issuer: string; connectionString: string };
-export type PrivateWorkerConfig = WorkerRuntimeConfig & { secretKey: string; accessConnectionString: string };
+export type WorkerRuntimeConfig = { environment: 'development'; allowedOrigins: string[]; issuer: string; connectionString: string; expectedDatabaseUser: string };
+export type PrivateWorkerConfig = WorkerRuntimeConfig & { secretKey: string; accessConnectionString: string; expectedAccessDatabaseUser: string };
 
-export function readDatabaseBinding(database: HyperdriveBinding | undefined, expectedUser: string): string {
-  if (!database || database.database !== 'pactwoven_dev' || database.user !== expectedUser) throw new WorkerConfigurationError();
+export function readDatabaseBinding(database: HyperdriveBinding | undefined): string {
+  if (!database || !database.database || !database.user ||
+      typeof database.host !== 'string' || database.host.length === 0 ||
+      !Number.isInteger(database.port) || database.port < 1 || database.port > 65535) throw new WorkerConfigurationError();
   const url = new URL(database.connectionString);
-  // Only Hyperdrive's synthetic local proxy may disable TLS. Deployment validation
-  // separately requires certificate verification on each Neon origin connection.
+  // The native binding supplies opaque proxy host/credentials, not the origin.
+  // Its hostname spelling is not a stable provider API or an origin TLS check.
+  // Deployment validation checks origin TLS and mapping; createWorkerPool checks
+  // the actual PostgreSQL identity before a repository can use the connection.
   const query = [...url.searchParams];
   if (!['postgres:', 'postgresql:'].includes(url.protocol) || url.hash ||
       (query.length > 0 && !(query.length === 1 && query[0]?.[0] === 'sslmode' && query[0][1] === 'disable')) ||
-      url.pathname !== '/pactwoven_dev' || !url.password || decodeURIComponent(url.username) !== expectedUser ||
-      url.hostname !== database.host || Number(url.port || 5432) !== database.port) throw new WorkerConfigurationError();
+      decodeURIComponent(url.pathname.slice(1)) !== database.database || !url.password || decodeURIComponent(url.username) !== database.user ||
+      !url.hostname || url.hostname !== database.host || Number(url.port || 5432) !== database.port) throw new WorkerConfigurationError();
   return database.connectionString;
 }
 
@@ -75,19 +79,21 @@ export function readWorkerConfig(bindings: WorkerBindings, role: 'api' | 'provis
     if (issuerUrl.origin !== issuer || issuerUrl.protocol !== 'https:' || !issuerUrl.hostname.endsWith('.clerk.accounts.dev') ||
         atob(publishableKey.slice(8)) !== `${issuerUrl.hostname}$`) throw new WorkerConfigurationError();
     const expectedUser = z.string().regex(/^[a-z][a-z0-9_]{0,62}$/).parse(bindings.EXPECTED_DATABASE_USER);
-    const connectionString = readDatabaseBinding(bindings.DATABASE, expectedUser);
+    const connectionString = readDatabaseBinding(bindings.DATABASE);
     let accessConnectionString: string | undefined;
+    let accessUser: string | undefined;
     if (role === 'provisioner') {
-      const accessUser = z.string().regex(/^[a-z][a-z0-9_]{0,62}$/).parse(bindings.EXPECTED_ACCESS_DATABASE_USER);
+      accessUser = z.string().regex(/^[a-z][a-z0-9_]{0,62}$/).parse(bindings.EXPECTED_ACCESS_DATABASE_USER);
       if (accessUser === expectedUser) throw new WorkerConfigurationError();
-      accessConnectionString = readDatabaseBinding(bindings.ACCESS_DATABASE, accessUser);
+      accessConnectionString = readDatabaseBinding(bindings.ACCESS_DATABASE);
+      if (accessConnectionString === connectionString) throw new WorkerConfigurationError();
     }
     if (role === 'api' && typeof bindings.IDENTITY_PROVISIONER?.fetch !== 'function') throw new WorkerConfigurationError();
     if (role === 'api' && bindings.MANDATE_AUTHORITY !== undefined && typeof bindings.MANDATE_AUTHORITY.fetch !== 'function') throw new WorkerConfigurationError();
     if (role === 'provisioner' && bindings.IDENTITY_PROVISIONER !== undefined) throw new WorkerConfigurationError();
     if (role === 'provisioner' && bindings.MANDATE_AUTHORITY !== undefined) throw new WorkerConfigurationError();
-    return { environment: 'development' as const, allowedOrigins, issuer, connectionString,
-      ...(secretKey && accessConnectionString ? { secretKey, accessConnectionString } : {}) };
+    return { environment: 'development' as const, allowedOrigins, issuer, connectionString, expectedDatabaseUser: expectedUser,
+      ...(secretKey && accessConnectionString && accessUser ? { secretKey, accessConnectionString, expectedAccessDatabaseUser: accessUser } : {}) };
   } catch { throw new WorkerConfigurationError(); }
 }
 

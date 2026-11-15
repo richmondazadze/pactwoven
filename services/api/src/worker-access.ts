@@ -146,7 +146,7 @@ export function serviceAccessGateway(binding: ServiceBinding, originalRequest: R
       await validateRoute(input);
       if ('key' in action && originalRequest.headers.get('Idempotency-Key') !== action.key) throw new Error('Command key mismatch');
       const expected = await affinity(input, token);
-      const { response, data } = await serviceJsonRequest(binding, new Request(accessUrl, { method: 'POST', redirect: 'error',
+      const { response, data } = await serviceJsonRequest(binding, new Request(accessUrl, { method: 'POST', redirect: 'manual',
         headers: { Authorization: authorization, 'Content-Type': 'application/json' }, body: JSON.stringify(input) }), accessResponseBytes);
       const result = responseSchema.parse(data), now = Date.now(), respondedAt = Date.parse(result.respondedAt);
       if (response.headers.get('Cache-Control') !== 'private, no-store' ||

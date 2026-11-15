@@ -78,9 +78,9 @@ beforeEach(() => {
   mocks.verifyIdentity.mockResolvedValue(identity);
   mocks.bootstrap.mockResolvedValue(operation);
   mocks.session.mockResolvedValue(session);
-  mocks.runtimePool.mockImplementation(async () => ({ end: vi.fn(async () => {}) }));
-  mocks.provisionerPool.mockImplementation(async () => ({ end: vi.fn(async () => {}) }));
-  mocks.accessPool.mockImplementation(async () => ({ end: vi.fn(async () => {}) }));
+  mocks.runtimePool.mockImplementation(async () => ({ end: vi.fn(async () => {}), query: vi.fn(async () => ({ rows: [{ database_matches: true, current_matches: true, session_matches: true }] })) }));
+  mocks.provisionerPool.mockImplementation(async () => ({ end: vi.fn(async () => {}), query: vi.fn(async () => ({ rows: [{ database_matches: true, current_matches: true, session_matches: true }] })) }));
+  mocks.accessPool.mockImplementation(async () => ({ end: vi.fn(async () => {}), query: vi.fn(async () => ({ rows: [{ database_matches: true, current_matches: true, session_matches: true }] })) }));
 });
 
 describe('Cloudflare request and private service boundaries', () => {
@@ -100,7 +100,10 @@ describe('Cloudflare request and private service boundaries', () => {
     expect((await apiWorker.fetch(request(), bindings('api'), ctx)).status).toBe(200);
     await ctx.done();
     expect(mocks.runtimePool).toHaveBeenCalledTimes(2);
-    for (const result of mocks.runtimePool.mock.results) expect((await result.value).end).toHaveBeenCalledOnce();
+    for (const result of mocks.runtimePool.mock.results) {
+      expect((await result.value).end).toHaveBeenCalledOnce();
+      expect((await result.value).query).toHaveBeenCalledWith(expect.stringContaining('current_user'), ['pactwoven_dev', 'pactwoven_app']);
+    }
     expect(mocks.provisionerPool).not.toHaveBeenCalled();
   });
 
@@ -226,6 +229,25 @@ describe('Cloudflare request and private service boundaries', () => {
 });
 
 describe('Worker environment and lifecycle validation', () => {
+  it('retains the expected origin role separately from synthetic proxy metadata', () => {
+    const env = bindings('api');
+    const url = new URL(env.DATABASE!.connectionString); url.username = 'proxy'; url.pathname = '/proxy';
+    env.DATABASE = { ...env.DATABASE!, connectionString: url.href, user: 'proxy', database: 'proxy' };
+    expect(readWorkerConfig(env, 'api')).toMatchObject({ connectionString: url.href, expectedDatabaseUser: 'pactwoven_app' });
+    expect(readWorkerConfig(bindings('provisioner'), 'provisioner')).toMatchObject({
+      expectedDatabaseUser: 'pactwoven_identity', expectedAccessDatabaseUser: 'pactwoven_access' });
+  });
+
+  it('refuses a mismatched actual origin identity before reading application data', async () => {
+    const end = vi.fn(async () => {});
+    mocks.runtimePool.mockResolvedValue({ end, query: vi.fn(async () => ({ rows: [{ database_matches: true, current_matches: false, session_matches: false }] })) });
+    const ctx = context();
+    const response = await apiWorker.fetch(new Request('https://api.example/v1/session', { headers }), bindings('api'), ctx);
+    await ctx.done();
+    expect(response.status).toBe(503); expect(mocks.session).not.toHaveBeenCalled(); expect(end).toHaveBeenCalledOnce();
+    expect(await response.text()).not.toMatch(/fixture|postgresql|pactwoven_app/);
+  });
+
   it('accepts matching development-only binding configuration', () => {
     expect(readWorkerConfig(bindings('api'), 'api').environment).toBe('development');
     expect(readWorkerConfig(bindings('api'), 'api')).not.toHaveProperty('secretKey');
@@ -238,7 +260,7 @@ describe('Worker environment and lifecycle validation', () => {
   it('rejects environment promotion, direct credentials, role swapping and mismatched binding metadata', () => {
     const valid = bindings('api');
     for (const patch of [{ APP_ENVIRONMENT: 'production' }, { WORKER_ROLE: 'provisioner' }, { DATABASE_URL: 'not-permitted' },
-      { PROVISIONER_DATABASE_URL: 'not-permitted' }, { EXPECTED_DATABASE_USER: 'other' }, { IDENTITY_PROVISIONER: undefined },
+      { PROVISIONER_DATABASE_URL: 'not-permitted' }, { EXPECTED_DATABASE_USER: 'invalid role' }, { IDENTITY_PROVISIONER: undefined },
       { DATABASE: { ...valid.DATABASE!, database: 'production' } }, { DATABASE: { ...valid.DATABASE!, connectionString: `${valid.DATABASE!.connectionString}?options=role` } }]) {
       expect(() => readWorkerConfig({ ...valid, ...patch } as WorkerBindings, 'api')).toThrow('bindings');
     }

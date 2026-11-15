@@ -14,6 +14,8 @@ import { registerFinancialPolicyRoutes } from './financial-policy-routes.js';
 import type { FinancialPolicyGateway } from './financial-policy-service.js';
 import { registerFinancialPolicyWriteRoutes } from './financial-policy-write-routes.js';
 import type { FinancialPolicyWriteGateway } from './financial-policy-write-service.js';
+import { registerFinancialPolicyPreparationRoutes } from './financial-policy-preparation-routes.js';
+import type { FinancialPolicyPreparationGateway } from './financial-policy-preparation-service.js';
 
 export type AppDependencies = {
   repository?: FoundationRepository;
@@ -25,6 +27,7 @@ export type AppDependencies = {
   custodySetupGateway?: CustodySetupGateway;
   financialPolicyGateway?: FinancialPolicyGateway;
   financialPolicyWriteGateway?: FinancialPolicyWriteGateway;
+  financialPolicyPreparationGateway?: FinancialPolicyPreparationGateway;
   allowedOrigins: readonly string[];
 };
 export type ApiEnv = { Variables: { session: Session; identity: VerifiedIdentity; correlationId: string; requestBody: unknown } };
@@ -107,6 +110,7 @@ export function createApp(dependencies: AppDependencies) {
 
   // Financial routes parse immutable selectors and bounded write bodies before
   // their own identity observation. Writes pass reserved read targets onward.
+  registerFinancialPolicyPreparationRoutes(app, dependencies.financialPolicyPreparationGateway);
   registerFinancialPolicyWriteRoutes(app, dependencies.financialPolicyWriteGateway);
   registerFinancialPolicyRoutes(app, dependencies.financialPolicyGateway);
 

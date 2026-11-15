@@ -54,6 +54,7 @@ if (credentials) {
         identity: { secretKey: credentials.secretKey, issuer: credentials.issuer, authorizedParties: allowedOrigins } });
       dependencies.financialPolicyGateway = financialPolicy.gateway;
       dependencies.financialPolicyWriteGateway = financialPolicy.writeGateway;
+      dependencies.financialPolicyPreparationGateway = financialPolicy.preparationGateway;
     }
   } catch {
     await Promise.allSettled([pool?.end(), provisionerPool?.end(), accessPool?.end(), mandatePool?.end(), custodySetup?.close(), financialPolicy?.close()]);

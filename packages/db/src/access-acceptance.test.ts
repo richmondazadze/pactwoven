@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { Socket, createServer } from 'node:net';
+import { once } from 'node:events';
 import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { commandDigest } from '@pactwoven/domain';
@@ -7,6 +9,7 @@ import type { GrantAccessCommand, MemberCandidate, Operation } from '@pactwoven/
 import { PostgresAccessRepository, assertAccessPool, type AccessMutation, type VerifiedStepUpIdentity } from './access-repository.js';
 import { PostgresOrganizationProvisioner, assertProvisionerPool } from './provisioner.js';
 import { PostgresFoundationRepository, assertRuntimePool, type VerifiedIdentity } from './repository.js';
+import { hasLoopbackMigrationTransport } from './migrate.js';
 
 const suite = process.env.PACTWOVEN_RUN_ACCESS_ACCEPTANCE_TESTS === '1' ? describe : describe.skip;
 const baseline = process.env.PACTWOVEN_ACCESS_ACCEPTANCE_BASELINE === '1';
@@ -17,6 +20,83 @@ type Outcome<T> = { value: T; error?: never } | { error: unknown; value?: never 
 const observe = <T>(promise: Promise<T>): Promise<Outcome<T>> => promise.then(value => ({ value }), error => ({ error }));
 const errorCode = (result: Outcome<unknown>) => (result.error as { code?: string } | undefined)?.code;
 const iso = (time: number) => new Date(time).toISOString();
+type FixtureServer = { address: string; port: number };
+type FixtureIdentity = { database: string; server: string | null; port: number | null; role: string; session_role: string };
+
+function validateAcceptanceTargets(urls: readonly URL[]): void {
+  if (urls.length !== 4 || urls.some(url => !['postgres:', 'postgresql:'].includes(url.protocol) ||
+    url.pathname !== '/pactwoven_backend_test' || !['127.0.0.1', 'localhost'].includes(url.hostname) ||
+    !url.port || !url.username || url.search || url.hash)) throw new Error('Acceptance tests require explicit disposable loopback targets without overrides');
+  if (urls.some(url => url.host !== urls[0]!.host) || new Set(urls.map(url => decodeURIComponent(url.username))).size !== 4) {
+    throw new Error('Four isolated logins on one disposable database required');
+  }
+}
+
+function verifyAcceptanceConnection(transport: unknown, target: URL, row: FixtureIdentity, adminServer?: FixtureServer): FixtureServer {
+  // A loopback Docker port forward can legitimately report a bridge address inside PostgreSQL.
+  expect(hasLoopbackMigrationTransport(transport)).toBe(true);
+  expect((transport as Socket).remotePort).toBe(Number(target.port));
+  expect(row.database).toBe('pactwoven_backend_test');
+  expect(row.role).toBe(decodeURIComponent(target.username));
+  expect(row.session_role).toBe(row.role);
+  expect(row.server).toEqual(expect.any(String));
+  expect(Number.isInteger(row.port) && row.port! > 0 && row.port! <= 65535).toBe(true);
+  const server = { address: row.server!, port: row.port! };
+  if (adminServer) expect(server).toEqual(adminServer);
+  return server;
+}
+
+describe('access-acceptance fixture boundary without PostgreSQL', () => {
+  const targets = () => ['admin', 'runtime', 'bootstrap', 'access'].map(role => new URL(`postgresql://${role}@127.0.0.1:55440/pactwoven_backend_test`));
+  it('requires four distinct logins on an explicit loopback target without driver overrides', () => {
+    expect(() => validateAcceptanceTargets(targets())).not.toThrow();
+    for (const change of ['scheme', 'database', 'host', 'port', 'query', 'fragment', 'login', 'duplicate', 'mixed', 'missing']) {
+      const urls = targets();
+      if (change === 'scheme') urls[0] = new URL('https://admin@127.0.0.1:55440/pactwoven_backend_test');
+      if (change === 'database') urls[0]!.pathname = '/pactwoven_dev';
+      if (change === 'host') urls[0]!.hostname = '172.18.0.2';
+      if (change === 'port') urls[0]!.port = '';
+      if (change === 'query') urls[0]!.search = '?host=172.18.0.2';
+      if (change === 'fragment') urls[0]!.hash = '#override';
+      if (change === 'login') urls[0]!.username = '';
+      if (change === 'duplicate') urls[0]!.username = '%72untime';
+      if (change === 'mixed') urls[0]!.port = '55439';
+      if (change === 'missing') urls.pop();
+      expect(() => validateAcceptanceTargets(urls), change).toThrow();
+    }
+  });
+  it('accepts a container server only through a real matching loopback transport and exact database/login/server identity', async () => {
+    const connections = new Set<Socket>();
+    const server = createServer(socket => { connections.add(socket); socket.on('close', () => connections.delete(socket)); });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const socket = new Socket();
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('A loopback TCP listener is required.');
+      socket.connect(address.port, '127.0.0.1'); await once(socket, 'connect');
+      const target = targets()[0]!; target.port = String(address.port);
+      const row: FixtureIdentity = { database: 'pactwoven_backend_test', server: '172.18.0.2', port: 5432, role: 'admin', session_role: 'admin' };
+      const verified = verifyAcceptanceConnection(socket, target, row);
+      expect(verified).toEqual({ address: '172.18.0.2', port: 5432 });
+      expect(() => verifyAcceptanceConnection(socket, target, row, verified)).not.toThrow();
+      for (const changed of [{ database: 'pactwoven_dev' }, { role: 'other' }, { session_role: 'other' }, { server: null }, { port: null }, { port: 0 }]) {
+        expect(() => verifyAcceptanceConnection(socket, target, { ...row, ...changed })).toThrow();
+      }
+      expect(() => verifyAcceptanceConnection(socket, target, row, { ...verified, address: '172.18.0.3' })).toThrow();
+      expect(() => verifyAcceptanceConnection(socket, target, row, { ...verified, port: 5433 })).toThrow();
+      const wrongPort = new URL(target); wrongPort.port = String(address.port === 65535 ? address.port - 1 : address.port + 1);
+      expect(() => verifyAcceptanceConnection(socket, wrongPort, row)).toThrow();
+      expect(() => verifyAcceptanceConnection({ remoteAddress: '127.0.0.1', remotePort: address.port }, target, row)).toThrow();
+      Object.defineProperty(socket, 'remoteAddress', { configurable: true, value: '172.18.0.2' });
+      expect(() => verifyAcceptanceConnection(socket, target, row)).toThrow();
+      Object.defineProperty(socket, 'remoteAddress', { configurable: true, value: '127.0.0.1' });
+      socket.destroy(); expect(() => verifyAcceptanceConnection(socket, target, row)).toThrow();
+    } finally {
+      socket.destroy(); for (const connection of connections) connection.destroy();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+});
 
 function identity(subject = 'owner_a', organization = 'clerk_org_a'): VerifiedIdentity {
   return { subject, externalOrganizationId: organization, externalOrganizationName: organization,
@@ -114,15 +194,20 @@ suite('AUTH-02B member-access acceptance on isolated PostgreSQL', () => {
     const urls = await Promise.all(names.map(async name => {
       const file = process.env[name]; if (!file) throw new Error('Explicit protected acceptance-test DSN files are required');
       const url = new URL((await readFile(file, 'utf8')).trim());
-      if (url.pathname !== '/pactwoven_backend_test' || !['127.0.0.1', 'localhost'].includes(url.hostname)) throw new Error('Acceptance tests require the disposable loopback backend test database');
       return url;
     }));
-    if (urls.some(url => url.host !== urls[0]!.host) || new Set(urls.map(url => url.username)).size !== 4) throw new Error('Four isolated logins on one disposable database required');
+    validateAcceptanceTargets(urls);
     [admin, runtime, bootstrap, access] = urls.map(url => new Pool({ connectionString: url.href, max: 6, statement_timeout: 5000 })) as [Pool, Pool, Pool, Pool];
+    let adminServer: FixtureServer | undefined;
     for (const [index, pool] of [admin, runtime, bootstrap, access].entries()) {
-      const row = (await pool.query<{ database: string; server: string; role: string }>('SELECT current_database() AS database,host(inet_server_addr()) AS server,current_user AS role')).rows[0]!;
-      expect(row.database).toBe('pactwoven_backend_test'); expect(['127.0.0.1', '::1']).toContain(row.server);
-      expect(row.role).toBe(decodeURIComponent(urls[index]!.username));
+      const client = await pool.connect();
+      try {
+        const transport = (client as PoolClient & { connection?: { stream?: unknown } }).connection?.stream;
+        const row = (await client.query<FixtureIdentity>(`SELECT pg_catalog.current_database() AS database,pg_catalog.host(pg_catalog.inet_server_addr()) AS server,
+          pg_catalog.inet_server_port() AS port,current_user AS role,session_user AS session_role`)).rows[0]!;
+        const server = verifyAcceptanceConnection(transport, urls[index]!, row, adminServer);
+        if (index === 0) adminServer = server;
+      } finally { client.release(); }
     }
     originalMigrationHashes = await Promise.all(originalFiles.map(async file => createHash('sha256').update(await readFile(new URL(`../migrations/${file}`, import.meta.url))).digest('hex')));
     await admin.query('DROP SCHEMA IF EXISTS pactwoven CASCADE');

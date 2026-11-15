@@ -1,0 +1,13 @@
+import {afterAll,beforeAll,describe,expect,it} from 'vitest';
+import {custodyFixture,custodyFixtureEnabled,type CustodyFixture} from './custody-setup.test-support.js';
+import {custodyRecordHash} from '@pactwoven/domain';
+describe.skipIf(!custodyFixtureEnabled)('SETUP-0A actual PostgreSQL records',()=>{let f:CustodyFixture;beforeAll(async()=>{f=await custodyFixture();},60000);afterAll(async()=>{await f?.close();});
+ it('persists a genuine cryptographic synthetic-wallet proof and immutable binding, without financial authority',async()=>{const flow=await f.proofFlow(),i=await f.identity(),result=await f.repository.mutate(i.id,flow.command);
+  expect(result.body.kind).toBe('owner_binding');expect(result.target.recordHash).toBe(await custodyRecordHash(result.body));expect(result.financialState).toBeNull();
+  const current=await f.repository.get(i.id,'responsibility_a',result.setupId);expect(current?.state).toBe('confirmed');expect(current?.binding?.specification.authority.snapshot.family).toBe('none');
+  const counts=(await f.admin.query("SELECT (SELECT count(*) FROM pactwoven.custody_setup_evidence_uses) AS uses,(SELECT count(*) FROM pactwoven.custody_setup_operations) AS operations,(SELECT count(*) FROM pactwoven.custody_setup_audit) AS audit,(SELECT count(*) FROM pactwoven.custody_setup_outbox) AS outbox")).rows[0];expect(counts.uses).toBe('2');expect(counts.operations).toBe(counts.audit);expect(counts.operations).toBe(counts.outbox);
+  await expect(f.prepare()).rejects.toMatchObject({code:'CUSTODY_SCOPE_CHANGED'});
+  const cancelled=await f.repository.mutate(i.id,{...flow.expected,kind:'cancel',key:`cancel_${crypto.randomUUID()}`,expectedSetupControlGeneration:1});expect(cancelled.body.kind).toBe('cancellation');
+  expect((await f.repository.get(i.id,'responsibility_a',result.setupId))?.binding).not.toBeNull();
+ });
+});

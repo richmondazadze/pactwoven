@@ -3,7 +3,8 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { AccessMfaEvidenceSchema, MandateMfaEvidenceSchema, AccessRecoveryMfaEvidenceSchema,
   type AccessRecoveryVerificationRequest, type MandateVerificationRequest } from '@pactwoven/db';
 import { commandDigest, mandateIntentHash } from '@pactwoven/domain';
-import { createClerkIdentityVerifier, createClerkStepUpVerifier, createClerkMandateStepUpVerifier, createClerkAccessRecoveryStepUpVerifier } from './auth.js';
+import { createClerkIdentityVerifier, createClerkIdentityObservationVerifier, createClerkFactorVerification,
+  createClerkStepUpVerifier, createClerkMandateStepUpVerifier, createClerkAccessRecoveryStepUpVerifier } from './auth.js';
 
 describe('Clerk session verifier', () => {
   let privateKey: KeyObject;
@@ -43,6 +44,68 @@ describe('Clerk session verifier', () => {
     return createClerkAccessRecoveryStepUpVerifier({ secretKey: 'sk_test_local_fixture', issuer, authorizedParties: [origin], jwtKey: publicPem },
       async () => observedSession, async () => observedMembership);
   }
+  function observationVerifier(observedSession = session(), observedMembership = membershipResult()) {
+    return createClerkIdentityObservationVerifier({ secretKey: 'sk_test_local_fixture', issuer, authorizedParties: [origin], jwtKey: publicPem },
+      async () => observedSession, async () => observedMembership);
+  }
+  it('exposes bounded identity observations without implying factors, local authority or wallet possession', async () => {
+    const jwt = token(), result = await observationVerifier()(jwt);
+    expect(result.identity).toMatchObject({ subject: 'user_test', externalMembershipId: 'membership_test', sessionId: 'sess_test' });
+    expect(result.observation).toMatchObject({ issuer });
+    expect(result.observation.tokenHash).toBe(Buffer.from(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(jwt))).toString('hex'));
+    expect(Object.keys(result.observation).sort()).toEqual(['expiresAt', 'issuer', 'observedAt', 'tokenHash', 'tokenIssuedAt']);
+    expect(JSON.stringify(result)).not.toContain(jwt);
+    expect(result).not.toHaveProperty('evidence');
+  });
+  it('caps a verified identity observation at the earlier signed token or live session expiry', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-15T12:00:00.000Z'));
+    try {
+      const now = Date.now(), iat = now / 1000;
+      const first = await observationVerifier({ ...session(), expireAt: now + 9_000 })(token({ iat, exp: iat + 60 }));
+      expect(first.observation.expiresAt).toBe(new Date(now + 9_000).toISOString());
+      const second = await observationVerifier({ ...session(), expireAt: now + 60_000 })(token({ iat, exp: iat + 8 }));
+      expect(second.observation.expiresAt).toBe(new Date(now + 8_000).toISOString());
+    } finally { vi.useRealTimers(); }
+  });
+  it('refuses missing issue time, revoked sessions and absent membership in the observation seam', async () => {
+    for (const iat of [undefined, -1]) await expect(observationVerifier()(token({ iat }))).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+    await expect(observationVerifier({ ...session(), status: 'revoked' })(token())).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+    await expect(observationVerifier(session(), { data: [], totalCount: 0 })(token())).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+  it('keeps the first membership observation time when later session verification waits', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-15T12:00:00.000Z'));
+    try {
+      const now = Date.now(), jwt = token(), observedSession = session();
+      const verify = createClerkIdentityObservationVerifier({ secretKey: 'sk_test_local_fixture', issuer, authorizedParties: [origin], jwtKey: publicPem },
+        async () => { vi.setSystemTime(now + 21_000); return observedSession; }, async () => membershipResult());
+      const result = await verify(jwt);
+      expect(result.identity.membershipObservedAt).toBe(new Date(now).toISOString());
+      expect(result.observation.observedAt).toBe(new Date(now).toISOString());
+    } finally { vi.useRealTimers(); }
+  });
+  it('shares conservative factors without supplying a reusable domain-purpose assertion', async () => {
+    const verify = createClerkFactorVerification({ secretKey: 'sk_test_local_fixture', issuer, authorizedParties: [origin], jwtKey: publicPem },
+      async () => session(), async () => membershipResult());
+    const result = await verify(token({ fva: [0, 0] }));
+    expect(result.evidence).not.toHaveProperty('purpose');
+    expect(AccessMfaEvidenceSchema.safeParse(result.evidence).success).toBe(false);
+    expect(MandateMfaEvidenceSchema.safeParse(result.evidence).success).toBe(false);
+    expect(Date.parse(result.evidence.verifiedAt)).toBe(Date.parse(result.evidence.tokenIssuedAt) - 60_000);
+    await expect(verify(token({ fva: [4, 0] }))).rejects.toMatchObject({ code: 'STEP_UP_REQUIRED' });
+  });
+  it('snapshots the verification configuration before provider waits', async () => {
+    for (const factory of [createClerkIdentityObservationVerifier, createClerkFactorVerification]) {
+      const config = { secretKey: 'sk_test_local_fixture', issuer, authorizedParties: [origin], jwtKey: publicPem };
+      const verify = factory(config, async () => session(), async () => {
+        config.issuer = 'https://changed.clerk.accounts.dev'; config.authorizedParties.splice(0, 1, 'https://changed.example.test');
+        return membershipResult();
+      });
+      const result = await verify(token({ fva: [0, 0] }));
+      const details = 'observation' in result ? result.observation : result.evidence;
+      expect(details.issuer).toBe(issuer);
+      await expect(verify(token({ fva: [0, 0] }))).resolves.toHaveProperty('identity');
+    }
+  });
   function recoveryRequest(): AccessRecoveryVerificationRequest {
     return { nonce: '10000000-0000-4000-8000-000000000001', key: 'original-access-key-001',
       scope: { environment: 'development', organizationId: 'internal_org', actorId: 'current_owner', externalOrganizationId: 'org_test', externalMembershipId: 'membership_test' },

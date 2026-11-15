@@ -12,6 +12,11 @@ export type StepUpIdentityVerifier = (token: string) => Promise<VerifiedStepUpId
 export type MandateStepUpIdentityVerifier = (token: string, request: MandateVerificationRequest) => Promise<VerifiedMandateStepUpIdentity>;
 export type AccessRecoveryStepUpIdentityVerifier = (token: string, request: AccessRecoveryVerificationRequest) => Promise<VerifiedAccessRecoveryStepUpIdentity>;
 export type ClerkIdentityConfig = { secretKey: string; issuer: string; authorizedParties: string[]; jwtKey?: string };
+/** Server-only verified observation; domain purpose, local scope and freshness at effect remain mandatory. */
+export type ClerkIdentityObservation = {
+  identity: VerifiedIdentity;
+  observation: { issuer: string; tokenHash: string; tokenIssuedAt: string; observedAt: string; expiresAt: string };
+};
 type SessionObservation = {
   id: string; userId: string; status: string; expireAt: number; createdAt: number;
   lastActiveOrganizationId?: string | undefined; actor: Record<string, unknown> | null;
@@ -36,6 +41,7 @@ function createClerkVerification(
   sessionLookup?: (sessionId: string) => Promise<SessionObservation>,
   membershipLookup?: MembershipLookup,
 ) {
+  config = { ...config, authorizedParties: [...config.authorizedParties] };
   if (!config.secretKey || !config.issuer || config.authorizedParties.length === 0) {
     throw new DomainError('SETUP_REQUIRED', 503, 'Development identity is not configured.');
   }
@@ -111,7 +117,34 @@ export function createClerkIdentityVerifier(config: ClerkIdentityConfig, session
   return async token => (await verify(token)).identity;
 }
 
-function createClerkFactorVerification(config: ClerkIdentityConfig, sessionLookup?: (sessionId: string) => Promise<SessionObservation>, membershipLookup?: MembershipLookup) {
+async function verifiedTokenHash(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/** This does not resolve internal roles, attest wallet possession or authorize an operation. */
+export function createClerkIdentityObservationVerifier(config: ClerkIdentityConfig, sessionLookup?: (sessionId: string) => Promise<SessionObservation>, membershipLookup?: MembershipLookup): (token: string) => Promise<ClerkIdentityObservation> {
+  const issuer = config.issuer;
+  const verify = createClerkVerification(config, sessionLookup, membershipLookup);
+  return async token => {
+    const { identity, claims, session, observedAt } = await verify(token);
+    const expiresAt = Math.min(claims.exp * 1000, session.expireAt);
+    if (claims.iat === undefined || claims.iat < 0 || !Number.isSafeInteger(claims.iat * 1000) || claims.iat * 1000 > observedAt ||
+        !Number.isSafeInteger(expiresAt) || Number.isNaN(new Date(expiresAt).getTime())) {
+      throw new DomainError('AUTH_REQUIRED', 401, 'A signed session issue time is required.');
+    }
+    // A later session lookup must not refresh an older membership observation.
+    const completeObservationTime = Math.min(observedAt, Date.parse(identity.membershipObservedAt));
+    return { identity, observation: { issuer, tokenHash: await verifiedTokenHash(token),
+      tokenIssuedAt: new Date(claims.iat * 1000).toISOString(), observedAt: new Date(completeObservationTime).toISOString(),
+      expiresAt: new Date(expiresAt).toISOString(),
+    } };
+  };
+}
+
+/** Server-only signed-factor verification. Callers must bind exact purpose/request and preserve identity.membershipObservedAt for freshness. */
+export function createClerkFactorVerification(config: ClerkIdentityConfig, sessionLookup?: (sessionId: string) => Promise<SessionObservation>, membershipLookup?: MembershipLookup) {
+  const issuer = config.issuer;
   const verify = createClerkVerification(config, sessionLookup, membershipLookup);
   return async (token: string) => {
     const { identity, claims, session, observedAt } = await verify(token);
@@ -123,11 +156,10 @@ function createClerkFactorVerification(config: ClerkIdentityConfig, sessionLooku
     const verifiedAt = claims.iat * 1000 - (Math.max(...factors.data) + 1) * 60_000;
     const expiresAt = Math.min(claims.exp * 1000, session.expireAt, verifiedAt + maximumAgeMs);
     if (observedAt >= expiresAt) throw new DomainError('STEP_UP_REQUIRED', 403, 'Fresh verification of both factors is required.');
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
-    const tokenHash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+    const tokenHash = await verifiedTokenHash(token);
     return { identity, evidence: { id: crypto.randomUUID(),
       subject: identity.subject, externalOrganizationId: identity.externalOrganizationId, externalMembershipId: identity.externalMembershipId,
-      sessionId: identity.sessionId, issuer: config.issuer, tokenHash, tokenIssuedAt: new Date(claims.iat * 1000).toISOString(),
+      sessionId: identity.sessionId, issuer, tokenHash, tokenIssuedAt: new Date(claims.iat * 1000).toISOString(),
       firstFactorAgeMinutes: factors.data[0], secondFactorAgeMinutes: factors.data[1], verifiedAt: new Date(verifiedAt).toISOString(),
       observedAt: new Date(observedAt).toISOString(), expiresAt: new Date(expiresAt).toISOString(),
     } };

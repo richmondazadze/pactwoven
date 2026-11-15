@@ -39,7 +39,7 @@ async function run(files, extra) {
   });
 }
 try {
-  for (const database of ['pactwoven_backend_test', 'pactwoven_migration_test', 'pactwoven_mandate_b1b_test', 'pactwoven_recovery_b1_test', 'pactwoven_finance_provenance_b2a_test', 'pactwoven_financial_fences_fa0_test']) {
+  for (const database of ['pactwoven_backend_test', 'pactwoven_migration_test', 'pactwoven_mandate_b1b_test', 'pactwoven_recovery_b1_test', 'pactwoven_finance_provenance_b2a_test', 'pactwoven_financial_fences_fa0_test', 'pactwoven_custody_setup_test']) {
     // Refuse reuse: each CI run must have a fresh disposable database container.
     const existing = await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [database]);
     if (existing.rowCount) throw new Error('CI fixture database already exists.');
@@ -109,6 +109,15 @@ try {
   // Prior suites provision all five shared capability roles; FA-0 verifies they stay unchanged.
   await run(['packages/db/src/financial-fences.test.ts'], financialFences);
   await run(['packages/db/src/financial-fences-isolation.test.ts'], financialFences);
+  const custody = {
+    PACTWOVEN_CUSTODY_SETUP_TEST_ADMIN_URL_FILE: await protectedUrl('custody-setup-admin', 'pactwoven_custody_setup_test'),
+  };
+  // Each custody suite resets only its exclusive database and generated fixture logins.
+  await run(['packages/db/src/custody-setup-repository.test.ts'], custody);
+  await run(['packages/db/src/custody-setup-authentication-repository.test.ts'], custody);
+  await run(['packages/db/src/custody-setup-isolation.test.ts'], custody);
+  await run(['packages/db/src/custody-setup-recovery.test.ts'], custody);
+  await run(['packages/db/src/custody-setup-pool.test.ts'], custody);
   await run(['packages/db/src/migrate.test.ts'], {
     PACTWOVEN_RUN_MIGRATION_TESTS: '1',
     PACTWOVEN_MIGRATION_TEST_DATABASE_URL_FILE: await protectedUrl('migration-admin', 'pactwoven_migration_test'),

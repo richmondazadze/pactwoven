@@ -3,9 +3,9 @@ import type { MandateOperationResult } from '@pactwoven/contracts';
 import { commandDigest } from '@pactwoven/contracts/canonical';
 import { createAuthorityCapsule, type MandateStopAction } from './mandate-authority';
 import { assertAuthorityRecovery, authorityRecoveryKey, authorityWork, listAuthorityRecovery, locatorFromAuthorityCapsule, readAuthorityRecovery, storeAuthorityRecovery, type MandateAuthorityLocator } from './mandate-authority-recovery';
-import { authorityRetryFlow, initialAuthorityRetry, lookupMandateAuthority, sendMandateAuthority, settleMandateAuthorityReceipt, type AuthorityRetryFlow, type AuthorityTransportContext } from './mandate-authority-transport';
+import { authorityRetryFlow, initialAuthorityRetry, lookupMandateAuthority, sendMandateAuthority, settleMandateAuthorityReceipt, type AuthorityLocalVerification, type AuthorityRetryFlow, type AuthorityTransportContext } from './mandate-authority-transport';
 import { createMandateWorkCoordinator, type MandateWork } from './mandate-work-coordination';
-import { mandateReadFixture, mandateFixtureNow as now } from './mandates.test-fixtures';
+import { decisionTestCase, mandateReadFixture, mandateFixtureNow as now } from './mandates.test-fixtures';
 import type { MandateReadScope } from './mandates';
 function storage() { const values = new Map<string, string>(); return { get length() { return values.size; }, key: (i: number) => [...values.keys()][i] ?? null, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } }; }
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
@@ -128,4 +128,106 @@ describe('authority exact dispatch, unknown originals and historical settlement'
     const f = await fixture(), fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher); const task = sendMandateAuthority(f.capsule, f.context, { kind: 'first', now: Date.now }); f.work.clear(); await expect(task).rejects.toThrow(); expect(f.context.getToken).not.toHaveBeenCalled(); expect(fetcher).not.toHaveBeenCalled(); expect(f.store.length).toBe(0);
   });
   it('does not invalidate unsent grant ownership for an already ineligible stop', async () => { const f = await fixture(), grant = f.work.acquire({ scope: f.locator.scope, responsibilityId: f.scope.responsibilityId, targetId: 'proposal_a', key: 'grant_review_key', kind: 'AUTHORIZE', action: 'send' }); vi.advanceTimersByTime(60_000); const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher); await expect(sendMandateAuthority(f.capsule, f.context, { kind: 'first', now: Date.now })).rejects.toThrow(); expect(() => f.work.assert(grant)).not.toThrow(); expect(fetcher).not.toHaveBeenCalled(); });
+});
+
+async function resumeFixture() {
+  const base = await fixture(), approved = await decisionTestCase('AUTHORIZE'), review = structuredClone(approved.outcomeReview), at = now + 2000;
+  vi.setSystemTime(at); review.envelope.head!.state = 'PAUSED'; review.envelope.head!.mandateEpoch = 2; review.envelope.observedAt = new Date(at).toISOString();
+  review.effectiveAuthority = { state: 'PAUSED', blockers: ['AUTHORITY_PAUSED'] }; review.envelope.eligibility = [{ action: 'RESUME', eligible: true, requiresStepUp: true, blockers: [] }];
+  const observation = { data: review, receivedAt: at, receivedMonotonic: 0 }, capsule = await createAuthorityCapsule(base.scope, observation, 'RESUME', 'Resume exactly the accepted terms.', 'resume_original_key', at), locator = locatorFromAuthorityCapsule(capsule);
+  base.select({ integrityHash: capsule.integrityHash });
+  const result: MandateOperationResult = { ...base.result, kind: 'mandate.resume', target: locator.expectedTarget, commandHash: locator.commandHash, intentHash: locator.intentHash, operation: { ...base.result.operation, aggregateVersion: locator.expectedTarget.version } };
+  let generation = 0, verification: AuthorityLocalVerification | null = { integrityHash: capsule.integrityHash, generation, verifiedAt: at }, currentObservation: typeof observation | null = observation;
+  const grant = base.work.registerPreparation({ ...authorityWork(locator), kind: 'RESUME', integrityHash: capsule.integrityHash }, base.work.generation(locator.scope, locator.responsibilityId));
+  const resume = { preparation: grant, currentGeneration: () => generation, currentVerification: () => verification, currentObservation: () => currentObservation };
+  return { ...base, observation, capsule, locator, result, grant, resume, permission: { kind: 'first' as const, now: Date.now, resume }, setGeneration: (value: number) => { generation = value; }, setVerification: (value: AuthorityLocalVerification | null) => { verification = value; }, setObservation: (value: typeof observation | null) => { currentObservation = value; } };
+}
+function resumeRetry(f: Awaited<ReturnType<typeof resumeFixture>>) {
+  const reviewed = authorityRetryFlow(authorityRetryFlow(initialAuthorityRetry, { type: 'checked' }), { type: 'review', hash: f.capsule.integrityHash });
+  return authorityRetryFlow(authorityRetryFlow(reviewed, { type: 'verified', verification: f.resume.currentVerification()! }), { type: 'retry', action: 'RESUME', now: Date.now() });
+}
+describe('resume exact grant and retained-original permission', () => {
+  it('binds the exact preparation to its single internal ticket before token retrieval and sends once', async () => {
+    const f = await resumeFixture(), bind = vi.spyOn(f.work, 'bindPreparation'), fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(assertAuthorityRecovery(f.store, f.locator)).toEqual(f.locator); expect(f.work.preparationCurrent(f.grant)).toBe(false);
+      expect(init.body).toBe(JSON.stringify(f.capsule.intent)); expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe(f.capsule.key); return json(f.result);
+    }); vi.stubGlobal('fetch', fetcher);
+    f.context.getToken = async () => { expect(bind).toHaveBeenCalledOnce(); expect(bind.mock.calls[0]![0]).toBe(f.grant); expect(f.work.preparationCurrent(f.grant)).toBe(true); return 'test_token'; };
+    const result = await sendMandateAuthority(f.capsule, f.context, f.permission); expect(fetcher).toHaveBeenCalledOnce();
+    expect((await settleMandateAuthorityReceipt(f.locator, result, f.scope, f.context, f.capsule)).recordedState).toBe('ACTIVE'); expect(f.observation.data.envelope.head!.state).toBe('PAUSED'); expect(f.store.length).toBe(0);
+  });
+  it.each(['missing-permission', 'missing-factors', 'wrong-review', 'future-factors', 'expired-factors', 'old-generation', 'released-grant', 'wrong-grant', 'changed-observation'] as const)('rejects %s first resume with no token, persistence or POST', async change => {
+    const f = await resumeFixture(), fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher); let permission = f.permission;
+    if (change === 'missing-permission') permission = { kind: 'first', now: Date.now } as typeof permission;
+    if (change === 'missing-factors') f.setVerification(null); if (change === 'wrong-review') f.setVerification({ ...f.resume.currentVerification()!, integrityHash: 'a'.repeat(64) });
+    if (change === 'future-factors') f.setVerification({ ...f.resume.currentVerification()!, verifiedAt: Date.now() + 1 }); if (change === 'expired-factors') f.setVerification({ ...f.resume.currentVerification()!, verifiedAt: Date.now() - 240_000 });
+    if (change === 'old-generation') f.setGeneration(1); if (change === 'released-grant') f.work.releasePreparation(f.grant);
+    if (change === 'wrong-grant') { f.work.releasePreparation(f.grant); permission = { ...f.permission, resume: { ...f.resume, preparation: f.work.registerPreparation({ ...authorityWork(f.locator), kind: 'RESUME', key: 'other_original_key', integrityHash: f.capsule.integrityHash }, 0) } }; }
+    if (change === 'changed-observation') f.setObservation(null);
+    await expect(sendMandateAuthority(f.capsule, f.context, permission)).rejects.toThrow(); expect(f.context.getToken).not.toHaveBeenCalled(); expect(fetcher).not.toHaveBeenCalled(); expect(f.store.length).toBe(0);
+  });
+  it.each(['factors', 'replacement-factors', 'generation', 'observation', 'expiry', 'stop'] as const)('rechecks %s at token completion with zero dispatch', async change => {
+    const f = await resumeFixture(), fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
+    if (change === 'expiry') f.setVerification({ ...f.resume.currentVerification()!, verifiedAt: Date.now() - 239_999 });
+    f.context.getToken = async () => {
+      if (change === 'factors') f.setVerification(null); if (change === 'generation') f.setGeneration(1); if (change === 'observation') f.setObservation(null); if (change === 'expiry') vi.advanceTimersByTime(2);
+      if (change === 'replacement-factors') f.setVerification({ ...f.resume.currentVerification()!, verifiedAt: Date.now() - 1 });
+      if (change === 'stop') { const stop = f.work.acquire({ ...authorityWork(f.locator), kind: 'REVOKE', key: 'separate_stop_key', action: 'send', eligible: true, hasHead: true }); f.work.release(stop); }
+      return 'test_token';
+    };
+    await expect(sendMandateAuthority(f.capsule, f.context, f.permission)).rejects.toThrow(); expect(fetcher).not.toHaveBeenCalled(); expect(f.store.length).toBe(0);
+  });
+  it.each(['factors', 'generation', 'observation', 'stop'] as const)('rechecks %s after locator publication and keeps the unsent original if rejected', async change => {
+    const f = await resumeFixture(), fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
+    f.context.onPending = () => {
+      if (change === 'factors') f.setVerification(null); if (change === 'generation') f.setGeneration(1); if (change === 'observation') f.setObservation(null);
+      if (change === 'stop') { const stop = f.work.acquire({ ...authorityWork(f.locator), kind: 'REVOKE', key: 'published_stop_key', action: 'send', eligible: true, hasHead: true }); f.work.release(stop); }
+    };
+    await expect(sendMandateAuthority(f.capsule, f.context, f.permission)).rejects.toThrow(); expect(fetcher).not.toHaveBeenCalled(); expect(assertAuthorityRecovery(f.store, f.locator)).toEqual(f.locator);
+  });
+  it('rejects a preparation invalidated while immutable capsule verification is in progress', async () => {
+    const f = await resumeFixture(), fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher); const task = sendMandateAuthority(f.capsule, f.context, f.permission);
+    const stop = f.work.acquire({ ...authorityWork(f.locator), kind: 'REVOKE', key: 'hashing_stop_key', action: 'send', eligible: true, hasHead: true }); f.work.release(stop);
+    await expect(task).rejects.toThrow(); expect(fetcher).not.toHaveBeenCalled(); expect(f.context.getToken).not.toHaveBeenCalled(); expect(f.store.length).toBe(0);
+  });
+  it('preserves an already dispatched resume and its receipt when a later stop advances generation', async () => {
+    const f = await resumeFixture(), fetcher = vi.fn(async () => {
+      const stop = f.work.acquire({ ...authorityWork(f.locator), kind: 'REVOKE', key: 'after_dispatch_stop', action: 'send', eligible: true, hasHead: true }); f.work.release(stop); f.setGeneration(1); return json(f.result);
+    }); vi.stubGlobal('fetch', fetcher);
+    expect((await sendMandateAuthority(f.capsule, f.context, f.permission)).kind).toBe('mandate.resume'); expect(assertAuthorityRecovery(f.store, f.locator)).toEqual(f.locator); expect(fetcher).toHaveBeenCalledOnce();
+  });
+  it('requires checked, reviewed and freshly verified resume retry without changing stop transitions', () => {
+    const hash = 'a'.repeat(64), reviewed = authorityRetryFlow(authorityRetryFlow(initialAuthorityRetry, { type: 'checked' }), { type: 'review', hash });
+    expect(authorityRetryFlow(reviewed, { type: 'retry', action: 'RESUME', now })).toEqual(reviewed);
+    const verified = authorityRetryFlow(reviewed, { type: 'verified', verification: { integrityHash: hash, generation: 2, verifiedAt: now } });
+    expect(authorityRetryFlow(verified, { type: 'retry', action: 'RESUME', now: now + 240_000 })).toEqual(verified);
+    expect(authorityRetryFlow(verified, { type: 'retry', action: 'RESUME', now })).toMatchObject({ phase: 'retrying', verification: { generation: 2 } });
+    expect(authorityRetryFlow(verified, { type: 'invalidate' })).toEqual(reviewed); expect(authorityRetryFlow(reviewed, { type: 'retry' })).toEqual({ phase: 'retrying', reviewedHash: hash });
+  });
+  it('retries the exact retained resume after later head/observation/terms expiry using fresh factors, without a new grant registration', async () => {
+    const f = await resumeFixture(); f.work.releasePreparation(f.grant); storeAuthorityRecovery(f.store, f.locator); f.extra.push({ ...authorityWork(f.locator), kind: 'REVOKE', key: 'later_revoke_key' });
+    vi.advanceTimersByTime(3_600_001); f.setGeneration(4); f.setVerification({ integrityHash: f.capsule.integrityHash, generation: 4, verifiedAt: Date.now() }); f.setObservation(null);
+    const flow = resumeRetry(f), fetcher = vi.fn(async (_url: string, init: RequestInit) => { expect(init.body).toBe(JSON.stringify(f.capsule.intent)); expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe(f.capsule.key); return json(f.result); }); vi.stubGlobal('fetch', fetcher);
+    await sendMandateAuthority(f.capsule, f.context, { kind: 'retry', currentFlow: () => flow, resume: f.resume }); expect(fetcher).toHaveBeenCalledOnce(); expect(f.work.preparationCurrent(f.grant)).toBe(false);
+  });
+  it.each(['missing-verification', 'wrong-flow-verification', 'old-generation', 'missing-original-review'] as const)('rejects %s retained retry without a POST', async change => {
+    const f = await resumeFixture(); f.work.releasePreparation(f.grant); storeAuthorityRecovery(f.store, f.locator); let flow = resumeRetry(f);
+    if (change === 'missing-verification') f.setVerification(null); if (change === 'wrong-flow-verification') flow = { ...flow, verification: { ...flow.verification!, generation: 3 } }; if (change === 'old-generation') f.setGeneration(1); if (change === 'missing-original-review') f.select(null);
+    const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher); await expect(sendMandateAuthority(f.capsule, f.context, { kind: 'retry', currentFlow: () => flow, resume: f.resume })).rejects.toThrow(); expect(fetcher).not.toHaveBeenCalled(); expect(assertAuthorityRecovery(f.store, f.locator)).toEqual(f.locator);
+  });
+  it('rejects late retry factor renewal after the separate retry click without rebinding to a newer round', async () => {
+    const f = await resumeFixture(); f.work.releasePreparation(f.grant); storeAuthorityRecovery(f.store, f.locator); let flow = resumeRetry(f);
+    f.context.getToken = async () => { f.setGeneration(1); f.setVerification({ integrityHash: f.capsule.integrityHash, generation: 1, verifiedAt: Date.now() }); flow = resumeRetry(f); return 'test_token'; };
+    const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher); await expect(sendMandateAuthority(f.capsule, f.context, { kind: 'retry', currentFlow: () => flow, resume: f.resume })).rejects.toMatchObject({ code: 'STEP_UP_REQUIRED' }); expect(fetcher).not.toHaveBeenCalled(); expect(assertAuthorityRecovery(f.store, f.locator)).toEqual(f.locator);
+  });
+  it('looks up and settles a resume with lost private input and no factor state using only GET', async () => {
+    const f = await resumeFixture(); f.work.releasePreparation(f.grant); storeAuthorityRecovery(f.store, f.locator); f.select(null); f.setVerification(null);
+    const fetcher = vi.fn(async () => json(f.result)); vi.stubGlobal('fetch', fetcher); const result = await lookupMandateAuthority(f.locator, f.scope, f.context);
+    expect((await settleMandateAuthorityReceipt(f.locator, result, f.scope, f.context)).recordedState).toBe('ACTIVE'); expect(fetcher).toHaveBeenCalledOnce(); expect((fetcher.mock.calls as unknown as [string, RequestInit][])[0]![1].method).toBe('GET'); expect(f.store.length).toBe(0);
+  });
+  it.each(['mandate.pause', 'mandate.revoke', 'mandate.resume'] as const)('preserves a competing same-key %s original instead of excluding the wrong kind', async kind => {
+    const f = await resumeFixture(), original = { ...f.locator, kind }; storeAuthorityRecovery(f.store, original);
+    const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher); await expect(sendMandateAuthority(f.capsule, f.context, f.permission)).rejects.toThrow();
+    expect(fetcher).not.toHaveBeenCalled(); expect(f.context.getToken).not.toHaveBeenCalled(); expect(listAuthorityRecovery(f.store, f.scope).locators).toEqual([original]);
+  });
 });

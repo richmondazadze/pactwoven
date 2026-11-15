@@ -5,6 +5,7 @@ import { revealAccessTarget } from '../lib/access-viewport';
 import { useMotion } from './motion';
 import { Alert, Disclosure, Panel } from './ui';
 import { MandateTime } from './mandate-read-shared';
+import { MandateResumeReview } from './mandate-resume-review';
 
 export function useAuthorityReveal(scopeKey: string, hidden: boolean, busy: boolean, targets: Record<string, RefObject<HTMLDivElement | null>>, identities: Record<string, string>) {
   const [revision, update] = useState(0), pending = useRef<{ target: string; identity: string; scopeKey: string } | null>(null), alive = useRef(false), current = useRef({ scopeKey, hidden }); current.current = { scopeKey, hidden };
@@ -22,6 +23,7 @@ export function useAuthorityReveal(scopeKey: string, hidden: boolean, busy: bool
   return (target: string, identity: string) => { if (!alive.current || document.hidden || current.current.hidden || current.current.scopeKey !== scopeKey) { pending.current = null; return; } pending.current = { target, identity, scopeKey }; update(n => n + 1); };
 }
 export function MandateAuthorityReview({ capsule }: { capsule: MandateAuthorityCapsule }) {
+  if (capsule.intent.action === 'RESUME') return <MandateResumeReview capsule={capsule}/>;
   const e = 'envelope' in capsule.observation.data ? capsule.observation.data.envelope : capsule.observation.data, { intent } = capsule;
   return <div className="mandate-authority-review"><Panel title={intent.action === 'PAUSE' ? 'Pause the accepted authority' : 'Permanently revoke the accepted authority'}>
     <p>{intent.action === 'PAUSE' ? 'Pausing stops new use under this accepted authority.' : 'Revoking permanently ends new use under this accepted authority. There is no undo; a new proposal would need its own authorization.'} Existing obligations and recorded activity remain.</p>

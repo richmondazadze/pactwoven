@@ -52,8 +52,10 @@ export async function financeFixture() {
     await lock.query('SET statement_timeout=0');
     await lock.query("SELECT pg_advisory_lock(hashtextextended('finance_provenance_b2a_fixture',0))"); locked = true;
     await admin.query('DROP SCHEMA IF EXISTS pactwoven CASCADE');
-    const migrations = await loadMigrations();
-    if (migrations.length !== 8 || migrations[7]!.filename !== '0008_financial_authority_fences.sql') throw new Error('Exactly the allocated eight migrations are required.');
+    // This historical fixture deliberately applies its reviewed prefix; newer stages have separate suites.
+    const migrations = (await loadMigrations()).slice(0, 8);
+    const expected = ['0001_foundation.sql', '0002_organization_bootstrap.sql', '0003_identity_access.sql', '0004_mandate_authority.sql', '0005_access_acceptance.sql', '0006_access_recovery_fences.sql', '0007_finance_provenance.sql', '0008_financial_authority_fences.sql'];
+    if (migrations.length !== expected.length || migrations.some((item, index) => item.filename !== expected[index])) throw new Error('The exact allocated eight-migration prefix is required.');
     for (const migration of migrations) {
       const client = await admin.connect();
       try { await client.query('BEGIN'); for (const [index,statement] of migration.statements.entries()) {

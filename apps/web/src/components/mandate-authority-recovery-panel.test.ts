@@ -20,6 +20,7 @@ vi.mock('./mandate-authoring-memory', async original => ({ ...(await original<an
 vi.mock('./mandate-authority-memory', async original => ({ ...(await original<any>()), useMandateAuthorityMemory: () => h.memory }));
 vi.mock('./mandate-read-shared', () => ({ useMandateScopeLifetime: () => h.current, MandateTime: 'MandateTime' }));
 vi.mock('./motion', () => ({ useArrival: () => ({ current: null }), useMotion: () => ({ mode: h.mode, keyboard: { current: h.keyboard } }) }));
+vi.mock('./mfa-verification', () => ({ MfaVerification: 'MfaVerification' }));
 vi.mock('./ui', () => ({ ActionLabel: 'ActionLabel', Panel: 'Panel', Alert: 'Alert', Disclosure: 'Disclosure' }));
 function nodes(node: any): any[] { if (node == null || typeof node !== 'object') return []; if (Array.isArray(node)) return node.flatMap(nodes); return [node, ...nodes(node.props?.children)]; }
 function text(node: any): string { if (node == null || typeof node === 'boolean') return ''; if (typeof node === 'string' || typeof node === 'number') return String(node); if (Array.isArray(node)) return node.map(text).join(' '); if (node.props?.receipt) return `${node.props.receipt.recordedState} recorded`; return `${node.props?.title ?? ''} ${node.props?.label ?? ''} ${text(node.props?.children)}`.replace(/\s+/g, ' ').trim(); }
@@ -34,20 +35,23 @@ function storage() { const values = new Map<string, string>(); return { get leng
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; }
 let parent: Hooks, provider: Hooks, view: Hooks, store: ReturnType<typeof storage>, props: Parameters<typeof MandateAuthorityRecoveryCard>[0], network: ReturnType<typeof vi.fn>;
 function render() { h.authoring = parent.render().props.value; h.memory = provider.render().props.value; return view.render(); }
-async function fixture(retained = true) {
+async function fixture(retained = true, resume = false) {
   const f = await mandateReadFixture(); f.page.eligibility = (['PAUSE', 'REVOKE'] as const).map(action => ({ action, eligible: true, requiresStepUp: false, blockers: [] }));
   store = storage(); vi.stubGlobal('window', { sessionStorage: store, matchMedia: () => ({ matches: h.reduced }) }); h.current = { current: f.scope }; const { responsibilityId: _, ...scope } = f.scope;
   h.c1 = { hidden: false, deny: vi.fn(() => { h.c1.hidden = true; }) }; parent = new Hooks(() => MandateAuthoringMemoryProvider({ scope, children: null })); h.authoring = parent.render().props.value; provider = new Hooks(() => MandateAuthorityMemoryProvider({ scope, children: null })); h.memory = provider.render().props.value;
-  const observation = { data: f.page, receivedAt: now, receivedMonotonic: 0 }, capsule = await createAuthorityCapsule(f.scope, observation, 'PAUSE', 'Keep the exact original reason.', 'authority_original_key', now), locator = locatorFromAuthorityCapsule(capsule);
+  const accepted = resume ? (await decisionTestCase('AUTHORIZE')).outcomeReview : null, at = resume ? now + 2000 : now;
+  if (accepted) { accepted.envelope.observedAt = new Date(at).toISOString(); accepted.envelope.head!.state = 'PAUSED'; accepted.envelope.head!.mandateEpoch = 2; accepted.effectiveAuthority = { state: 'PAUSED', blockers: ['AUTHORITY_PAUSED'] }; accepted.envelope.eligibility = [{ action: 'RESUME', eligible: true, requiresStepUp: true, blockers: [] }]; }
+  vi.mocked(Date.now).mockReturnValue(at);
+  const observation = { data: accepted ?? f.page, receivedAt: at, receivedMonotonic: 0 }, capsule = await createAuthorityCapsule(f.scope, observation, resume ? 'RESUME' : 'PAUSE', 'Keep the exact original reason.', 'authority_original_key', at), locator = locatorFromAuthorityCapsule(capsule);
   storeAuthorityRecovery(store, locator); if (retained) h.memory.retain(capsule); h.memory.onPending(locator);
   props = { scope: f.scope, locator, receipt: null, onOutcome: vi.fn() }; view = new Hooks(() => MandateAuthorityRecoveryCard({ ...props, receipt: h.memory.receipts.find((value: any) => canonicalJson(value.locator) === canonicalJson(props.locator)) ?? null }));
   const result = { schemaVersion: 1, organizationId: f.scope.organizationId, kind: locator.kind, responsibilityId: f.scope.responsibilityId, target: locator.expectedTarget, commandHash: locator.commandHash, intentHash: locator.intentHash, observedAt: new Date(now).toISOString(), operation: { id: 'stop_operation', environment: f.scope.environment, status: 'succeeded', aggregateId: locator.mandate.id, aggregateVersion: locator.expectedTarget.version, financialState: null, evidenceRefs: [], nextCheckAt: null, error: null } };
-  network = vi.fn(async () => Response.json(result)); vi.stubGlobal('fetch', network); render(); return { ...f, observation, capsule, locator, result };
+  network = vi.fn(async () => Response.json(result)); vi.stubGlobal('fetch', network); render(); return { ...f, observation, capsule, locator, result, at, accepted };
 }
 function button(label: string) { return nodes(view.tree).find(node => node.type === 'button' && text(node) === label); }
 function click(label: string) { const node = button(label); expect(node, label).toBeDefined(); expect(node.props.disabled).not.toBe(true); node.props.onClick(); }
 async function eventually(check: () => void) { await vi.waitFor(() => { render(); check(); }, { interval: 5, timeout: 2500 }); }
-async function review() { network.mockResolvedValueOnce(Response.json({}, { status: 404 })); click('Check original result'); await eventually(() => expect(button('Review original authority stop')).toBeDefined()); h.events = []; click('Review original authority stop'); expect(h.events).toEqual([]); await eventually(() => expect(text(view.tree)).toContain('Review the exact original authority stop')); }
+async function review() { const action = props.locator.kind === 'mandate.resume' ? 'resume' : 'authority stop'; network.mockResolvedValueOnce(Response.json({}, { status: 404 })); click('Check original result'); await eventually(() => expect(button(`Review original ${action}`)).toBeDefined()); h.events = []; click(`Review original ${action}`); expect(h.events).toEqual([]); await eventually(() => expect(text(view.tree)).toContain(`Review the exact original ${action}`)); }
 function focus(label: string, instant = false) { expect(h.events.map(event => event.kind)).toEqual(['focus', 'scroll']); expect(h.events[0]!.target).toContain(label); expect(h.events[0]!.options).toEqual({ preventScroll: true }); expect(h.events[1]!.options.behavior).toBe(instant ? 'instant' : 'smooth'); expect(requestAnimationFrame).not.toHaveBeenCalled(); }
 beforeEach(() => { vi.clearAllMocks(); h.mode = 'normal'; h.keyboard = false; h.reduced = false; h.hidden = false; h.events = []; h.listeners.clear(); h.getToken.mockResolvedValue('test_token'); vi.spyOn(Date, 'now').mockReturnValue(now); vi.spyOn(performance, 'now').mockReturnValue(0); vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', 'https://api.example.test'); vi.stubGlobal('document', { get hidden() { return h.hidden; }, addEventListener: (_name: string, cb: () => void) => h.listeners.add(cb), removeEventListener: (_name: string, cb: () => void) => h.listeners.delete(cb) }); vi.stubGlobal('requestAnimationFrame', vi.fn(() => { throw new Error('Focus cannot wait for motion'); })); });
 afterEach(() => { view?.unmount(); provider?.unmount(); parent?.unmount(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
@@ -94,5 +98,80 @@ describe('authority recovery observation focus lifetime', () => {
     props = { ...props, scope: f.scope }; h.current.current = props.scope; render(); token.resolve('test_token');
     await eventually(() => expect(button('Check original result')?.props.disabled).toBe(false));
     expect(h.events).toEqual([]); expect(network).not.toHaveBeenCalled(); expect(props.onOutcome).not.toHaveBeenCalled(); expect(listAuthorityRecovery(store, f.scope).locators).toEqual([f.locator]);
+  });
+});
+
+describe('native retained RESUME recovery', () => {
+  function factor() { const node = nodes(view.tree).find(node => node.type === 'MfaVerification'); expect(node).toBeDefined(); return node.props; }
+  function hideAndReturn() { h.hidden = true; for (const listener of h.listeners) listener(); h.hidden = false; for (const listener of h.listeners) listener(); render(); }
+  function stop() { const ticket = h.memory.work.acquire({ scope: props.locator.scope, responsibilityId: props.scope.responsibilityId, targetId: props.locator.mandate.id, kind: 'REVOKE', key: 'separate_stop_key', action: 'send', hasHead: true, eligible: true }); h.memory.work.release(ticket); }
+  it.each(['normal', 'reduced', 'off', 'keyboard', 'os-reduced'] as const)('requires check, full original review, factors and a separate same-key click in %s', async mode => {
+    const f = await fixture(true, true); if (mode === 'keyboard') h.keyboard = true; else if (mode === 'os-reduced') h.reduced = true; else h.mode = mode;
+    await review(); focus('Review the exact original resume', mode !== 'normal'); h.events = []; expect(factor().purpose).toBe('mandate-resume'); expect(button('Retry original resume').props.disabled).toBe(true);
+    const presentation = nodes(view.tree).find(node => node.props?.capsule); expect(presentation.props.capsule).toEqual(f.capsule);
+    factor().onComplete(); render(); expect(network).toHaveBeenCalledOnce(); expect(h.events).toEqual([]); expect(button('Retry original resume').props.disabled).toBe(false);
+    click('Retry original resume'); click('Retry original resume'); await eventually(() => expect(props.onOutcome).toHaveBeenCalledOnce()); focus('ACTIVE recorded', mode !== 'normal');
+    const [url, init] = network.mock.calls[1] as unknown as [string, RequestInit]; expect(url).toContain('/mandates/mandate_a/authority'); expect(init.method).toBe('POST'); expect(init.body).toBe(JSON.stringify(f.capsule.intent)); expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe(f.capsule.key); expect(network).toHaveBeenCalledTimes(2); expect(store.length).toBe(0); expect(view.counts.size).toBe(1);
+  });
+  it('ignores duplicate completion without mismatching or extending the pinned verification record', async () => {
+    const f = await fixture(true, true); await review(); const factors = factor(); factors.onComplete(); render(); vi.mocked(Date.now).mockReturnValue(f.at + 1000); factors.onComplete(); render();
+    click('Retry original resume'); await eventually(() => expect(props.onOutcome).toHaveBeenCalledOnce()); expect(network).toHaveBeenCalledTimes(2);
+  });
+  it('does not let duplicate completion extend verification past its original expiry', async () => {
+    const f = await fixture(true, true); await review(); const factors = factor(); factors.onComplete(); render(); h.events = [];
+    vi.mocked(Date.now).mockReturnValue(f.at + 230_000); factors.onComplete(); render(); vi.mocked(Date.now).mockReturnValue(f.at + 240_000); render(); expect(button('Retry original resume').props.disabled).toBe(true); expect(network).toHaveBeenCalledOnce(); expect(h.events).toEqual([]);
+  });
+  it('revokes old factor callbacks across hide-return while allowing newly mounted verification', async () => {
+    await fixture(true, true); await review(); const old = factor(); old.onComplete(); render(); h.events = []; hideAndReturn(); old.onComplete(); render(); expect(button('Retry original resume').props.disabled).toBe(true);
+    factor().onComplete(); render(); old.onInvalidated(); render(); expect(button('Retry original resume').props.disabled).toBe(false); expect(h.events).toEqual([]); expect(network).toHaveBeenCalledOnce();
+  });
+  it('closing and reopening an exact original revokes its earlier factor callbacks', async () => {
+    await fixture(true, true); await review(); const old = factor(); old.onComplete(); render(); click('Close original review'); render(); await review(); h.events = []; old.onComplete(); render(); expect(button('Retry original resume').props.disabled).toBe(true); factor().onComplete(); render(); old.onInvalidated(); render(); expect(button('Retry original resume').props.disabled).toBe(false); expect(h.events).toEqual([]); expect(network).toHaveBeenCalledTimes(2);
+  });
+  it('STEP_UP_REQUIRED preserves the exact original and requires renewed review and factors', async () => {
+    const f = await fixture(true, true); await review(); const old = factor(); old.onComplete(); render(); network.mockResolvedValueOnce(Response.json({ error: { code: 'STEP_UP_REQUIRED', message: 'Fresh resume verification required.', correlationId: 'test_correlation' } }, { status: 403 })); h.events = [];
+    click('Retry original resume'); await eventually(() => expect(text(view.tree)).toContain('Fresh resume verification required.')); expect(h.memory.hidden).toBe(false); expect(button('Retry original resume')).toBeUndefined(); expect(listAuthorityRecovery(store, f.scope).locators).toEqual([f.locator]);
+    await review(); h.events = []; old.onComplete(); render(); expect(button('Retry original resume').props.disabled).toBe(true); factor().onComplete(); render(); click('Retry original resume'); await eventually(() => expect(props.onOutcome).toHaveBeenCalledOnce());
+    const posts = network.mock.calls.filter((call: any[]) => call[1]?.method === 'POST'); expect(posts).toHaveLength(2); for (const call of posts) { const init = (call as unknown as [string, RequestInit])[1]; expect(init.body).toBe(JSON.stringify(f.capsule.intent)); expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe(f.capsule.key); }
+  });
+  it('access denial purges private original/factors but preserves the durable reference', async () => {
+    const f = await fixture(true, true); await review(); const old = factor(); old.onComplete(); render(); network.mockResolvedValueOnce(Response.json({ error: { code: 'ACCESS_DENIED', message: 'Current access denied.', correlationId: 'test_correlation' } }, { status: 403 })); h.events = [];
+    click('Retry original resume'); await eventually(() => expect(h.memory.hidden).toBe(true)); old.onComplete(); old.onInvalidated(); render(); expect(view.tree).toBeNull(); expect(h.events).toEqual([]); expect(listAuthorityRecovery(store, f.scope).locators).toEqual([f.locator]); expect(h.client.removeQueries).toHaveBeenCalledWith({ queryKey: ['mandate-documents'] });
+  });
+  it.each([true, false])('reload with no retained input remains factor-free lookup only, result found=%s', async found => {
+    const f = await fixture(false, true); if (!found) network.mockResolvedValueOnce(Response.json({}, { status: 404 })); click('Check original result');
+    await eventually(() => expect(found ? vi.mocked(props.onOutcome).mock.calls.length : text(view.tree).includes('No result was found')).toBe(found ? 1 : true)); expect(nodes(view.tree).some(node => node.type === 'MfaVerification')).toBe(false); expect(button('Review original resume')).toBeUndefined(); expect(button('Retry original resume')).toBeUndefined(); expect(network).toHaveBeenCalledOnce(); expect((network.mock.calls[0] as unknown as [string, RequestInit])[1].method).toBe('GET'); expect(listAuthorityRecovery(store, f.scope).locators).toHaveLength(found ? 0 : 1);
+  });
+  it('retries its retained original after later head and policy expiry without a new grant or rebase', async () => {
+    const f = await fixture(true, true); await review(); f.accepted!.envelope.head!.state = 'REVOKED'; f.accepted!.envelope.head!.mandateEpoch = 12; vi.mocked(Date.now).mockReturnValue(f.at + 7_200_000); factor().onComplete(); render(); h.events = [];
+    const register = vi.spyOn(h.memory.work, 'registerPreparation'); click('Retry original resume'); await eventually(() => expect(props.onOutcome).toHaveBeenCalledOnce()); expect(register).not.toHaveBeenCalled(); expect(h.memory.receipts[0].recordedState).toBe('ACTIVE'); expect(h.memory.receipts[0].locator.expectedTarget.version).toBe(3); expect(f.accepted!.envelope.head!.state).toBe('REVOKED'); expect(f.accepted!.envelope.head!.mandateEpoch).toBe(12); expect((network.mock.calls[1] as unknown as [string, RequestInit])[1].body).toBe(JSON.stringify(f.capsule.intent)); focus('ACTIVE recorded');
+  });
+  it('a later eligible stop during token wait preserves and does not invalidate an original retry', async () => {
+    const f = await fixture(true, true); await review(); factor().onComplete(); render(); const token = deferred<string>(); h.getToken.mockReturnValue(token.promise); h.events = [];
+    click('Retry original resume'); await eventually(() => expect(h.getToken).toHaveBeenCalledTimes(2)); stop(); render(); token.resolve('test_token'); await eventually(() => expect(props.onOutcome).toHaveBeenCalledOnce()); expect(network).toHaveBeenCalledTimes(2); expect(store.length).toBe(0); expect(h.memory.receipts[0].locator).toEqual(f.locator); focus('ACTIVE recorded');
+  });
+  it.each(['normal', 'reduced', 'off'] as const)('canceled retry token completion after returning visible never dispatches or reclaims focus in %s', async mode => {
+    const f = await fixture(true, true); h.mode = mode; await review(); factor().onComplete(); render(); const token = deferred<string>(); h.getToken.mockReturnValue(token.promise); h.events = [];
+    click('Retry original resume'); await eventually(() => expect(h.getToken).toHaveBeenCalledTimes(2)); hideAndReturn(); token.resolve('test_token'); await eventually(() => expect(button('Check original result')?.props.disabled).toBe(false)); expect(h.events).toEqual([]); expect(network).toHaveBeenCalledOnce(); expect(listAuthorityRecovery(store, f.scope).locators).toEqual([f.locator]); expect(props.onOutcome).not.toHaveBeenCalled();
+    h.getToken.mockResolvedValue('test_token'); await review(); focus('Review the exact original resume', mode !== 'normal'); expect(button('Retry original resume').props.disabled).toBe(true);
+  });
+  it('expiry during token retrieval prevents a POST and leaves the original recoverable', async () => {
+    const f = await fixture(true, true); await review(); factor().onComplete(); render(); const token = deferred<string>(); h.getToken.mockReturnValue(token.promise); click('Retry original resume'); await eventually(() => expect(h.getToken).toHaveBeenCalledTimes(2)); vi.mocked(Date.now).mockReturnValue(f.at + 240_000); token.resolve('test_token'); await eventually(() => expect(button('Retry original resume')).toBeUndefined()); expect(network).toHaveBeenCalledOnce(); expect(listAuthorityRecovery(store, f.scope).locators).toEqual([f.locator]); expect(props.onOutcome).not.toHaveBeenCalled();
+  });
+});
+
+describe('original RESUME live factor revocation repair', () => {
+  function factor() { const node = nodes(view.tree).find(node => node.type === 'MfaVerification'); expect(node).toBeDefined(); return node.props; }
+  it.each(['normal', 'reduced', 'off'] as const)('current factor invalidation during retry token wait wins over late completion in %s', async mode => {
+    const f = await fixture(true, true); h.mode = mode; await review(); const previous = factor(); previous.onComplete(); render(); const token = deferred<string>(); h.getToken.mockReturnValue(token.promise); h.events = [];
+    click('Retry original resume'); await eventually(() => expect(h.getToken).toHaveBeenCalledTimes(2)); previous.onInvalidated(); previous.onComplete(); render(); token.resolve('test_token');
+    await eventually(() => { expect(button('Retry original resume')).toBeUndefined(); expect(button('Check original result')?.props.disabled).toBe(false); }); expect(network).toHaveBeenCalledOnce(); expect(props.onOutcome).not.toHaveBeenCalled(); expect(listAuthorityRecovery(store, f.scope).locators).toEqual([f.locator]); expect(h.memory.hidden).toBe(false);
+    h.getToken.mockResolvedValue('test_token'); await review(); expect(button('Retry original resume').props.disabled).toBe(true); factor().onComplete(); render(); previous.onComplete(); previous.onInvalidated(); render(); expect(button('Retry original resume').props.disabled).toBe(false);
+    click('Retry original resume'); await eventually(() => expect(props.onOutcome).toHaveBeenCalledOnce()); const posts = network.mock.calls.filter((call: any[]) => call[1]?.method === 'POST'); expect(posts).toHaveLength(1); const init = (posts[0] as unknown as [string, RequestInit])[1]; expect(init.body).toBe(JSON.stringify(f.capsule.intent)); expect((init.headers as Record<string, string>)['Idempotency-Key']).toBe(f.capsule.key);
+  });
+  it('factor invalidation after retry dispatch preserves the original receipt', async () => {
+    const f = await fixture(true, true); await review(); const currentFactor = factor(); currentFactor.onComplete(); render(); h.events = []; const pending = deferred<Response>(); network.mockImplementationOnce(() => pending.promise);
+    click('Retry original resume'); await eventually(() => expect(network).toHaveBeenCalledTimes(2)); currentFactor.onInvalidated(); currentFactor.onComplete(); render(); pending.resolve(Response.json(f.result));
+    await eventually(() => expect(props.onOutcome).toHaveBeenCalledOnce()); expect(network).toHaveBeenCalledTimes(2); expect(listAuthorityRecovery(store, f.scope).locators).toEqual([]); focus('ACTIVE recorded');
   });
 });

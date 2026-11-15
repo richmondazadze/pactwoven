@@ -50,3 +50,29 @@ describe('authority memory and shared inventory', () => {
   it('rejects other sessions and actors without persisting their private review', async () => { const f = await fixture(); expect(() => memory.retain({ ...f.capsule, scope: { ...f.scope, sessionId: 'another_session' } })).toThrow(); expect(() => memory.recorded({ ...f.locator, scope: { ...f.locator.scope, actorId: 'another_actor' } })).toThrow(); expect(store.length).toBe(0); });
   it('unmount prevents late state restoration but leaves originals for matching-scope lookup', async () => { const f = await fixture(); memory.retain(f.capsule); storeAuthorityRecovery(store, f.locator); view.unmount(); expect(() => memory.retain(f.capsule)).toThrow(); expect(() => memory.onRecorded(f.locator, f.result)).toThrow(); expect(listAuthorityRecovery(store, f.scope).locators).toHaveLength(1); });
 });
+
+
+async function resumeCapsule(key: string) {
+  const f = await decisionTestCase('AUTHORIZE'), review = structuredClone(f.outcomeReview), at = now + 2000;
+  review.envelope.observedAt = new Date(at).toISOString(); review.envelope.head!.state = 'PAUSED'; review.envelope.head!.mandateEpoch = 2; review.effectiveAuthority = { state: 'PAUSED', blockers: ['AUTHORITY_PAUSED'] }; review.envelope.eligibility = [{ action: 'RESUME', eligible: true, requiresStepUp: true, blockers: [] }];
+  return createAuthorityCapsule(f.scope, { data: review, receivedAt: at, receivedMonotonic: 0 }, 'RESUME', 'Keep this private resume reason.', key, at);
+}
+describe('RESUME authority memory without provider changes', () => {
+  it('retains full private accepted review while durable storage keeps minimal independent all-kind originals', async () => {
+    const f = await fixture(), resume = await resumeCapsule(f.capsule.key), revoke = await createAuthorityCapsule(f.scope, f.observation, 'REVOKE', 'Separate revocation.', f.capsule.key, now);
+    for (const value of [f.capsule, resume, revoke]) memory.retain(value); expect(store.length).toBe(0);
+    for (const value of [f.capsule, resume, revoke]) storeAuthorityRecovery(store, locatorFromAuthorityCapsule(value)); memory.reload(); memory = view.render();
+    expect(new Set(memory.inventory.locators.map(value => value.kind))).toEqual(new Set(['mandate.pause', 'mandate.resume', 'mandate.revoke'])); expect(store.length).toBe(3); expect(memory.original(locatorFromAuthorityCapsule(resume))).toEqual(resume);
+    const serialized = [...Array(store.length)].map((_, i) => store.getItem(store.key(i)!)).join(''); for (const privateValue of ['Keep this private resume reason.', 'Original delivery requirements.', 'Original mandate policy.', f.scope.sessionId]) expect(serialized).not.toContain(privateValue);
+    memory.releaseSelection(resume); expect(memory.selected()).toEqual({ integrityHash: revoke.integrityHash }); expect(memory.original(locatorFromAuthorityCapsule(resume))?.intent.reason).toBe('Keep this private resume reason.');
+  });
+  it('denial revokes private RESUME callbacks while preserving every original byte', async () => {
+    const f = await fixture(), resume = await resumeCapsule('resume_denied_key'); memory.retain(resume); for (const value of [f.capsule, resume]) storeAuthorityRecovery(store, locatorFromAuthorityCapsule(value)); const before = [...Array(store.length)].map((_, i) => [store.key(i), store.getItem(store.key(i)!)]);
+    memory.deny(); memory = view.render(); expect(memory.hidden).toBe(true); expect(() => memory.original(locatorFromAuthorityCapsule(resume))).toThrow(); expect(() => memory.retain(resume)).toThrow(); expect(() => memory.select(resume)).toThrow(); expect([...Array(store.length)].map((_, i) => [store.key(i), store.getItem(store.key(i)!)])).toEqual(before);
+  });
+  it('unknown RESUME blocks a replacement grant immediately while a separately eligible stop remains available', async () => {
+    const f = await fixture(), resume = await resumeCapsule('unknown_resume_key'), locator = locatorFromAuthorityCapsule(resume); memory.retain(resume); storeAuthorityRecovery(store, locator);
+    expect(() => memory.work.registerPreparation({ ...authorityWork(locator), kind: 'RESUME', key: 'replacement_resume_key', integrityHash: resume.integrityHash }, memory.work.generation(f.scope, f.scope.responsibilityId))).toThrow();
+    const stop = memory.work.acquire({ ...authorityWork(f.locator), action: 'send', hasHead: true, eligible: true }); memory.work.release(stop); expect(listAuthorityRecovery(store, f.scope).locators).toEqual([locator]); expect(memory.original(locator)).toEqual(resume);
+  });
+});

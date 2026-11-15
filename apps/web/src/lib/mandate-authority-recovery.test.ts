@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { assertAuthorityRecovery, authorityRecoveryKey, authorityWork, listAuthorityRecovery, MandateAuthorityLocatorSchema, readAuthorityRecovery, removeAuthorityRecovery, storeAuthorityRecovery, type MandateAuthorityLocator } from './mandate-authority-recovery';
+import { assertAuthorityRecovery, authorityRecoveryKey, authorityWork, listAuthorityRecovery, locatorFromAuthorityCapsule, MandateAuthorityLocatorSchema, readAuthorityRecovery, removeAuthorityRecovery, storeAuthorityRecovery, type MandateAuthorityLocator } from './mandate-authority-recovery';
+import { createAuthorityCapsule } from './mandate-authority';
+import { decisionTestCase, mandateFixtureNow } from './mandates.test-fixtures';
 import { createMandateWorkCoordinator } from './mandate-work-coordination';
 const scope = { userId: 'user_a', externalOrganizationId: 'external_org', apiBase: 'https://api.example.test', organizationId: 'org_a', environment: 'development' as const, actorId: 'actor_a' };
 const locator: MandateAuthorityLocator = { version: 1, scope, responsibilityId: 'responsibility_a', kind: 'mandate.pause', key: 'original_authority_key', mandate: { id: 'mandate_a', version: 2, hash: 'a'.repeat(64) }, head: { mandateId: 'mandate_a', mandateVersion: 2, mandateEpoch: 7, hash: 'b'.repeat(64) }, responsibility: { id: 'responsibility_a', version: 3, siteId: 'site_a', hash: 'c'.repeat(64) }, expectedOrganizationEpoch: 4, commandHash: 'd'.repeat(64), intentHash: 'e'.repeat(64), expectedTarget: { kind: 'authority', id: 'mandate_a', version: 8, hash: 'f'.repeat(64) } };
@@ -41,4 +43,16 @@ describe('minimal multikind authority originals', () => {
     expect(() => work.acquire({ ...authorityWork(locator), key: 'duplicate_pause_key', action: 'send', hasHead: true, eligible: true })).toThrow(); const revoke = work.acquire({ ...authorityWork({ ...locator, kind: 'mandate.revoke' }), action: 'send', hasHead: true, eligible: true }); work.release(revoke);
     storeAuthorityRecovery(store, { ...locator, kind: 'mandate.revoke' }); expect(() => work.acquire({ ...authorityWork(locator), key: 'replacement_pause_key', action: 'send', hasHead: true, eligible: true })).toThrow(); const original = work.acquire({ ...authorityWork(locator), action: 'retry' }); work.assert(original); work.release(original);
   });
+});
+
+it('maps a fully verified RESUME capsule to its existing distinct minimal storage address', async () => {
+  const f = await decisionTestCase('AUTHORIZE'), review = structuredClone(f.outcomeReview), at = mandateFixtureNow + 2000;
+  review.envelope.observedAt = new Date(at).toISOString(); review.envelope.head!.state = 'PAUSED'; review.envelope.head!.mandateEpoch = 2;
+  review.effectiveAuthority = { state: 'PAUSED', blockers: ['AUTHORITY_PAUSED'] }; review.envelope.eligibility = [{ action: 'RESUME', eligible: true, requiresStepUp: true, blockers: [] }];
+  const capsule = await createAuthorityCapsule(f.scope, { data: review, receivedAt: at, receivedMonotonic: 0 }, 'RESUME', 'Private exact reason.', 'same_original_key', at), original = locatorFromAuthorityCapsule(capsule), store = storage();
+  expect(original.kind).toBe('mandate.resume'); expect(authorityWork(original).kind).toBe('RESUME');
+  const pause = { ...original, kind: 'mandate.pause' as const }, revoke = { ...original, kind: 'mandate.revoke' as const };
+  for (const value of [original, pause, revoke]) storeAuthorityRecovery(store, value);
+  const raw = store.getItem(authorityRecoveryKey(original))!; expect(JSON.parse(raw)).toEqual(original); expect(raw).not.toContain('Private exact reason.'); expect(raw).not.toContain('clerk_session'); expect(raw).not.toContain('verifiedAt');
+  expect(removeAuthorityRecovery(store, original)).toBe(true); expect(listAuthorityRecovery(store, f.scope).locators).toEqual([pause, revoke]);
 });

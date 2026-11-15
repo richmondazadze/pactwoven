@@ -1,0 +1,16 @@
+import {afterEach,beforeEach,describe,expect,it} from 'vitest';
+import {createHash} from 'node:crypto';
+import {custodyFixture,custodyFixtureEnabled,type CustodyFixture} from './custody-setup.test-support.js';
+import {verifyCustodyWalletEvidence} from './custody-setup-authentication-repository.js';
+import type {CustodyWalletChallenge} from '@pactwoven/contracts';
+describe.skipIf(!custodyFixtureEnabled)('custody private authenticator isolation',()=>{let f:CustodyFixture;beforeEach(async()=>{f=await custodyFixture();},60000);afterEach(async()=>{await f?.close();});
+ it('verifies actual Ed25519 signature bytes and rejects a forged signature with a matching new digest',async()=>{const flow=await f.proofFlow();expect(await verifyCustodyWalletEvidence(flow.w,flow.ch.body as CustodyWalletChallenge)).toEqual(flow.w);
+  if(flow.w.kind!=='wallet')throw new Error('Wallet fixture');const bytes=Buffer.from(flow.w.signature,'base64');bytes[0]=bytes[0]!^1;const forged={...flow.w,id:crypto.randomUUID(),signature:bytes.toString('base64'),signatureHash:createHash('sha256').update(bytes).digest('hex')};await expect(f.authentication.append(forged,flow.ch.body as CustodyWalletChallenge)).rejects.toThrow('Invalid wallet signature');expect((await f.admin.query('SELECT count(*) FROM pactwoven.custody_setup_evidence WHERE id=$1',[forged.id])).rows[0].count).toBe('0');
+ });
+ it('rejects changed MFA purpose, nonce, digest, age and public verified labels in SQL',async()=>{const flow=await f.proofFlow();for(const patch of [{purpose:'mandate_authorization'},{nonce:'B'.repeat(42)+'A'},{requestHash:'c'.repeat(64)},{verifiedAt:new Date().toISOString()},{verified:true},{observedAt:'2026-11-15T24:00:00.000Z'}])await expect(f.verifier.pool.query('SELECT pactwoven.custody_setup_attest($1::jsonb)',[JSON.stringify({...flow.m,...patch,id:crypto.randomUUID()})])).rejects.toMatchObject({code:'CS004'});
+ });
+ it('requires explicit current action-site grants and rejects a revoked owner session',async()=>{const flow=await f.proofFlow(),i=await f.identity();await f.admin.query("DELETE FROM pactwoven.member_action_sites WHERE actor_id='owner_a'");await expect(f.repository.mutate(i.id,flow.command)).rejects.toMatchObject({code:'CUSTODY_ACCESS_DENIED'});await f.admin.query("INSERT INTO pactwoven.member_action_sites VALUES('development','org_a','owner_a','site_a')");await f.admin.query("INSERT INTO pactwoven.session_revocations VALUES('development','session_owner_a',now())");await expect(f.repository.mutate(i.id,flow.command)).rejects.toMatchObject({code:'CUSTODY_ACCESS_DENIED'});
+ });
+ it('binds evidence IDs immutably and prevents another organization or owner from consuming them',async()=>{const flow=await f.proofFlow();await expect(f.authentication.append({...flow.m,requestHash:'c'.repeat(64)})).rejects.toMatchObject({code:'CUSTODY_KEY_CONFLICT'});await expect(f.repository.mutate((await f.identity('owner_b')).id,flow.command)).rejects.toMatchObject({code:'CUSTODY_SCOPE_CHANGED'});await expect(f.verifier.pool.query('SELECT pactwoven.custody_setup_attest($1::jsonb)',[JSON.stringify({...flow.m,id:crypto.randomUUID(),organizationId:'org_b'})])).rejects.toMatchObject({code:'CS001'});
+ });
+});

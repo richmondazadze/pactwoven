@@ -7,3 +7,5 @@ export * from './mandate-documents-http';
 export * from './access-recovery';
 export * from './finance-provenance';
 export * from './financial-fences';
+export * from './custody-setup';
+export * from './custody-setup-http';

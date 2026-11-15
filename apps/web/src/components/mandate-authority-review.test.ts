@@ -3,10 +3,11 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { createAuthorityCapsule, qualifyAuthorityReceipt } from '../lib/mandate-authority';
 import { locatorFromAuthorityCapsule } from '../lib/mandate-authority-recovery';
-import { mandateReadFixture, mandateFixtureNow as now } from '../lib/mandates.test-fixtures';
+import { decisionTestCase, mandateReadFixture, mandateFixtureNow as now } from '../lib/mandates.test-fixtures';
 import { MandateAuthorityReceiptView, MandateAuthorityReview } from './mandate-authority-review';
 import { MandateCollectionContent } from './mandate-collection';
 import { MandateProposalContent } from './mandate-proposal-review';
+import { MandateResumeReview } from './mandate-resume-review';
 import { MotionProvider } from './motion';
 vi.mock('./workspace-provider', () => ({ useWorkspace: () => { throw new Error('Pure authority presentation must not read connected identity.'); } }));
 const render = (element: ReactElement) => renderToStaticMarkup(createElement(MotionProvider, { children: element }));
@@ -30,4 +31,18 @@ describe('accepted authority review and historical receipt presentation', () => 
   });
   it('places collection controls directly after current authority and before proposal history', async () => { const f = await fixture(), html = render(createElement(MandateCollectionContent, { page: f.page, now, organizationEpoch: 3, authorityControls: createElement('section', { 'aria-label': 'Bound current stop' }) })); expect(html.indexOf('Current effective authority')).toBeLessThan(html.indexOf('Bound current stop')); expect(html.indexOf('Bound current stop')).toBeLessThan(html.indexOf('Mandate proposals')); });
   it('places exact-review controls with current authority even when the selected proposal is historical', async () => { const f = await fixture(), html = render(createElement(MandateProposalContent, { review: f.review, now, organizationEpoch: 3, sites: f.session.sites, authorityControls: createElement('section', { 'aria-label': 'Bound current stop' }) })); expect(html.indexOf('Current effective authority')).toBeLessThan(html.indexOf('Bound current stop')); expect(html.indexOf('Bound current stop')).toBeLessThan(html.indexOf('Selected proposal')); expect(html).toContain('Current accepted mandate'); expect(html).toContain('Current accepted mandate policy.'); });
+});
+
+
+describe('authority RESUME presentation dispatch', () => {
+  it('routes RESUME to the complete accepted review while preserving corrected historical receipt copy', async () => {
+    const f = await decisionTestCase('AUTHORIZE'), review = structuredClone(f.outcomeReview), at = now + 2000;
+    review.envelope.observedAt = new Date(at).toISOString(); review.envelope.head!.state = 'PAUSED'; review.envelope.head!.mandateEpoch = 2; review.effectiveAuthority = { state: 'PAUSED', blockers: ['AUTHORITY_PAUSED'] }; review.envelope.eligibility = [{ action: 'RESUME', eligible: true, requiresStepUp: true, blockers: [] }];
+    const capsule = await createAuthorityCapsule(f.scope, { data: review, receivedAt: at, receivedMonotonic: 0 }, 'RESUME', 'Resume accepted advice.', 'resume_review_dispatch', at);
+    const element = MandateAuthorityReview({ capsule }); expect(element.type).toBe(MandateResumeReview); expect(element.props.capsule).toBe(capsule);
+    const html = render(element); expect(html).toContain('Accepted mandate policy'); expect(html).toContain('Accepted acceptance policy'); expect(html).not.toContain('No multi-factor step is required');
+    const locator = locatorFromAuthorityCapsule(capsule), receipt = qualifyAuthorityReceipt({ schemaVersion: 1, organizationId: f.scope.organizationId, kind: locator.kind, responsibilityId: f.scope.responsibilityId, target: locator.expectedTarget, commandHash: locator.commandHash, intentHash: locator.intentHash, observedAt: new Date(at).toISOString(), operation: { id: 'recorded_resume', environment: f.scope.environment, status: 'succeeded', aggregateId: locator.mandate.id, aggregateVersion: locator.expectedTarget.version, financialState: null, evidenceRefs: [], nextCheckAt: null, error: null } }, locator);
+    review.envelope.head!.state = 'REVOKED'; review.envelope.head!.mandateEpoch = 9;
+    const receiptHtml = render(createElement(MandateAuthorityReceiptView, { receipt })); expect(receiptHtml).toContain('Resume recorded'); expect(receiptHtml).toContain('historical receipt'); expect(receiptHtml).toContain('Check Current effective authority for the latest status.'); expect(receiptHtml).not.toContain('Authority is active'); expect(review.envelope.head!.mandateEpoch).toBe(9);
+  });
 });

@@ -1,25 +1,40 @@
+import { z } from 'zod';
 import { IdSchema, MandateOperationResultSchema, type MandateOperationResult } from '@pactwoven/contracts';
 import { canonicalJson } from '@pactwoven/contracts/canonical';
 import { apiRequest, RequestError } from './api';
 import { getApiBase } from './config';
 import { MandateCapsuleScopeSchema, immutableMandate } from './mandate-capsule';
-import { authorityAvailable, MandateAuthorityCapsuleSchema, qualifyAuthorityOperation, qualifyAuthorityReceipt, verifyAuthorityCapsule, type MandateAuthorityCapsule, type MandateAuthorityReceipt } from './mandate-authority';
+import { authorityAvailable, MandateAuthorityCapsuleSchema, qualifyAuthorityOperation, qualifyAuthorityReceipt, verifyAuthorityCapsule, type MandateAuthorityCapsule, type MandateAuthorityReceipt, type MandateAuthorityObservation } from './mandate-authority';
 import { assertAuthorityRecovery, authorityWork, listAuthorityRecovery, locatorFromAuthorityCapsule, MandateAuthorityLocatorSchema, readAuthorityRecovery, removeAuthorityRecovery, storeAuthorityRecovery, type MandateAuthorityLocator } from './mandate-authority-recovery';
-import { mandateOperationSucceeded } from './mandate-actions';
+import { mandateOperationSucceeded, verificationCurrent } from './mandate-actions';
 import { mandateRecoveryScope } from './mandate-recovery';
-import { mandateWorkAllowed, type MandateWorkCoordinator, type MandateWorkRequest, type MandateWorkTicket } from './mandate-work-coordination';
+import { mandateWorkAllowed, type MandateGrantPreparation, type MandateWorkCoordinator, type MandateWorkRequest, type MandateWorkTicket } from './mandate-work-coordination';
 import type { RecoveryStorage } from './bootstrap-recovery';
 import type { MandateTransportContext } from './mandate-retry';
 import type { MandateReadScope } from './mandates';
 
 const same = (a: unknown, b: unknown) => canonicalJson(a) === canonicalJson(b);
-export type AuthorityRetryFlow = { phase: 'check' | 'checked' | 'reviewed' | 'retrying'; reviewedHash: string | null };
+// Private UI observation only. Genuine purpose-bound evidence is built by the
+// service from the signed provider token when this exact intent is submitted.
+const localVerificationSchema = z.strictObject({ integrityHash: z.string().regex(/^[a-f0-9]{64}$/), generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), verifiedAt: z.number().finite() });
+export type AuthorityLocalVerification = z.infer<typeof localVerificationSchema>;
+export type AuthorityRetryFlow = { phase: 'check' | 'checked' | 'reviewed' | 'verified' | 'retrying'; reviewedHash: string | null; verification?: AuthorityLocalVerification };
 export const initialAuthorityRetry: AuthorityRetryFlow = Object.freeze({ phase: 'check', reviewedHash: null });
-export function authorityRetryFlow(flow: AuthorityRetryFlow, event: { type: 'checked' | 'reset' | 'retry' } | { type: 'review'; hash: string }): AuthorityRetryFlow {
+export type AuthorityRetryEvent = { type: 'checked' | 'reset' | 'invalidate' } | { type: 'retry'; action?: 'PAUSE' | 'REVOKE' | 'RESUME'; now?: number } | { type: 'review'; hash: string } | { type: 'verified'; verification: AuthorityLocalVerification };
+export function authorityRetryFlow(flow: AuthorityRetryFlow, event: AuthorityRetryEvent): AuthorityRetryFlow {
   if (event.type === 'reset') return initialAuthorityRetry;
   if (event.type === 'checked') return { phase: 'checked', reviewedHash: null };
   if (event.type === 'review' && flow.phase === 'checked') return { phase: 'reviewed', reviewedHash: event.hash };
-  if (event.type === 'retry' && flow.phase === 'reviewed') return { ...flow, phase: 'retrying' };
+  if (event.type === 'invalidate' && flow.verification) return { phase: 'reviewed', reviewedHash: flow.reviewedHash };
+  if (event.type === 'verified' && flow.phase === 'reviewed') {
+    const parsed = localVerificationSchema.safeParse(event.verification);
+    if (parsed.success && parsed.data.integrityHash === flow.reviewedHash) return { ...flow, phase: 'verified', verification: immutableMandate(parsed.data) };
+  }
+  if (event.type === 'retry') {
+    if (event.action === 'RESUME') {
+      if (flow.phase === 'verified' && flow.verification && event.now !== undefined && verificationCurrent(flow.verification.verifiedAt, event.now)) return { ...flow, phase: 'retrying' };
+    } else if (flow.phase === 'reviewed') return { ...flow, phase: 'retrying' };
+  }
   return flow;
 }
 export type AuthorityTransportContext = MandateTransportContext & {
@@ -30,7 +45,10 @@ export type AuthorityTransportContext = MandateTransportContext & {
   onPending?: (locator: MandateAuthorityLocator) => void;
   onQualified?: (receipt: MandateAuthorityReceipt) => void;
 };
-export type AuthoritySendPermission = { kind: 'first'; now: () => number } | { kind: 'retry'; currentFlow: () => AuthorityRetryFlow };
+export type AuthorityResumeVerificationContext = { currentGeneration: () => number; currentVerification: () => AuthorityLocalVerification | null };
+export type AuthoritySendPermission =
+  | { kind: 'first'; now: () => number; resume?: AuthorityResumeVerificationContext & { preparation: MandateGrantPreparation; currentObservation: () => MandateAuthorityObservation | null } }
+  | { kind: 'retry'; currentFlow: () => AuthorityRetryFlow; resume?: AuthorityResumeVerificationContext };
 function guard(scope: MandateReadScope, context: MandateTransportContext): undefined {
   context.signal.throwIfAborted(); if (getApiBase() !== scope.apiBase || !same(scope, context.current())) throw new RequestError('MANDATE_SCOPE_CHANGED', 'The current authenticated authority-control scope changed.', 403); return undefined;
 }
@@ -39,16 +57,28 @@ function token(scope: MandateReadScope, context: MandateTransportContext) { retu
 export const authorityPath = (responsibilityId: string, mandateId: string) => `/v1/responsibilities/${IdSchema.parse(responsibilityId)}/mandates/${IdSchema.parse(mandateId)}/authority`;
 function localWork(request: MandateWorkRequest, context: AuthorityTransportContext, ignoreOriginal: boolean) {
   const inventory = listAuthorityRecovery(context.storage(), request.scope);
-  const records = inventory.locators.filter(value => !ignoreOriginal || value.kind !== (request.kind === 'PAUSE' ? 'mandate.pause' : 'mandate.revoke') || value.key !== request.key).map(authorityWork);
+  const originalKind = request.kind === 'PAUSE' ? 'mandate.pause' : request.kind === 'REVOKE' ? 'mandate.revoke' : request.kind === 'RESUME' ? 'mandate.resume' : null;
+  if (!originalKind) throw new RequestError('AUTHORITY_REVIEW_REQUIRED', 'An exact authority-control kind is required.');
+  const records = inventory.locators.filter(value => !ignoreOriginal || value.kind !== originalKind || value.key !== request.key).map(authorityWork);
   if ((inventory.blocked && request.action === 'send') || !mandateWorkAllowed(request, { blocked: inventory.blocked, records })) throw new RequestError('AUTHORITY_RECOVERY_CHANGED', 'An original authority request or unreadable local reference needs checking.');
 }
 export async function sendMandateAuthority(input: MandateAuthorityCapsule, context: AuthorityTransportContext, permissionInput: AuthoritySendPermission) {
-  const snapshot = immutableMandate(MandateAuthorityCapsuleSchema.parse(structuredClone(input))), scope = snapshot.scope, locator = locatorFromAuthorityCapsule(snapshot), permission = { ...permissionInput };
+  const snapshot = immutableMandate(MandateAuthorityCapsuleSchema.parse(structuredClone(input))), scope = snapshot.scope, locator = locatorFromAuthorityCapsule(snapshot), permission = { ...permissionInput, ...(permissionInput.resume ? { resume: { ...permissionInput.resume } } : {}) } as AuthoritySendPermission;
+  const initialVerification = snapshot.intent.action === 'RESUME' ? localVerificationSchema.safeParse(permission.resume?.currentVerification()) : null;
+  const verification = initialVerification?.success ? immutableMandate(initialVerification.data) : null;
   let persisted = permission.kind === 'retry';
   function preflight(): undefined {
     guard(scope, context);
     if (!same(input, snapshot) || !same(context.selected(), { integrityHash: snapshot.integrityHash })) throw new RequestError('AUTHORITY_REVIEW_REQUIRED', 'The selected original authority review changed.');
     if (context.recorded(locator)) throw new RequestError('AUTHORITY_ALREADY_RECORDED', 'Finish the recorded receipt. Do not send this original control again.');
+    if (snapshot.intent.action === 'RESUME') {
+      const resume = permission.resume;
+      if (!resume || !verification || verification.integrityHash !== snapshot.integrityHash || resume.currentGeneration() !== verification.generation || !same(resume.currentVerification(), verification) || !verificationCurrent(verification.verifiedAt, Date.now())) throw new RequestError('STEP_UP_REQUIRED', 'Verify both factors for this exact resume review before its separate send.', 403);
+      if (permission.kind === 'first') {
+        const grant = permission.resume?.preparation, observation = permission.resume?.currentObservation();
+        if (!grant || !context.work.preparationCurrent(grant) || grant.kind !== 'RESUME' || grant.integrityHash !== snapshot.integrityHash || !same(grant.scope, locator.scope) || grant.responsibilityId !== locator.responsibilityId || grant.targetId !== locator.mandate.id || grant.key !== locator.key || !observation || !same(observation, snapshot.observation)) throw new RequestError('AUTHORITY_REVIEW_REQUIRED', 'The current accepted resume review or its unsent preparation changed.');
+      } else if (!same(permission.currentFlow().verification ?? null, verification)) throw new RequestError('STEP_UP_REQUIRED', 'Verify the retained exact original resume before retrying it.', 403);
+    }
     if (permission.kind === 'first') {
       if (!authorityAvailable(snapshot.observation.data, scope, snapshot.intent.action, permission.now())) throw new RequestError('AUTHORITY_REVIEW_REQUIRED', 'Refresh and separately review the current accepted authority before a new control.');
       if (!persisted && readAuthorityRecovery(context.storage(), locator).state !== 'empty') throw new RequestError('AUTHORITY_RECOVERY_CHANGED', 'Preserve the original request reference before continuing.');
@@ -67,8 +97,10 @@ export async function sendMandateAuthority(input: MandateAuthorityCapsule, conte
   preflight(); localWork(request, context, false); const ticket = context.work.acquire(request);
   function allowed(): undefined { preflight(); context.work.assert(ticket); localWork(request, context, permission.kind === 'first' && persisted); return undefined; }
   try {
+    if (snapshot.intent.action === 'RESUME' && permission.kind === 'first') context.work.bindPreparation(permission.resume!.preparation, ticket);
     allowed();
-    const result = await apiRequest(authorityPath(scope.responsibilityId, capsule.intent.mandate.id), MandateOperationResultSchema, token(scope, context), {
+    const getToken = async () => { allowed(); const value = await context.getToken(); allowed(); return value; };
+    const result = await apiRequest(authorityPath(scope.responsibilityId, capsule.intent.mandate.id), MandateOperationResultSchema, getToken, {
       body: capsule.intent, idempotencyKey: capsule.key, signal: context.signal,
       beforeDispatch: () => {
         allowed(); if (permission.kind === 'first') { storeAuthorityRecovery(context.storage(), locator); persisted = true; } else assertAuthorityRecovery(context.storage(), locator);

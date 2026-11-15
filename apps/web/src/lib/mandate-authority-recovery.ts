@@ -23,7 +23,7 @@ const addressSchema = z.strictObject({ scope: MandateRecoveryScopeSchema, kind: 
 const same = (a: unknown, b: unknown) => canonicalJson(a) === canonicalJson(b);
 export function authorityRecoveryKey(value: Pick<MandateAuthorityLocator, 'scope' | 'kind' | 'key'>) { return prefix + encodeURIComponent(canonicalJson(addressSchema.parse({ scope: mandateRecoveryScope(value.scope), kind: value.kind, key: value.key }))); }
 export function locatorFromAuthorityCapsule(value: MandateAuthorityCapsule): MandateAuthorityLocator {
-  return MandateAuthorityLocatorSchema.parse({ version: 1, scope: mandateRecoveryScope(value.scope), responsibilityId: value.scope.responsibilityId, kind: value.intent.action === 'PAUSE' ? 'mandate.pause' : 'mandate.revoke', key: value.key,
+  return MandateAuthorityLocatorSchema.parse({ version: 1, scope: mandateRecoveryScope(value.scope), responsibilityId: value.scope.responsibilityId, kind: value.intent.action === 'PAUSE' ? 'mandate.pause' : value.intent.action === 'REVOKE' ? 'mandate.revoke' : 'mandate.resume', key: value.key,
     mandate: value.intent.mandate, head: value.intent.head, responsibility: value.intent.responsibility, expectedOrganizationEpoch: value.intent.expectedOrganizationEpoch, commandHash: value.commandHash, intentHash: value.intentHash, expectedTarget: value.expectedTarget });
 }
 export function authorityWork(input: MandateAuthorityLocator): MandateWork {

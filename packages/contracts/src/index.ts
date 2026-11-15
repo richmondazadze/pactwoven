@@ -52,3 +52,10 @@ export type { FinancialPolicyHttpActor, FinancialPolicyHttpScope, FinancialPolic
   FinancialPolicyHttpRecordResponse, FinancialPolicyHttpDraftIndexResponse, FinancialPolicyHttpGovernanceIndexResponse,
   FinancialPolicyHttpReceipt, FinancialPolicyHttpMutationResponse, FinancialPolicyHttpRecoveryLocator,
   FinancialPolicyHttpRecoveryResponse, FinancialPolicyHttpProposerObservationResponse } from './financial-policy-responses';
+export { FINANCIAL_POLICY_PREPARATION_REQUEST_MAX_BYTES, FINANCIAL_POLICY_PREPARATION_RESPONSE_MAX_BYTES,
+  FinancialPolicyPreparationRequestSchema, FinancialPolicyPreparationActionSchema, FinancialPolicyPreparationReasonSchema,
+  FinancialPolicyPreparationDecisionSchema, FinancialPolicyPreparationTargetSchema, FinancialPolicyPreparationMaterialSchema,
+  FinancialPolicyPreparationResponseSchema } from './financial-policy-preparation';
+export type { FinancialPolicyPreparationRequest, FinancialPolicyPreparationAction, FinancialPolicyPreparationReason,
+  FinancialPolicyPreparationDecision, FinancialPolicyPreparationTarget, FinancialPolicyPreparationMaterial,
+  FinancialPolicyPreparationResponse } from './financial-policy-preparation';

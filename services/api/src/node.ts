@@ -5,6 +5,7 @@ import { createAccessGateway, createClerkMembershipDirectory } from './access-se
 import { createAccessRecoveryGateway } from './access-recovery-service.js';
 import { createMandateGateway } from './mandate-service.js';
 import { createDevelopmentCustodySetup } from './custody-setup-development.js';
+import { createDevelopmentFinancialPolicy } from './financial-policy-development.js';
 import { createApp, type AppDependencies } from './app.js';
 import { readDevelopmentConfig } from './config.js';
 
@@ -15,6 +16,7 @@ let provisionerPool: Awaited<ReturnType<typeof createProvisionerPool>> | undefin
 let accessPool: Awaited<ReturnType<typeof createAccessPool>> | undefined;
 let mandatePool: Awaited<ReturnType<typeof createMandatePool>> | undefined;
 let custodySetup: Awaited<ReturnType<typeof createDevelopmentCustodySetup>> | undefined;
+let financialPolicy: Awaited<ReturnType<typeof createDevelopmentFinancialPolicy>> | undefined;
 if (credentials) {
   try {
     pool = await createRuntimePool(credentials.databaseUrl);
@@ -47,8 +49,13 @@ if (credentials) {
         identity: { secretKey: credentials.secretKey, issuer: credentials.issuer, authorizedParties: allowedOrigins } });
       dependencies.custodySetupGateway = custodySetup.gateway;
     }
+    if (credentials.financialPolicy) {
+      financialPolicy = await createDevelopmentFinancialPolicy({ ...credentials.financialPolicy,
+        identity: { secretKey: credentials.secretKey, issuer: credentials.issuer, authorizedParties: allowedOrigins } });
+      dependencies.financialPolicyGateway = financialPolicy.gateway;
+    }
   } catch {
-    await Promise.allSettled([pool?.end(), provisionerPool?.end(), accessPool?.end(), mandatePool?.end(), custodySetup?.close()]);
+    await Promise.allSettled([pool?.end(), provisionerPool?.end(), accessPool?.end(), mandatePool?.end(), custodySetup?.close(), financialPolicy?.close()]);
     throw new Error('Pactwoven API setup failed. Check the protected identity and runtime database configuration.');
   }
 }
@@ -57,5 +64,5 @@ const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, () => {
   console.info(`Pactwoven development API listening on http://127.0.0.1:${port}`);
 });
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => {
-  server.close(() => { void Promise.allSettled([pool?.end(), provisionerPool?.end(), accessPool?.end(), mandatePool?.end(), custodySetup?.close()]).then(() => process.exit(0)); });
+  server.close(() => { void Promise.allSettled([pool?.end(), provisionerPool?.end(), accessPool?.end(), mandatePool?.end(), custodySetup?.close(), financialPolicy?.close()]).then(() => process.exit(0)); });
 });

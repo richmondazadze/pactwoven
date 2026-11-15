@@ -44,7 +44,8 @@ export function readDevelopmentConfig(values: EnvironmentValues) {
     if (!allowedOrigins.length || new Set(allowedOrigins).size !== allowedOrigins.length) throw new ConfigurationError();
     const bindings = [values.DATABASE_URL, values.CLERK_SECRET_KEY, values.CLERK_ISSUER, values.CLERK_PUBLISHABLE_KEY];
     const custodyConfigured = values.CUSTODY_SETUP_WRITER_DATABASE_URL !== undefined || values.CUSTODY_SETUP_VERIFIER_DATABASE_URL !== undefined;
-    if (bindings.every(value => !value) && !values.PROVISIONER_DATABASE_URL && !values.ACCESS_DATABASE_URL && !values.MANDATE_DATABASE_URL && !custodyConfigured) {
+    const financialConfigured = values.FINANCIAL_POLICY_AUTHORIZER_DATABASE_URL !== undefined || values.FINANCIAL_POLICY_VERIFIER_DATABASE_URL !== undefined;
+    if (bindings.every(value => !value) && !values.PROVISIONER_DATABASE_URL && !values.ACCESS_DATABASE_URL && !values.MANDATE_DATABASE_URL && !custodyConfigured && !financialConfigured) {
       return { environment, port, allowedOrigins, credentials: null };
     }
     const databaseUrl = z.string().min(1).parse(values.DATABASE_URL);
@@ -96,8 +97,25 @@ export function readDevelopmentConfig(values: EnvironmentValues) {
       }
       custodySetup = { writerDatabaseUrl: writer.href, verifierDatabaseUrl: verifier.href };
     }
+    let financialPolicy: { authorizerDatabaseUrl: string; verifierDatabaseUrl: string } | undefined;
+    if (financialConfigured) {
+      const authorizer = developmentDatabase(z.string().min(1).parse(values.FINANCIAL_POLICY_AUTHORIZER_DATABASE_URL));
+      const verifier = developmentDatabase(z.string().min(1).parse(values.FINANCIAL_POLICY_VERIFIER_DATABASE_URL));
+      const existingUsers = new Set([database.href, provisionerDatabaseUrl, accessDatabaseUrl, mandateDatabaseUrl,
+        custodySetup?.writerDatabaseUrl, custodySetup?.verifierDatabaseUrl]
+        .filter((value): value is string => Boolean(value)).map(value => decodeURIComponent(new URL(value).username)));
+      for (const candidate of [authorizer, verifier]) {
+        const username = decodeURIComponent(candidate.username);
+        if (candidate.host !== database.host || candidate.pathname !== database.pathname || existingUsers.has(username)) {
+          throw new ConfigurationError();
+        }
+        existingUsers.add(username);
+      }
+      financialPolicy = { authorizerDatabaseUrl: authorizer.href, verifierDatabaseUrl: verifier.href };
+    }
     return { environment, port, allowedOrigins, credentials: { databaseUrl: database.href, secretKey, issuer, publishableKey,
       ...(provisionerDatabaseUrl ? { provisionerDatabaseUrl } : {}), ...(accessDatabaseUrl ? { accessDatabaseUrl } : {}),
-      ...(mandateDatabaseUrl ? { mandateDatabaseUrl } : {}), ...(custodySetup ? { custodySetup } : {}) } };
+      ...(mandateDatabaseUrl ? { mandateDatabaseUrl } : {}), ...(custodySetup ? { custodySetup } : {}),
+      ...(financialPolicy ? { financialPolicy } : {}) } };
   } catch { throw new ConfigurationError(); }
 }

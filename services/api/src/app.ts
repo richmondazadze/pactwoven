@@ -10,6 +10,8 @@ import { registerMandateRoutes } from './mandate-routes.js';
 import { registerAccessRecoveryRoutes } from './access-recovery-routes.js';
 import { custodySetupBodyLimit, readCustodySetupJson, registerCustodySetupRoutes } from './custody-setup-routes.js';
 import type { CustodySetupGateway } from './custody-setup-service.js';
+import { registerFinancialPolicyRoutes } from './financial-policy-routes.js';
+import type { FinancialPolicyGateway } from './financial-policy-service.js';
 
 export type AppDependencies = {
   repository?: FoundationRepository;
@@ -19,6 +21,7 @@ export type AppDependencies = {
   mandateGateway?: MandateGateway;
   accessRecoveryGateway?: AccessRecoveryGateway;
   custodySetupGateway?: CustodySetupGateway;
+  financialPolicyGateway?: FinancialPolicyGateway;
   allowedOrigins: readonly string[];
 };
 export type ApiEnv = { Variables: { session: Session; identity: VerifiedIdentity; correlationId: string; requestBody: unknown } };
@@ -98,6 +101,10 @@ export function createApp(dependencies: AppDependencies) {
   });
 
   app.get('/health', c => c.json({ service: 'pactwoven-api', status: 'alive', schemaVersion: SCHEMA_VERSION }));
+
+  // These routes parse their immutable selectors before their own live identity
+  // observation. Register them ahead of the general identity lookup below.
+  registerFinancialPolicyRoutes(app, dependencies.financialPolicyGateway);
 
   app.use('/v1/*', async (c, next) => {
     if (!dependencies.verifyIdentity) {

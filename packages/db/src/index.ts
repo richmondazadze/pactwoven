@@ -27,6 +27,8 @@ export { createCustodySetupPool } from './custody-setup-pool.js';
 export type { FinancialPolicyRepository, FinancialAuthorityCapability } from './financial-policy-schema.js';
 export { PostgresFinancialPolicyRepository } from './financial-policy-repository.js';
 export { PostgresFinancialAuthenticationRepository } from './financial-authentication-repository.js';
+export { FinancialIdentityEvidenceSchema } from './financial-auth-evidence.js';
+export type { FinancialAuthEvidence } from './financial-auth-evidence.js';
 export { assertFinancialAuthorityPool, createFinancialAuthorityPool } from './financial-authority-pool.js';
 export { FinancialPolicyReadObservationSchema, FinancialPolicyReaderScopeSchema,
   FinancialPolicyContextQuerySchema, FinancialPolicyContextSchema, FinancialGovernanceIndexQuerySchema,

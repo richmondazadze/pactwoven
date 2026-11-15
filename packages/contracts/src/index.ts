@@ -19,3 +19,17 @@ export { FinancialPolicyHttpAuthorityBasisSchema, FinancialPolicyHttpDraftSchema
   financialPolicyHttpRoute, FinancialPolicyHttpRequestSchema } from './financial-policy-http';
 export type { FinancialPolicyHttpRouteIdentity, FinancialPolicyHttpRequest,
   FinancialPolicyHttpAuthorityBasis, FinancialPolicyHttpDraft } from './financial-policy-http';
+export { SupplierScopeSchema, SupplierProvenanceSchema, SupplierCapabilitySchema,
+  SupplierCapabilityDeclarationSchema, UntrustedSupplierCapabilityManifestSchema,
+  SupplierQuantitySchema, SupplierExternalReferenceSchema, SupplierAvailabilityQuerySchema,
+  UntrustedSupplierAvailabilityObservationSchema, SupplierEffectCapabilitySchema,
+  SupplierOriginalEffectIdentitySchema, UntrustedSupplierEffectResultSchema,
+  SupplierMessageIdentitySchema, UntrustedSupplierMessageSchema, SupplierDurableReceiptSchema,
+  UntrustedSupplierDomainAcknowledgementSchema, SupplierStoredDeliverySchema,
+  supplierScopesMatch, supplierProvenanceMatches } from './supplier-protocol';
+export type { SupplierScope, SupplierProvenance, SupplierCapability,
+  SupplierCapabilityDeclaration, UntrustedSupplierCapabilityManifest, SupplierQuantity,
+  SupplierAvailabilityQuery, UntrustedSupplierAvailabilityObservation,
+  SupplierOriginalEffectIdentity, UntrustedSupplierEffectResult, SupplierMessageIdentity,
+  UntrustedSupplierMessage, SupplierMessageAction, SupplierDurableReceipt,
+  UntrustedSupplierDomainAcknowledgement, SupplierStoredDelivery } from './supplier-protocol';

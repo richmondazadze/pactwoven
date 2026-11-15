@@ -16,3 +16,7 @@ export * from './financial-policies.js';
 export { FINANCIAL_POLICY_HTTP_REQUEST_NAMESPACE, snapshotFinancialPolicyHttpRequest,
   financialPolicyHttpRequestHash, financialPolicyHttpRequestFromStoredCommand } from './financial-policy-http.js';
 export type { FinancialPolicyHttpHashScope } from './financial-policy-http.js';
+export { supplierMessageDigest, prepareUntrustedSupplierMessage,
+  inspectSupplierMessageDelivery, assessUntrustedSupplierAvailability,
+  inspectSupplierCapability, snapshotSupplierEffectUpdate,
+  planSupplierEffectRecovery } from './supplier-protocol.js';

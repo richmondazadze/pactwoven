@@ -13,6 +13,8 @@ export const financialPolicyTables = Object.freeze(['financial_policy_principals
   'financial_budget_accounts', 'financial_budget_periods', 'financial_governance_controls'] as const);
 export const financialPolicyRoutines = Object.freeze({
   authorizer: ['pactwoven.financial_policy_command(uuid,jsonb)', 'pactwoven.financial_policy_read(uuid,jsonb)',
-    'pactwoven.financial_policy_list(uuid,jsonb)', 'pactwoven.financial_policy_recover(uuid,jsonb)'],
-  verifier: ['pactwoven.financial_policy_attest(jsonb)'],
+    'pactwoven.financial_policy_list(uuid,jsonb)', 'pactwoven.financial_policy_recover(uuid,jsonb)',
+    'pactwoven.financial_policy_read_context(uuid,jsonb,jsonb)', 'pactwoven.financial_policy_governance_index(uuid,jsonb,jsonb)',
+    'pactwoven.financial_policy_original_read(uuid,jsonb,jsonb)', 'pactwoven.financial_policy_proposer_observation(uuid,jsonb,jsonb)'],
+  verifier: ['pactwoven.financial_policy_attest(jsonb)', 'pactwoven.financial_policy_resolve_observer(text,jsonb)'],
 } as const);

@@ -53,7 +53,7 @@ export async function financialPolicyFixture() {
     original = await roleSnapshot(admin); await lock.query('SET statement_timeout=0');
     await lock.query("SELECT pg_advisory_lock(hashtextextended('financial_policy_fixture',0))"); locked = true;
     const migrations = await loadMigrations();
-    if (migrations.length !== 11 || migrations[10]?.filename !== '0011_financial_policy_authority.sql') throw new Error('Exactly the assigned eleven migrations required.');
+    if (migrations.length !== 12 || migrations[10]?.filename !== '0011_financial_policy_authority.sql' || migrations[11]?.filename !== '0012_financial_policy_private_reads.sql') throw new Error('Exactly the assigned twelve migrations required.');
     await admin.query('DROP SCHEMA IF EXISTS pactwoven CASCADE');
     for (const migration of migrations) {
       const c = await admin.connect();

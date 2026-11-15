@@ -39,7 +39,7 @@ async function run(files, extra) {
   });
 }
 try {
-  for (const database of ['pactwoven_backend_test', 'pactwoven_migration_test', 'pactwoven_mandate_b1b_test', 'pactwoven_recovery_b1_test', 'pactwoven_finance_provenance_b2a_test', 'pactwoven_financial_fences_fa0_test', 'pactwoven_custody_setup_test', 'pactwoven_custody_reads_test', 'pactwoven_financial_policy_fa1_test']) {
+  for (const database of ['pactwoven_backend_test', 'pactwoven_migration_test', 'pactwoven_mandate_b1b_test', 'pactwoven_recovery_b1_test', 'pactwoven_finance_provenance_b2a_test', 'pactwoven_financial_fences_fa0_test', 'pactwoven_custody_setup_test', 'pactwoven_custody_reads_test', 'pactwoven_financial_policy_fa1_test', 'pactwoven_financial_policy_reads_test']) {
     // Refuse reuse: each CI run must have a fresh disposable database container.
     const existing = await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [database]);
     if (existing.rowCount) throw new Error('CI fixture database already exists.');
@@ -136,6 +136,12 @@ try {
   await run(['packages/db/src/financial-authentication-repository.test.ts'], financialPolicy);
   await run(['packages/db/src/financial-policy-isolation.test.ts'], financialPolicy);
   await run(['packages/db/src/financial-authority-pool.test.ts'], financialPolicy);
+  const financialPolicyReads = {
+    PACTWOVEN_FINANCIAL_POLICY_READ_TEST_ADMIN_URL_FILE: await protectedUrl('financial-policy-reads-admin', 'pactwoven_financial_policy_reads_test'),
+  };
+  // Private financial context and original-result reads use their own fresh fixture.
+  await run(['packages/db/src/financial-policy-read-repository.test.ts'], financialPolicyReads);
+  await run(['packages/db/src/financial-policy-read-isolation.test.ts'], financialPolicyReads);
   await run(['packages/db/src/migrate.test.ts'], {
     PACTWOVEN_RUN_MIGRATION_TESTS: '1',
     PACTWOVEN_MIGRATION_TEST_DATABASE_URL_FILE: await protectedUrl('migration-admin', 'pactwoven_migration_test'),

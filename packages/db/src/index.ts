@@ -28,3 +28,11 @@ export type { FinancialPolicyRepository, FinancialAuthorityCapability } from './
 export { PostgresFinancialPolicyRepository } from './financial-policy-repository.js';
 export { PostgresFinancialAuthenticationRepository } from './financial-authentication-repository.js';
 export { assertFinancialAuthorityPool, createFinancialAuthorityPool } from './financial-authority-pool.js';
+export { FinancialPolicyReadObservationSchema, FinancialPolicyReaderScopeSchema,
+  FinancialPolicyContextQuerySchema, FinancialPolicyContextSchema, FinancialGovernanceIndexQuerySchema,
+  FinancialGovernanceIndexSchema, FinancialPolicyOriginalQuerySchema, FinancialPolicyOriginalSchema,
+  FinancialPolicyProposerObservationSchema } from './financial-policy-read-schema.js';
+export type { FinancialPolicyReadObservation, FinancialPolicyReaderScope, FinancialPolicyContextQuery,
+  FinancialPolicyContext, FinancialGovernanceIndexQuery, FinancialGovernanceIndex, FinancialPolicyOriginalQuery,
+  FinancialPolicyOriginal, FinancialPolicyProposerObservation, FinancialPolicyReaders } from './financial-policy-read-schema.js';
+export { PostgresFinancialPolicyReaders } from './financial-policy-read-repository.js';

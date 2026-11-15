@@ -10,7 +10,7 @@ import { hasLoopbackMigrationTransport, hasVerifiedMigrationTls, loadMigrations,
 const authoredMigrationFiles = ['0001_foundation.sql', '0002_organization_bootstrap.sql', '0003_identity_access.sql',
   '0004_mandate_authority.sql', '0005_access_acceptance.sql', '0006_access_recovery_fences.sql', '0007_finance_provenance.sql',
   '0008_financial_authority_fences.sql', '0009_custody_setup_owner_bindings.sql', '0010_custody_setup_private_reads.sql',
-  '0011_financial_policy_authority.sql'];
+  '0011_financial_policy_authority.sql', '0012_financial_policy_private_reads.sql'];
 function fixtureDatabaseUrl(source: string): string {
   const url = new URL(source);
   url.password = 'fixture';
@@ -137,10 +137,10 @@ describe('development migration validation', () => {
     await expect(loadMigrations(gap)).rejects.toMatchObject({ code: 'MIGRATION_ORDER_INVALID' });
     await expect(loadMigrations(duplicate)).rejects.toMatchObject({ code: 'MIGRATION_ORDER_INVALID' });
   });
-  it('loads the exact eleven authored migrations including reserved financial-policy SQL without a database connection', async () => {
+  it('loads the exact twelve authored migrations including financial-policy private reads without a database connection', async () => {
     const migrations = await loadMigrations();
     expect(migrations.map(migration => migration.filename)).toEqual(authoredMigrationFiles);
-    expect(migrations.map(migration => migration.number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(migrations.map(migration => migration.number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     for (const migration of migrations) {
       expect(migration.checksum).toMatch(/^[a-f0-9]{64}$/);
       expect(migration.statements.length).toBeGreaterThan(0);

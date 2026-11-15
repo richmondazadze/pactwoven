@@ -165,6 +165,32 @@ suite('isolated real PostgreSQL mandate authority', () => {
     expect((await admin.query('SELECT count(*)::int AS n FROM pactwoven.mandate_outbox')).rows[0].n).toBe(4);
     expect(JSON.stringify(base.review)).not.toMatch(/tokenHash|requestNonce|session_finance/);
   });
+  it('paginates only latest proposal versions after revision while preserving exact historical reads', async () => {
+    const base = await propose();
+    const second = await mutate({ kind: 'propose', command: { ...base.command, proposalId: 'proposal_b' } }, 'propose_second_0001', 'operations_a');
+    const originalPage = await repository.list(identity(), 'responsibility_a', { limit: 1 }, 'trace');
+    expect(originalPage.items.map(item => item.proposal)).toEqual([base.intent.proposal]);
+    expect(originalPage.nextCursor).not.toBeNull();
+    const revised = await mutate({ kind: 'propose', command: { ...base.command, expectedProposalVersion: 1, previousProposal: base.intent.proposal } }, 'revise_proposal_0001', 'operations_a');
+    const revisedReference = { id: revised.target.id, version: revised.target.version, hash: revised.target.hash };
+    const secondReference = { id: second.target.id, version: second.target.version, hash: second.target.hash };
+    const before = await admin.query('SELECT (SELECT count(*)::int FROM pactwoven.mandate_operations) AS operations, (SELECT count(*)::int FROM pactwoven.mandate_audit) AS audit, (SELECT count(*)::int FROM pactwoven.mandate_outbox) AS outbox');
+    const all = await repository.list(identity(), 'responsibility_a', { limit: 25 }, 'trace');
+    expect(all.items.map(item => item.proposal)).toEqual([revisedReference, secondReference]);
+    expect(all.items.map(item => item.decisionState)).toEqual(['OPEN', 'OPEN']);
+    expect(all.nextCursor).toBeNull();
+    const firstPage = await repository.list(identity(), 'responsibility_a', { limit: 1 }, 'trace');
+    expect(firstPage.items.map(item => item.proposal)).toEqual([revisedReference]);
+    const nextPage = await repository.list(identity(), 'responsibility_a', { limit: 1, cursor: firstPage.nextCursor! }, 'trace');
+    expect(nextPage.items.map(item => item.proposal)).toEqual([secondReference]);
+    expect(nextPage.nextCursor).toBeNull();
+    await expect(repository.list(identity(), 'responsibility_a', { limit: 1, cursor: originalPage.nextCursor! }, 'trace')).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+    const historical = await repository.review(identity(), 'responsibility_a', 'proposal_a', { version: 1 }, 'trace');
+    expect(historical.effectiveDecisionState).toBe('SUPERSEDED');
+    expect(historical.envelope.decision?.replacement).toEqual(revisedReference);
+    expect((await repository.review(identity(), 'responsibility_a', 'proposal_a', { version: 2 }, 'trace')).effectiveDecisionState).toBe('OPEN');
+    expect((await admin.query('SELECT (SELECT count(*)::int FROM pactwoven.mandate_operations) AS operations, (SELECT count(*)::int FROM pactwoven.mandate_audit) AS audit, (SELECT count(*)::int FROM pactwoven.mandate_outbox) AS outbox')).rows).toEqual(before.rows);
+  });
   it('preserves head epochs, resumes independently, and never resumes revoked accepted authority', async () => {
     await authorize();
     expect((await control('PAUSE', 'pause_mandate_0001')).target.version).toBe(2);

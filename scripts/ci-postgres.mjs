@@ -39,7 +39,7 @@ async function run(files, extra) {
   });
 }
 try {
-  for (const database of ['pactwoven_backend_test', 'pactwoven_migration_test', 'pactwoven_mandate_b1b_test', 'pactwoven_recovery_b1_test']) {
+  for (const database of ['pactwoven_backend_test', 'pactwoven_migration_test', 'pactwoven_mandate_b1b_test', 'pactwoven_recovery_b1_test', 'pactwoven_finance_provenance_b2a_test']) {
     // Refuse reuse: each CI run must have a fresh disposable database container.
     const existing = await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [database]);
     if (existing.rowCount) throw new Error('CI fixture database already exists.');
@@ -96,6 +96,13 @@ try {
   }
   await run(['packages/db/src/access-recovery-repository.test.ts'], recovery);
   await run(['packages/db/src/access-recovery-isolation.test.ts'], recovery);
+  const finance = {
+    PACTWOVEN_FINANCE_PROVENANCE_TEST_ADMIN_URL_FILE: await protectedUrl('finance-admin', 'pactwoven_finance_provenance_b2a_test'),
+  };
+  // Each suite resets only the exclusive inert-provenance database and its fixture roles.
+  await run(['packages/db/src/finance-provenance-repository.test.ts'], finance);
+  await run(['packages/db/src/finance-provenance-isolation.test.ts'], finance);
+  await run(['packages/db/src/finance-provenance-pool.test.ts'], finance);
   await run(['packages/db/src/migrate.test.ts'], {
     PACTWOVEN_RUN_MIGRATION_TESTS: '1',
     PACTWOVEN_MIGRATION_TEST_DATABASE_URL_FILE: await protectedUrl('migration-admin', 'pactwoven_migration_test'),

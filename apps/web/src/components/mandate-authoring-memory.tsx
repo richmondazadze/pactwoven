@@ -7,16 +7,17 @@ import { RequestError } from '../lib/api';
 import { immutableMandate } from '../lib/mandate-capsule';
 import { mandateOperationSucceeded } from '../lib/mandate-actions';
 import { qualifyAuthoringOperation, type MandateAuthoringCapsule } from '../lib/mandate-authoring';
-import { listAuthoringManifests, locatorFromAuthoringCapsule, type AuthoringLocator } from '../lib/mandate-authoring-recovery';
+import { assertAuthoringAttempt, listAuthoringManifests, locatorFromAuthoringCapsule, type AuthoringLocator } from '../lib/mandate-authoring-recovery';
 import { authoringWork, createMandateWorkCoordinator, decisionWork } from '../lib/mandate-work-coordination';
 import { mandateRecoveryScope, readMandateRecovery } from '../lib/mandate-recovery';
+import type { AuthoringQualifiedReceipt } from '../lib/mandate-authoring-transport';
 import type { MandateReadScope } from '../lib/mandates';
 import { useMandateRecoveryMemory } from './mandate-recovery-memory';
 type MemoryScope = Omit<MandateReadScope, 'responsibilityId'>;
 const same = (a: unknown, b: unknown) => canonicalJson(a) === canonicalJson(b);
 function useAuthoringStore(scope: MemoryScope) {
   const c1 = useMandateRecoveryMemory(), c1Ref = useRef(c1); c1Ref.current = c1;
-  const alive = useRef(false), denied = useRef(false), capsules = useRef(new Map<string, MandateAuthoringCapsule>()), receipts = useRef(new Map<string, MandateOperationResult>()), selection = useRef<MandateAuthoringCapsule | null>(null);
+  const alive = useRef(false), denied = useRef(false), capsules = useRef(new Map<string, MandateAuthoringCapsule>()), receipts = useRef(new Map<string, MandateOperationResult>()), qualifiedReceipts = useRef(new Map<string, AuthoringQualifiedReceipt>()), selection = useRef<MandateAuthoringCapsule | null>(null);
   const [ready, setReady] = useState(false), [hidden, setHidden] = useState(false), [, update] = useState(0);
   const [inventory, setInventory] = useState<ReturnType<typeof listAuthoringManifests>>({ blocked: true, manifests: [] });
   function assertAlive() { if (!alive.current || denied.current || c1Ref.current.hidden) throw new RequestError('MANDATE_SCOPE_CHANGED', 'This private authoring scope has ended.', 403); }
@@ -30,9 +31,9 @@ function useAuthoringStore(scope: MemoryScope) {
   function reload() { assertAlive(); setInventory(listAuthoringManifests(browserRecoveryStorage(), scope)); setReady(true); update(n => n + 1); }
   useLayoutEffect(() => {
     alive.current = true; denied.current = false; coordinator.current = makeCoordinator(); reload();
-    return () => { alive.current = false; coordinator.current?.clear(); capsules.current.clear(); receipts.current.clear(); selection.current = null; };
+    return () => { alive.current = false; coordinator.current?.clear(); capsules.current.clear(); receipts.current.clear(); qualifiedReceipts.current.clear(); selection.current = null; };
   }, [scope]); // Scope identity is pinned by the keyed workspace provider.
-  function deny() { denied.current = true; coordinator.current?.clear(); capsules.current.clear(); receipts.current.clear(); selection.current = null; setHidden(true); setInventory({ blocked: true, manifests: [] }); }
+  function deny() { denied.current = true; coordinator.current?.clear(); capsules.current.clear(); receipts.current.clear(); qualifiedReceipts.current.clear(); selection.current = null; setHidden(true); setInventory({ blocked: true, manifests: [] }); }
   useLayoutEffect(() => { if (c1.hidden) deny(); }, [c1.hidden]);
   function retain(input: MandateAuthoringCapsule) { assertAlive(); checkScope(input.scope); const value = immutableMandate(structuredClone(input)); capsules.current.set(canonicalJson(locatorFromAuthoringCapsule(value)), value); selection.current = value; update(n => n + 1); }
   function select(input: MandateAuthoringCapsule | null) { if (input) retain(input); else { assertAlive(); selection.current = null; update(n => n + 1); } }
@@ -46,7 +47,10 @@ function useAuthoringStore(scope: MemoryScope) {
     if (prior && !same(prior, result)) throw new RequestError('AUTHORING_UNCONFIRMED', 'The original recorded result changed.');
     receipts.current.set(key, immutableMandate(structuredClone(result))); reload();
   }
-  return { ready, hidden, inventory, reload, deny, retain, select, original, recorded, onRecorded,
+  function onPending(locator: AuthoringLocator) { assertAlive(); if (!same(locator.scope, mandateRecoveryScope(scope))) throw new RequestError('MANDATE_SCOPE_CHANGED', 'The original pending reference belongs to another scope.', 403); assertAuthoringAttempt(browserRecoveryStorage(), locator); reload(); }
+  function onQualified(receipt: AuthoringQualifiedReceipt) { assertAlive(); if (!same(receipt.locator.scope, mandateRecoveryScope(scope))) throw new RequestError('MANDATE_SCOPE_CHANGED', 'The qualified record belongs to another scope.', 403); qualifiedReceipts.current.set(canonicalJson(receipt.locator), immutableMandate(structuredClone(receipt))); update(n => n + 1); }
+  function qualified(locator: AuthoringLocator) { assertAlive(); return qualifiedReceipts.current.get(canonicalJson(locator)) ?? null; }
+  return { ready, hidden, inventory, reload, deny, retain, select, original, recorded, onRecorded, onPending, onQualified, qualified,
     selected: () => { assertAlive(); return selection.current ? { preparationId: selection.current.manifest.preparationId, integrityHash: selection.current.integrityHash } : null; },
     storage: () => { assertAlive(); return browserRecoveryStorage(); },
     work: { acquire: (input: Parameters<ReturnType<typeof createMandateWorkCoordinator>['acquire']>[0]) => { assertAlive(); return coordinator.current!.acquire(input); }, assert: (ticket: Parameters<ReturnType<typeof createMandateWorkCoordinator>['assert']>[0]) => { assertAlive(); coordinator.current!.assert(ticket); }, markDispatched: (ticket: Parameters<ReturnType<typeof createMandateWorkCoordinator>['markDispatched']>[0]) => { assertAlive(); coordinator.current!.markDispatched(ticket); }, state: (ticket: Parameters<ReturnType<typeof createMandateWorkCoordinator>['state']>[0]) => coordinator.current!.state(ticket), release: (ticket: Parameters<ReturnType<typeof createMandateWorkCoordinator>['release']>[0]) => coordinator.current!.release(ticket), clear: () => coordinator.current!.clear() },

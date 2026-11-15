@@ -112,3 +112,18 @@ export async function qualifyAuthoringProposal(input: unknown, scope: MandateRea
   if (await authoringCommandDigest({ ...scope, actorId: p.requesterId }, 'proposal', command) !== locator.commandHash || (capsule && (capsule.kind !== 'proposal' || !same(locatorFromAuthoringCapsule(capsule), locator) || !same(capsule.command, command))) || (d.state === 'OPEN' && (d.operationId !== result.operation.id || d.createdAt !== p.createdAt))) invalid();
   return immutableMandate(review);
 }
+
+export function parseAuthoringUtc(value: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(value)) invalid('Enter a complete date and time in UTC.');
+  const seconds = value.length === 16 ? `${value}:00` : value;
+  const date = new Date(`${seconds}Z`);
+  if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 19) !== seconds) invalid('Enter a valid calendar date and time in UTC.');
+  return date.toISOString();
+}
+export function authoringRevisionAvailable(review: MandateReview, scope: MandateReadScope, now: number) {
+  const e = review.envelope, p = e.proposal, eligibility = e.eligibility.find(item => item.action === 'PROPOSE');
+  return Boolean(p && p.requesterId === scope.actorId && e.decision?.state === 'OPEN' && p.version < 2_147_483_647 && Date.parse(p.expiresAt) > now &&
+    e.organizationEpoch === scope.organizationEpoch && e.responsibility.organizationId === scope.organizationId && e.responsibility.environment === scope.environment && e.responsibility.id === scope.responsibilityId &&
+    scope.principalKind === 'human' && scope.roles.some(role => ['owner', 'finance', 'operations'].includes(role)) && scope.siteIds.includes(e.responsibility.siteId) && scope.actionSiteIds.includes(e.responsibility.siteId) &&
+    eligibility?.eligible && !eligibility.requiresStepUp && now >= Date.parse(e.observedAt) && now < Date.parse(e.observedAt) + MANDATE_OBSERVATION_LIFETIME_MS);
+}

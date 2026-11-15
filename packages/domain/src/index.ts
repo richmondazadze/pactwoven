@@ -9,3 +9,4 @@ export * from './access.js';
 export * from './mandate-proposals.js';
 export * from './mandate-authorization.js';
 export * from './mandate-reads.js';
+export * from './finance-provenance.js';

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { commandDigest } from '@pactwoven/contracts/canonical';
 import { MandateDocumentReadSchema, MandateReviewSchema, type MandateDocumentRead } from '@pactwoven/contracts';
 import { mandateReadFixture, mandateFixtureNow as now, mandateFixtureTime as at } from './mandates.test-fixtures';
-import { authoringAvailable, authoringCommandDigest, createAuthoringManifest, createDocumentAuthoringCapsule, createProposalAuthoringCapsule, normalizeAuthoringText, qualifyAuthoringProposal, selectionFromDocument, verifyAuthoringCapsule, type MandateAuthoringCapsule } from './mandate-authoring';
+import { authoringAvailable, authoringRevisionAvailable, parseAuthoringUtc, authoringCommandDigest, createAuthoringManifest, createDocumentAuthoringCapsule, createProposalAuthoringCapsule, normalizeAuthoringText, qualifyAuthoringProposal, selectionFromDocument, verifyAuthoringCapsule, type MandateAuthoringCapsule } from './mandate-authoring';
 import { locatorFromAuthoringCapsule } from './mandate-authoring-recovery';
 async function fixture() {
   const f = await mandateReadFixture(false); f.page.eligibility = [{ action: 'PROPOSE', eligible: true, requiresStepUp: false, blockers: [] }];
@@ -66,5 +66,15 @@ describe('immutable advice-only authoring', () => {
     const result = { ...f.documents[0].saveOperation, kind: 'mandate.propose' as const, commandHash: f.capsule.commandHash, target: { kind: 'proposal' as const, ...reference }, observedAt: p.createdAt, operation: { ...f.documents[0].saveOperation.operation, id: 'original_proposal_operation', aggregateId: p.id, aggregateVersion: 1 } };
     expect((await qualifyAuthoringProposal(review, f.scope, locator, result, f.capsule)).envelope.decision!.state).toBe('REJECTED');
     await expect(qualifyAuthoringProposal(review, { ...f.scope, actorId: 'different_reader' }, locator, result)).rejects.toThrow();
+  });
+});
+
+describe('native UTC terms and revision entry', () => {
+  it('interprets labeled UTC fields without the browser local offset', () => { expect(parseAuthoringUtc('2026-11-15T12:34')).toBe('2026-11-15T12:34:00.000Z'); expect(parseAuthoringUtc('2026-11-15T12:34:56')).toBe('2026-11-15T12:34:56.000Z'); });
+  it.each(['2026-02-30T12:00', '2026-11-15T24:00', '2026-11-15', '', '2026-11-15T12:00Z', '2026-11-15T12:00-06:00'])('rejects invalid or ambiguously zoned UTC entry %s', input => expect(() => parseAuthoringUtc(input)).toThrow());
+  it('offers revision only to the currently eligible original requester of an open unexpired proposal', async () => {
+    const f = await fixture(), review = structuredClone(f.review), p = review.envelope.proposal!; review.envelope.eligibility = [{ action: 'PROPOSE', eligible: true, requiresStepUp: false, blockers: [] }]; const scope = { ...f.scope, actorId: p.requesterId };
+    expect(authoringRevisionAvailable(review, scope, now)).toBe(true); expect(authoringRevisionAvailable(review, f.scope, now)).toBe(false); expect(authoringRevisionAvailable(review, scope, now + 60000)).toBe(false); expect(authoringRevisionAvailable(review, { ...scope, actionSiteIds: [] }, now)).toBe(false);
+    review.envelope.decision!.state = 'REJECTED'; expect(authoringRevisionAvailable(review, scope, now)).toBe(false);
   });
 });

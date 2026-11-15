@@ -55,5 +55,22 @@ describe('exact authoring dispatch and explicit recovery', () => {
   it('rejects mismatching saved receipt time even when the document and target hashes agree', async () => { const f = await transportCase(); beginAuthoringAttempt(f.store, f.manifest, f.locator); vi.stubGlobal('fetch', vi.fn(async () => json(f.document))); await expect(readAuthoringReceipt(f.locator, { ...f.result, observedAt: at(1500) }, f.scope, f.context)).rejects.toThrow(); expect(assertAuthoringAttempt(f.store, f.locator).completed).toHaveLength(0); });
   it('post-response scope change leaves a recoverable locator and no private completion', async () => { const f = await transportCase(); vi.stubGlobal('fetch', vi.fn(async () => { f.changeScope(null); return json(f.result); })); await expect(sendMandateDocument(f.capsule, f.context, { kind: 'first', now: Date.now })).rejects.toThrow(); expect(f.context.recorded(f.locator)).toBeNull(); expect(assertAuthoringAttempt(f.store, f.locator).pending).toEqual(f.locator); });
   it.each(['check', 'checked', 'reviewed'] as const)('does not send from retry phase %s', async phase => { const f = await transportCase(); beginAuthoringAttempt(f.store, f.manifest, f.locator); const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher); await expect(sendMandateDocument(f.capsule, f.context, { kind: 'retry', currentFlow: () => ({ phase, reviewedHash: f.capsule.integrityHash }) })).rejects.toThrow(); expect(fetcher).not.toHaveBeenCalled(); });
+  it('retains the qualified full record before a local checkpoint failure without enabling POST retry', async () => {
+    const f = await transportCase(); beginAuthoringAttempt(f.store, f.manifest, f.locator); const onQualified = vi.fn(); f.context.onQualified = onQualified; f.store.setItem = () => { throw new Error('checkpoint denied'); }; const fetcher = vi.fn(async () => json(f.document)); vi.stubGlobal('fetch', fetcher);
+    await expect(readAuthoringReceipt(f.locator, f.result, f.scope, f.context)).rejects.toThrow(); expect(onQualified).toHaveBeenCalledTimes(1); expect(onQualified.mock.calls[0]![0]).toEqual({ locator: f.locator, result: f.result, record: f.document }); expect(f.context.recorded(f.locator)).toEqual(f.result); expect(assertAuthoringAttempt(f.store, f.locator).pending).toEqual(f.locator);
+    await expect(sendMandateDocument(f.capsule, f.context, { kind: 'retry', currentFlow: () => permit(f.capsule.integrityHash) })).rejects.toMatchObject({ code: 'AUTHORING_ALREADY_RECORDED' }); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('does not expose a full qualified record after the read scope has ended', async () => {
+    const f = await transportCase(); beginAuthoringAttempt(f.store, f.manifest, f.locator); const onQualified = vi.fn(); f.context.onQualified = onQualified; vi.stubGlobal('fetch', vi.fn(async () => { f.changeScope(null); return json(f.document); }));
+    await expect(readAuthoringReceipt(f.locator, f.result, f.scope, f.context)).rejects.toThrow(); expect(onQualified).not.toHaveBeenCalled(); expect(assertAuthoringAttempt(f.store, f.locator).completed).toHaveLength(0);
+  });
+  it('publishes the checked pending locator before fetch so navigation retains visible recovery', async () => {
+    const f = await transportCase(), events: string[] = []; f.context.onPending = locator => { events.push('pending'); expect(assertAuthoringAttempt(f.store, locator).pending).toEqual(f.locator); }; vi.stubGlobal('fetch', vi.fn(async () => { events.push('fetch'); throw new Error('response lost'); }));
+    await expect(sendMandateDocument(f.capsule, f.context, { kind: 'first', now: Date.now })).rejects.toThrow(); expect(events).toEqual(['pending', 'fetch']); expect(assertAuthoringAttempt(f.store, f.locator).pending).toEqual(f.locator);
+  });
+  it('rechecks scope after publishing a pending reference without erasing it', async () => {
+    const f = await transportCase(), fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher); f.context.onPending = () => f.changeScope(null);
+    await expect(sendMandateDocument(f.capsule, f.context, { kind: 'first', now: Date.now })).rejects.toThrow(); expect(fetcher).not.toHaveBeenCalled(); expect(assertAuthoringAttempt(f.store, f.locator).pending).toEqual(f.locator);
+  });
   it('cannot skip original check/review through state transitions', () => { expect(authoringRetryFlow(initialAuthoringRetry, { type: 'review', hash: 'a' })).toEqual(initialAuthoringRetry); expect(authoringRetryFlow(initialAuthoringRetry, { type: 'retry' })).toEqual(initialAuthoringRetry); });
 });

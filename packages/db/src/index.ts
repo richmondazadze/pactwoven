@@ -9,3 +9,6 @@ export { PostgresMandateRepository } from './mandate-repository.js';
 export * from './access-recovery-schema.js';
 export { PostgresAccessRecoveryRepository } from './access-recovery-repository.js';
 export { assertAccessRecoveryReady, assertAccessRecoveryIsolation } from './access-recovery-isolation.js';
+export * from './finance-provenance-schema.js';
+export { PostgresFinanceProvenanceRepository } from './finance-provenance-repository.js';
+export { assertFinanceProvenancePool, createFinanceProvenancePool } from './finance-provenance-pool.js';

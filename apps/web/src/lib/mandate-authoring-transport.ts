@@ -1,4 +1,4 @@
-import { IdSchema, MandateOperationResultSchema, MandateReviewSchema, type MandateOperationResult } from '@pactwoven/contracts';
+import { IdSchema, MandateOperationResultSchema, MandateReviewSchema, type MandateOperationResult, type MandateDocumentRead, type MandateReview } from '@pactwoven/contracts';
 import { canonicalJson } from '@pactwoven/contracts/canonical';
 import { apiRequest, RequestError } from './api';
 import { getApiBase } from './config';
@@ -23,12 +23,16 @@ export function authoringRetryFlow(flow: AuthoringRetryFlow, event: { type: 'che
   if (event.type === 'retry' && flow.phase === 'reviewed') return { ...flow, phase: 'retrying' };
   return flow;
 }
+export type AuthoringQualifiedReceipt = { locator: AuthoringLocator; result: MandateOperationResult; record: MandateDocumentRead | MandateReview };
+export type AuthoringCompletion = Awaited<ReturnType<typeof readAuthoringReceipt>>;
 export type AuthoringTransportContext = MandateTransportContext & {
   storage: () => RecoveryStorage | null;
   work: MandateWorkCoordinator;
   selected: () => { preparationId: string; integrityHash: string } | null;
   recorded: (locator: AuthoringLocator) => MandateOperationResult | null;
   onRecorded: (locator: AuthoringLocator, result: MandateOperationResult) => void;
+  onPending?: (locator: AuthoringLocator) => void;
+  onQualified?: (receipt: AuthoringQualifiedReceipt) => void;
 };
 function guard(scope: MandateReadScope, context: MandateTransportContext): undefined {
   context.signal.throwIfAborted();
@@ -70,6 +74,7 @@ export async function sendAuthoringAttempt(input: MandateAuthoringCapsule, conte
         allowed();
         if (permission.kind === 'first') beginAuthoringAttempt(context.storage(), capsule.manifest, locator);
         else assertAuthoringAttempt(context.storage(), locator);
+        context.onPending?.(locator);
         // Persistence is synchronous, but a hostile/custom storage adapter may revoke ownership.
         allowed(); context.work.markDispatched(ticket); return undefined;
       },
@@ -119,7 +124,7 @@ export async function readAuthoringReceipt(input: AuthoringLocator, resultInput:
       const raw = await apiRequest(mandateReviewPath(locator.responsibilityId, locator.target.id, locator.target.version), MandateReviewSchema, requestToken(scope, context), { signal: context.signal, beforeDispatch: guarded });
       guarded(); record = await qualifyAuthoringProposal(raw, scope, locator, result, original);
     }
-    guarded();
+    guarded(); context.onQualified?.(immutableMandate({ locator, result, record })); guarded();
     const manifest = checkpointAuthoringAttempt(context.storage(), locator, { locator, reference: { id: result.target.id, version: result.target.version, hash: result.target.hash }, operationId: result.operation.id, savedAt: result.observedAt }, 'document' in record ? selectionFromDocument(record) : undefined);
     return immutableMandate({ result, record, manifest });
   } finally { context.work.release(ticket); }

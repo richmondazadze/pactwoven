@@ -5,3 +5,4 @@ export * from './mandates';
 export * from './mandate-http';
 export * from './mandate-documents-http';
 export * from './access-recovery';
+export * from './finance-provenance';

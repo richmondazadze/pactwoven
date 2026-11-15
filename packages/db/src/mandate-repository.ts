@@ -323,7 +323,14 @@ export class PostgresMandateRepository implements MandateRepository {
     return this.transaction(async client => {
       const context = await this.context(client, identity, responsibilityId, false, trace), loaded = await this.load(client, context);
       const source = await this.refreshRead(client, identity, loaded.source, trace);
-      const proposals = [...source.proposals].sort((a, b) => a.id.localeCompare(b.id) || a.version - b.version);
+      // Collection rows represent the latest version of each proposal; complete
+      // history remains in source for validation and exact-version review.
+      const latest = new Map<string, MandateProposalVersion>();
+      for (const proposal of source.proposals) {
+        const prior = latest.get(proposal.id);
+        if (!prior || proposal.version > prior.version) latest.set(proposal.id, proposal);
+      }
+      const proposals = [...latest.values()].sort((a, b) => a.id.localeCompare(b.id));
       let offset = 0;
       if (query.cursor) {
         let cursor: { organizationId: string; responsibilityId: string; proposal: { id: string; version: number; hash: string } };

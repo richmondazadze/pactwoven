@@ -35,6 +35,7 @@ const adapterCodecVersions = Object.freeze({
   'jsonc-parser': '3.3.1',
 });
 const safeTestExternals = new Set(['vitest', 'node:test', 'node:assert', 'node:assert/strict', 'assert', 'assert/strict']);
+const isolatedBuiltinFixture = 'programs/pactwoven/tests/execution/offline.test.ts';
 const builtins = new Set(builtinModules.flatMap((name) => [name, `node:${name}`]));
 const privilegedWebExternals = /^(?:pg(?:-native)?|postgres|drizzle-orm|drizzle-kit|@neondatabase\/[^/]+|@prisma\/client|@coinbase\/cdp-sdk|@clerk\/backend|@aws-sdk\/[^/]+|@azure\/[^/]+|stripe|googleapis|openai|@anthropic-ai\/[^/]+|@supabase\/supabase-js)(?:\/|$)/;
 const webEffectBuiltins = /^(?:node:)?(?:fs|child_process|worker_threads|net|tls|dns|module)(?:\/|$)/;
@@ -168,6 +169,7 @@ export function checkBoundaries({ root = process.cwd() } = {}) {
   }
 
   function checkTarget(workspace, candidate, file, line, test, requireExists = false) {
+    if (/[\\%?#\x00-\x1f]/.test(candidate)) { add(file, 'noncanonical local module target', line); return; }
     const target = path.resolve(candidate);
     if (!contained(root, target)) { add(file, 'import escapes repository root', line); return; }
     checkEdge(workspace.owner, ownerOf(root, target), file, line, test);
@@ -177,14 +179,21 @@ export function checkBoundaries({ root = process.cwd() } = {}) {
       return;
     }
     const real = fs.realpathSync(existing);
+    const fixturePath = path.join(root, isolatedBuiltinFixture);
+    const resolvedStat = fs.statSync(existing);
+    const fixtureStat = fs.existsSync(fixturePath) ? fs.statSync(fixturePath) : null;
+    if ([existing, real].some((resolved) => posix(path.relative(root, resolved)).toLowerCase() === isolatedBuiltinFixture)
+      || (fixtureStat && fixtureStat.dev === resolvedStat.dev && fixtureStat.ino === resolvedStat.ino)) {
+      add(file, 'isolated builtin fixture cannot be imported', line);
+    }
     if (!contained(root, real)) add(file, 'resolved import escapes repository through symlink', line);
     else checkEdge(workspace.owner, ownerOf(root, real), file, line, test);
   }
 
-  function checkExternal(workspace, specifier, file, line, test) {
+  function checkExternal(workspace, specifier, file, line, test, reviewedBuiltinSynchronization = false) {
     if (test && safeTestExternals.has(packageName(specifier))) return;
     if (test && safeTestExternals.has(specifier)) return;
-    if (/^(?:node:)?module(?:\/|$)/.test(specifier)) add(file, 'custom runtime module loading requires boundary review', line);
+    if (/^(?:node:)?module(?:\/|$)/.test(specifier) && !reviewedBuiltinSynchronization) add(file, 'custom runtime module loading requires boundary review', line);
     const codecVersion = Object.hasOwn(adapterCodecVersions, specifier) ? adapterCodecVersions[specifier] : null;
     const reviewedCodec = workspace.owner === 'packages/adapters' && codecVersion !== null
       && workspace.manifest.dependencies?.[specifier] === codecVersion;
@@ -192,10 +201,10 @@ export function checkBoundaries({ root = process.cwd() } = {}) {
     if (workspace.owner === 'apps/web' && (privilegedWebExternals.test(specifier) || webEffectBuiltins.test(specifier))) add(file, `privileged dependency is unavailable to web: ${packageName(specifier)}`, line);
   }
 
-  function resolveSpecifier(workspace, specifier, file, line, test, seen = new Set()) {
+  function resolveSpecifier(workspace, specifier, file, line, test, seen = new Set(), reviewedBuiltinSynchronization = false) {
     if (seen.has(specifier)) { add(file, 'circular module alias', line); return; }
     seen.add(specifier);
-    if (specifier.includes('\\') || /[\x00-\x1f]/.test(specifier)) { add(file, 'noncanonical module path', line); return; }
+    if (/[\\%\x00-\x1f]/.test(specifier)) { add(file, 'noncanonical module path', line); return; }
     if (/^(?:https?|data|file):/.test(specifier)) { add(file, 'remote or URL module requires boundary review', line); return; }
     const clean = specifier.replace(/[?#].*$/, (suffix) => specifier.startsWith('#') ? suffix : '');
     const alias = matchingAlias(clean, workspace.config.paths);
@@ -231,23 +240,33 @@ export function checkBoundaries({ root = process.cwd() } = {}) {
       return;
     }
     const targetOwner = names.get(name) ?? (name.startsWith('@pactwoven/') ? Object.keys(allowedGraph).find((owner) => owner.split('/')[1] === name.slice('@pactwoven/'.length)) : null);
-    if (targetOwner) { checkEdge(workspace.owner, targetOwner, file, line, test); return; }
+    if (targetOwner) {
+      checkEdge(workspace.owner, targetOwner, file, line, test);
+      const subpath = clean.slice(name.length).replace(/^\//, '');
+      if (subpath) checkTarget(workspace, path.resolve(root, targetOwner, subpath), file, line, test);
+      return;
+    }
     if (name.startsWith('@pactwoven/')) { add(file, 'unknown internal package', line); return; }
     if (workspace.config.explicitBaseUrl) {
       const candidate = path.resolve(workspace.config.baseUrl, clean);
       if (resolveExisting(candidate)) { checkTarget(workspace, candidate, file, line, test, true); return; }
     }
-    checkExternal(workspace, clean, file, line, test);
+    checkExternal(workspace, clean, file, line, test, reviewedBuiltinSynchronization);
     if (!dependency && !builtins.has(clean) && !(test && safeTestExternals.has(name))) add(file, `undeclared external dependency: ${name}`, line);
   }
 
   function inspectSource(workspace, file) {
     filesInspected += 1;
     const test = testPattern.test(posix(file));
+    const isolatedFixture = posix(path.relative(root, file)) === isolatedBuiltinFixture;
     let ast;
     try { ast = parse(fs.readFileSync(file, 'utf8'), { sourceType: 'unambiguous', plugins: ['typescript', ...(/\.[jt]sx$/.test(file) ? ['jsx'] : [])], createImportExpressions: true }); }
     catch { add(file, 'source cannot be parsed for boundary inspection'); return; }
     visit(ast, (node, parent) => {
+      const emptyExport = node.type === 'ExportNamedDeclaration' && !node.source && !node.declaration && node.specifiers?.length === 0;
+      if (isolatedFixture && !emptyExport && ['ExportNamedDeclaration', 'ExportDefaultDeclaration', 'ExportAllDeclaration', 'TSExportAssignment', 'TSNamespaceExportDeclaration'].includes(node.type)) {
+        add(file, 'isolated builtin fixture cannot export bindings', node.loc?.start.line);
+      }
       let argument;
       if (['ImportDeclaration', 'ExportNamedDeclaration', 'ExportAllDeclaration'].includes(node.type)) argument = node.source;
       if (node.type === 'ImportExpression') argument = node.source;
@@ -265,7 +284,18 @@ export function checkBoundaries({ root = process.cwd() } = {}) {
       if (argument) {
         const specifier = staticString(argument);
         if (specifier === null) add(file, 'computed module loading requires explicit boundary review', node.loc?.start.line);
-        else resolveSpecifier(workspace, specifier, file, node.loc?.start.line, test);
+        else {
+          // This offline fixture synchronizes mocked Node filesystem exports. It
+          // receives no module loader, namespace, dynamic import or re-export.
+          const binding = node.specifiers?.[0];
+          const reviewedBuiltinSynchronization = test
+            && isolatedFixture
+            && node.type === 'ImportDeclaration' && specifier === 'node:module'
+            && node.specifiers.length === 1 && binding?.type === 'ImportSpecifier'
+            && binding.imported?.type === 'Identifier' && binding.imported.name === 'syncBuiltinESMExports'
+            && binding.local?.name === 'syncBuiltinESMExports';
+          resolveSpecifier(workspace, specifier, file, node.loc?.start.line, test, new Set(), reviewedBuiltinSynchronization);
+        }
       }
       if (node.type === 'Identifier' && node.name === 'require') {
         const direct = parent && ((parent.type === 'CallExpression' && parent.callee === node)
@@ -310,6 +340,15 @@ export function checkBoundaries({ root = process.cwd() } = {}) {
     for (const exported of strings(workspace.manifest.exports)) {
       const target = path.resolve(workspace.directory, exported);
       if (!exported.startsWith('./') || !contained(workspace.directory, target)) add(manifestPath, 'package export escapes its owning module');
+    }
+    for (const entry of ['exports', 'main', 'module', 'types', 'typings', 'browser'].flatMap((field) => strings(workspace.manifest[field]))) {
+      if (/[\\%?#\x00-\x1f]/.test(entry) || (entry.match(/\*/g)?.length ?? 0) > 1) { add(manifestPath, 'noncanonical package entry target'); continue; }
+      const fixture = posix(path.join(root, isolatedBuiltinFixture)).toLowerCase();
+      const actualTarget = path.resolve(workspace.directory, entry);
+      const target = posix(actualTarget).toLowerCase();
+      const equivalents = [fixture, ...['.js', '.mjs', '.cjs', '.mts', '.cts', '.d.ts'].map((extension) => fixture.replace(/\.ts$/, extension))];
+      if (equivalents.some((candidate) => matchingAlias(candidate, { [target]: [] }))) add(manifestPath, 'isolated builtin fixture cannot be exposed by package entry points');
+      if (!entry.includes('*') && contained(workspace.directory, actualTarget)) checkTarget(workspace, actualTarget, manifestPath, null, false);
     }
     function walk(directory) {
       for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {

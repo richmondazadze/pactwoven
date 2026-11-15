@@ -13,3 +13,8 @@ export * from './finance-provenance-schema.js';
 export * from './financial-fences-schema.js';
 export { PostgresFinanceProvenanceRepository } from './finance-provenance-repository.js';
 export { assertFinanceProvenancePool, createFinanceProvenancePool } from './finance-provenance-pool.js';
+export type { CustodySetupRepository, CustodySetupCapability } from './custody-setup-schema.js';
+export { PostgresCustodySetupRepository } from './custody-setup-repository.js';
+export { PostgresCustodySetupAuthenticationRepository, verifyCustodyWalletEvidence } from './custody-setup-authentication-repository.js';
+export { CustodyIdentityEvidenceSchema, CustodyWalletEvidenceSchema, CustodyMfaEvidenceSchema, CustodyAuthEvidenceSchema } from './custody-setup-auth-evidence.js';
+export type { CustodyAuthEvidence } from './custody-setup-auth-evidence.js';

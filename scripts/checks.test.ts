@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync, linkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -107,6 +107,143 @@ describe('dependency and import boundaries', () => {
     expect(rules(root)).toContain('package subpath traversal requires boundary review');
     expect(rules(root)).toContain('custom runtime module loading requires boundary review');
     expect(rules(root)).toContain('runtime code generation requires boundary review');
+  });
+
+  it('permits only the reviewed filesystem-mock synchronization import in the exact offline fixture', () => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    expect(rules(root)).toEqual([]);
+  });
+
+  it('allows an empty module marker without exporting the fixture capability', () => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module"; export {}; syncBuiltinESMExports();');
+    expect(rules(root)).toEqual([]);
+  });
+
+  it.each([
+    'import { createRequire as syncBuiltinESMExports } from "node:module";',
+    'import { syncBuiltinESMExports, createRequire } from "node:module";',
+    'import module from "node:module";',
+    'import * as module from "node:module";',
+    'export { syncBuiltinESMExports } from "node:module";',
+    'const module = import("node:module");',
+    'import { syncBuiltinESMExports } from "module";',
+  ])('does not turn the offline synchronization exception into module access: %s', source => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', source);
+    expect(rules(root)).toContain('custom runtime module loading requires boundary review');
+  });
+
+  it.each(['programs/pactwoven/tests/other.test.ts', 'programs/pactwoven/client/src/index.ts', 'apps/web/src/sync.test.ts'])('keeps synchronization unavailable outside the exact fixture: %s', file => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, file, 'import { syncBuiltinESMExports } from "node:module";');
+    expect(rules(root)).toContain('custom runtime module loading requires boundary review');
+  });
+
+  it('still inspects configured aliases underneath the exact synchronization import', () => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', JSON.stringify({ compilerOptions: { paths: { 'node:module': ['../../services/signer/src/index.ts'] } } }));
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module";');
+    expect(rules(root)).toContain('forbidden dependency: programs/pactwoven -> services/signer');
+  });
+
+  it.each([
+    'export { syncBuiltinESMExports };',
+    'export { syncBuiltinESMExports as sync };',
+    'export default syncBuiltinESMExports;',
+    'export const helpers = { sync: syncBuiltinESMExports };',
+    'export function sync() { syncBuiltinESMExports(); }',
+    'export = syncBuiltinESMExports;',
+  ])('keeps the special fixture from exporting its capability: %s', source => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', `import { syncBuiltinESMExports } from 'node:module'; ${source}`);
+    expect(rules(root)).toContain('isolated builtin fixture cannot export bindings');
+  });
+
+  it.each([
+    ['programs/pactwoven/client/src/index.ts', '../../tests/execution/offline.test.js'],
+    ['programs/pactwoven/client/src/index.ts', '@/offline.test'],
+    ['programs/pactwoven/client/src/index.ts', '#offline'],
+    ['services/signer/src/index.ts', '../../../programs/pactwoven/tests/execution/offline.test.ts'],
+    ['services/signer/src/index.ts', '@pactwoven/program-client/tests/execution/offline.test.ts'],
+  ])('rejects importing the special fixture through %s %s', (file, specifier) => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client', imports: { '#offline': './tests/execution/offline.test.ts' } }));
+    write(root, 'programs/pactwoven/tsconfig.json', JSON.stringify({ compilerOptions: { paths: { '@/*': ['./tests/execution/*'] } } }));
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    write(root, file, `import '${specifier}';`);
+    expect(rules(root)).toContain('isolated builtin fixture cannot be imported');
+  });
+
+  it.each(['./tests/execution/offline.test.ts', './tests/execution/offline.test.js', './tests/*', './*'])('rejects package exports exposing the special fixture: %s', target => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client', exports: { '.': target } }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    expect(rules(root).some(rule => rule.startsWith('isolated builtin fixture cannot be'))).toBe(true);
+  });
+
+  it('rejects a symlink import resolving to the isolated fixture', () => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    const fixture = 'programs/pactwoven/tests/execution/offline.test.ts';
+    write(root, fixture, 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    write(root, 'programs/pactwoven/client/src/index.ts', 'import "./alias.js";');
+    symlinkSync(path.join(root, fixture), path.join(root, 'programs/pactwoven/client/src/alias.ts'));
+    expect(rules(root)).toContain('isolated builtin fixture cannot be imported');
+  });
+
+  it.each(['exports', 'main', 'module', 'types', 'typings', 'browser'])('refuses encoded and remapped fixture exposure in %s', field => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    for (const target of ['./tests/execution/offline%2etest.ts', './tests/execution/offline.test.ts', './tests/execution/*.js', './tests/execution/*.mts',
+      './tests/execution/offline.test.ts?cache', './tests/execution/offline.test.ts#cache', './tests/execution/*.ts?cache', './*es*s/execution/offline.test.ts', './tests/execution/OFFLINE.test.ts']) {
+      write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client', [field]: field === 'exports' ? { '.': target } : target }));
+      expect(rules(root).some(rule => rule === 'noncanonical package entry target' || rule.startsWith('isolated builtin fixture cannot be'))).toBe(true);
+    }
+  });
+
+  it('identifies a hardlinked alias as the same isolated fixture', () => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    const fixture = 'programs/pactwoven/tests/execution/offline.test.ts';
+    write(root, fixture, 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    write(root, 'programs/pactwoven/client/src/index.ts', 'import "./alias.js";');
+    linkSync(path.join(root, fixture), path.join(root, 'programs/pactwoven/client/src/alias.ts'));
+    expect(rules(root)).toContain('isolated builtin fixture cannot be imported');
+  });
+
+  it.each(['./tests/execution/offline.test.ts?cache', './tests/execution/offline%2etest.ts'])('refuses noncanonical package-import targets: %s', target => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client', imports: { '#offline': target } }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    write(root, 'programs/pactwoven/client/src/index.ts', 'import "#offline";');
+    expect(rules(root)).toContain('noncanonical local module target');
+  });
+
+  it.each(['@pactwoven/program-client/tests/execution/offline%2etest.ts', '../../../programs/pactwoven/tests/execution/offline%2etest.ts'])('rejects encoded module resolution to the fixture: %s', specifier => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    write(root, 'services/signer/src/index.ts', `import '${specifier}';`);
+    expect(rules(root)).toContain('noncanonical module path');
   });
 
   it('blocks privileged package aliases and declared but unused forbidden dependencies', () => {

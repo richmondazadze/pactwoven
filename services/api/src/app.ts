@@ -8,6 +8,8 @@ import type { AccessGateway } from './access-service.js';
 import { registerAccessRoutes } from './access-routes.js';
 import { registerMandateRoutes } from './mandate-routes.js';
 import { registerAccessRecoveryRoutes } from './access-recovery-routes.js';
+import { custodySetupBodyLimit, readCustodySetupJson, registerCustodySetupRoutes } from './custody-setup-routes.js';
+import type { CustodySetupGateway } from './custody-setup-service.js';
 
 export type AppDependencies = {
   repository?: FoundationRepository;
@@ -16,6 +18,7 @@ export type AppDependencies = {
   accessGateway?: AccessGateway;
   mandateGateway?: MandateGateway;
   accessRecoveryGateway?: AccessRecoveryGateway;
+  custodySetupGateway?: CustodySetupGateway;
   allowedOrigins: readonly string[];
 };
 export type ApiEnv = { Variables: { session: Session; identity: VerifiedIdentity; correlationId: string; requestBody: unknown } };
@@ -105,7 +108,12 @@ export function createApp(dependencies: AppDependencies) {
     if (!token) throw new DomainError('AUTH_REQUIRED', 401, 'Sign in to continue.');
     // Read the bounded body before the final live authorization lookup. A slow
     // upload must not preserve a session/member authorization that has expired.
-    if (c.req.method === 'POST') c.set('requestBody', await readJson(c.req.raw));
+    if (c.req.method === 'POST') {
+      const custodyLimit = custodySetupBodyLimit(c.req.method, new URL(c.req.url).pathname);
+      c.set('requestBody', custodyLimit === undefined
+        ? await readJson(c.req.raw)
+        : await readCustodySetupJson(c.req.raw, custodyLimit));
+    }
     const identity = await dependencies.verifyIdentity(token);
     c.set('identity', identity);
     await next();
@@ -125,6 +133,7 @@ export function createApp(dependencies: AppDependencies) {
   registerAccessRoutes(app, dependencies.accessGateway);
   registerAccessRecoveryRoutes(app, dependencies.accessRecoveryGateway);
   registerMandateRoutes(app, dependencies.mandateGateway);
+  registerCustodySetupRoutes(app, dependencies.custodySetupGateway);
 
   app.use('/v1/*', async (c, next) => {
     if (!dependencies.repository) throw new DomainError('SETUP_REQUIRED', 503, 'Development database access is not configured.');

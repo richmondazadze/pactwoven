@@ -1,0 +1,22 @@
+{
+  "name": "@pactwoven/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit",
+    "dev": "node --env-file-if-exists=.env.local --import tsx --watch src/node.ts"
+  },
+  "dependencies": {
+    "@pactwoven/contracts": "workspace:*",
+    "@pactwoven/domain": "workspace:*",
+    "@pactwoven/db": "workspace:*",
+    "@pactwoven/observability": "workspace:*",
+    "hono": "4.13.18",
+    "@hono/zod-openapi": "1.6.3",
+    "@hono/node-server": "2.1.8",
+    "@clerk/backend": "3.29.0",
+    "zod": "4.6.7"
+  }
+}

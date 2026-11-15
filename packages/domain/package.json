@@ -1,0 +1,17 @@
+{
+  "name": "@pactwoven/domain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@pactwoven/contracts": "workspace:*",
+    "zod": "4.6.7"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

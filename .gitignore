@@ -1,0 +1,55 @@
+# Founder policy: documentation and engineering records remain local.
+*.[mM][dD]
+*.[mM][dD][xX]
+*.[mM][aA][rR][kK][dD][oO][wW][nN]
+docs/
+documentation/
+evidence/
+PRD_REQUIREMENTS.csv
+*.doc
+*.docx
+*.pdf
+*.rtf
+*.odt
+*.ppt
+*.pptx
+*.xls
+*.xlsx
+
+# All environment files, including samples and examples, remain local.
+.env
+.env.*
+*.env
+*.env.*
+.envrc
+.envrc.*
+.dev.vars
+.dev.vars.*
+
+# Credentials and local wallet material must never be published.
+secrets/
+.secrets/
+credentials/
+*.pem
+*.key
+*-keypair.json
+id.json
+
+# Dependencies, generated build output, caches, and local machine state.
+node_modules/
+.next/
+.turbo/
+.wrangler/
+.vercel/
+dist/
+build/
+target/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+*.log
+.DS_Store
+
+# Task-owned local database, credentials and runtime output.
+.local/

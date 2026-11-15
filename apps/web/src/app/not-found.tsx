@@ -1,0 +1,2 @@
+import Link from 'next/link';
+export default function NotFound() { return <main className="setup-page"><section className="setup-card"><p className="eyebrow">Page not found</p><h1>That page is not here.</h1><p>Return to the workspace or open Pactwoven’s home page.</p><div className="actions"><Link className="button" href="/app">Open workspace</Link><Link className="button secondary" href="/">Home</Link></div></section></main>; }

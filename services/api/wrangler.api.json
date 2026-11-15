@@ -1,0 +1,20 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "pactwoven-api-development",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-11-14",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "routes": [],
+  "send_metrics": false,
+  "observability": {"enabled": false},
+  "vars": {
+    "APP_ENVIRONMENT": "development",
+    "WORKER_ROLE": "api",
+    "ALLOWED_ORIGINS": "http://127.0.0.1:3001,http://localhost:3001",
+    "EXPECTED_DATABASE_USER": "pactwoven_app"
+  },
+  "services": [{"binding": "IDENTITY_PROVISIONER", "service": "pactwoven-provisioner-development"}],
+  "hyperdrive": []
+}

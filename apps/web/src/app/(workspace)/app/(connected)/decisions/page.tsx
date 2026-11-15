@@ -1,0 +1,3 @@
+import { ButtonLink, EmptyState, PageHeading } from '@/components/ui';
+export const metadata = { title: 'Decisions' };
+export default function DecisionsPage() { return <><PageHeading title="Decisions" description="Exact terms, current authority and a clear next actor."/><section className="panel"><EmptyState icon="inbox" title="Decision review is being connected." action={<ButtonLink href="/app/responsibilities" secondary>View responsibilities</ButtonLink>}>The first workspace release records responsibilities. An authoritative decision queue will appear here when the approval workflow is available. No pending approvals or completed actions are assumed.</EmptyState></section></>; }

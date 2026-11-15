@@ -1,0 +1,29 @@
+{
+  "name": "pactwoven",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": "^24.22.1 || ^26.4.0",
+    "pnpm": "11.25.0"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @pactwoven/api --filter @pactwoven/web dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "vitest run",
+    "check:boundaries": "node scripts/check-boundaries.mjs",
+    "check:publication": "node scripts/check-publication.mjs"
+  },
+  "devDependencies": {
+    "@babel/parser": "8.1.2",
+    "@cloudflare/workers-types": "5.20261115.1",
+    "@types/node": "26.6.6",
+    "tsx": "4.23.15",
+    "turbo": "2.11.11",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0",
+    "wrangler": "4.162.0"
+  }
+}

@@ -1,0 +1,26 @@
+import { createRuntimePool, PostgresFoundationRepository, type FoundationRepository } from '@pactwoven/db';
+import { createApp } from './app.js';
+import { readWorkerConfig, requestResource, workerUnavailable, type WorkerBindings, type WorkerContext, type WorkerRuntimeConfig } from './worker-config.js';
+import { serviceProvisioner } from './worker-provisioner.js';
+import { serviceIdentityVerifier } from './worker-identity.js';
+
+export default {
+  async fetch(request: Request, bindings: WorkerBindings, context: WorkerContext): Promise<Response> {
+    let config: WorkerRuntimeConfig;
+    try { config = readWorkerConfig(bindings, 'api'); } catch { return workerUnavailable(); }
+    const pool = requestResource(() => createRuntimePool(config.connectionString));
+    const repository = async () => new PostgresFoundationRepository(await pool.get(), config.environment);
+    const lazyRepository: FoundationRepository = {
+      getSession: async (...args) => (await repository()).getSession(...args),
+      listResponsibilities: async (...args) => (await repository()).listResponsibilities(...args),
+      getResponsibility: async (...args) => (await repository()).getResponsibility(...args),
+      createResponsibility: async (...args) => (await repository()).createResponsibility(...args),
+    };
+    const app = createApp({ allowedOrigins: config.allowedOrigins, repository: lazyRepository,
+      verifyIdentity: serviceIdentityVerifier(bindings.IDENTITY_PROVISIONER!, request.headers.get('Authorization') ?? '', config.issuer),
+      provisioner: serviceProvisioner(bindings.IDENTITY_PROVISIONER!, request.headers.get('Authorization') ?? ''),
+    });
+    try { return await app.fetch(request); }
+    finally { context.waitUntil(pool.close()); }
+  },
+};

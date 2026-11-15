@@ -53,6 +53,7 @@ if (credentials) {
       financialPolicy = await createDevelopmentFinancialPolicy({ ...credentials.financialPolicy,
         identity: { secretKey: credentials.secretKey, issuer: credentials.issuer, authorizedParties: allowedOrigins } });
       dependencies.financialPolicyGateway = financialPolicy.gateway;
+      dependencies.financialPolicyWriteGateway = financialPolicy.writeGateway;
     }
   } catch {
     await Promise.allSettled([pool?.end(), provisionerPool?.end(), accessPool?.end(), mandatePool?.end(), custodySetup?.close(), financialPolicy?.close()]);

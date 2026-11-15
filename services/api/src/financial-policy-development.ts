@@ -3,6 +3,7 @@ import { createFinancialAuthorityPool, PostgresFinancialPolicyRepository,
 import type { ClerkIdentityConfig } from './auth.js';
 import { createClerkFinancialPolicyVerifier } from './financial-policy-verifier.js';
 import { createFinancialPolicyGateway } from './financial-policy-service.js';
+import { createFinancialPolicyWriteGateway } from './financial-policy-write-service.js';
 
 /** Construct only from the paired configuration validated by the development entrypoint. */
 export async function createDevelopmentFinancialPolicy(configuration: {
@@ -22,14 +23,16 @@ export async function createDevelopmentFinancialPolicy(configuration: {
   try {
     authorizer = await createFinancialAuthorityPool(authorizerUrl, 'authorizer');
     verifier = await createFinancialAuthorityPool(verifierUrl, 'verifier');
-    const gateway = createFinancialPolicyGateway({
-      environment: 'development', issuer: identity.issuer,
+    const dependencies = {
+      environment: 'development' as const, issuer: identity.issuer,
       verifier: createClerkFinancialPolicyVerifier(identity, 'development'),
       readers: new PostgresFinancialPolicyReaders(authorizer, verifier),
       repository: new PostgresFinancialPolicyRepository(authorizer),
       authentication: new PostgresFinancialAuthenticationRepository(verifier),
-    });
-    return { gateway, close };
+    };
+    const gateway = createFinancialPolicyGateway(dependencies);
+    const writeGateway = createFinancialPolicyWriteGateway(dependencies);
+    return { gateway, writeGateway, close };
   } catch {
     await close();
     throw new Error('Financial policy development setup failed. Check the protected paired database and identity configuration.');

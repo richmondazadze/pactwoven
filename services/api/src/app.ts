@@ -12,6 +12,8 @@ import { custodySetupBodyLimit, readCustodySetupJson, registerCustodySetupRoutes
 import type { CustodySetupGateway } from './custody-setup-service.js';
 import { registerFinancialPolicyRoutes } from './financial-policy-routes.js';
 import type { FinancialPolicyGateway } from './financial-policy-service.js';
+import { registerFinancialPolicyWriteRoutes } from './financial-policy-write-routes.js';
+import type { FinancialPolicyWriteGateway } from './financial-policy-write-service.js';
 
 export type AppDependencies = {
   repository?: FoundationRepository;
@@ -22,6 +24,7 @@ export type AppDependencies = {
   accessRecoveryGateway?: AccessRecoveryGateway;
   custodySetupGateway?: CustodySetupGateway;
   financialPolicyGateway?: FinancialPolicyGateway;
+  financialPolicyWriteGateway?: FinancialPolicyWriteGateway;
   allowedOrigins: readonly string[];
 };
 export type ApiEnv = { Variables: { session: Session; identity: VerifiedIdentity; correlationId: string; requestBody: unknown } };
@@ -102,8 +105,9 @@ export function createApp(dependencies: AppDependencies) {
 
   app.get('/health', c => c.json({ service: 'pactwoven-api', status: 'alive', schemaVersion: SCHEMA_VERSION }));
 
-  // These routes parse their immutable selectors before their own live identity
-  // observation. Register them ahead of the general identity lookup below.
+  // Financial routes parse immutable selectors and bounded write bodies before
+  // their own identity observation. Writes pass reserved read targets onward.
+  registerFinancialPolicyWriteRoutes(app, dependencies.financialPolicyWriteGateway);
   registerFinancialPolicyRoutes(app, dependencies.financialPolicyGateway);
 
   app.use('/v1/*', async (c, next) => {

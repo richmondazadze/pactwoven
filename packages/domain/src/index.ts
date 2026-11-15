@@ -20,3 +20,5 @@ export { supplierMessageDigest, prepareUntrustedSupplierMessage,
   inspectSupplierMessageDelivery, assessUntrustedSupplierAvailability,
   inspectSupplierCapability, snapshotSupplierEffectUpdate,
   planSupplierEffectRecovery } from './supplier-protocol.js';
+export { projectFinancialPolicyHttpRecord, projectFinancialPolicyHttpView,
+  projectFinancialPolicyHttpReceipt } from './financial-policy-responses.js';

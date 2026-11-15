@@ -6,3 +6,5 @@ export * from './approvals.js';
 export * from './commercial.js';
 export * from './finance.js';
 export * from './access.js';
+export * from './mandate-proposals.js';
+export * from './mandate-authorization.js';

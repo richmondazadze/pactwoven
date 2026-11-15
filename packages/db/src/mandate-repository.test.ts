@@ -3,11 +3,11 @@ import { Pool, type PoolClient } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { type CreateMandateDocumentRequest, type MandateAuthorityIntent, type MandateDecisionIntent, type MandatePolicy,
   type MemberCandidate, type ProposeMandateCommand, type MandateHead } from '@pactwoven/contracts';
-import { commandDigest, createPolicyDocumentVersion, mandateHeadReference, mandateIntentHash, mandateVersionReference } from '@pactwoven/domain';
+import { commandDigest, createPolicyDocumentVersion, DomainError, mandateHeadReference, mandateIntentHash, mandateVersionReference } from '@pactwoven/domain';
 import { PostgresMandateRepository, mandateCommandHash } from './mandate-repository.js';
 import { assertMandatePool } from './mandate-pool.js';
 import type { VerifiedIdentity } from './repository.js';
-import type { MandateMutation, VerifiedMandateCommand } from './mandate-schema.js';
+import type { MandateMutation, MandateResolvedContext, VerifiedMandateCommand } from './mandate-schema.js';
 
 const suite = process.env.PACTWOVEN_RUN_MANDATE_DB_TESTS === '1' ? describe : describe.skip;
 describe('durable mandate command digest', () => {
@@ -40,6 +40,101 @@ async function verified(mutation: MandateMutation, key: string, subject = 'finan
     verifiedAt: new Date(issued - 60_000).toISOString(), observedAt: new Date().toISOString(), expiresAt: new Date(issued + 180_000).toISOString(), requestNonce,
     intentHash: await mandateIntentHash(intent), requestHash: await commandDigest({ schemaVersion: 1, purpose, request: { nonce: requestNonce, key, intent } }) } };
 }
+
+describe('mandate database errors at the repository boundary', () => {
+  const key = 'original_request_key_0001';
+  const mutation: MandateMutation = { kind: 'document', request: {
+    responsibility: { id: 'responsibility_a', version: 1, siteId: 'site_a', hash: 'a'.repeat(64) }, expectedOrganizationEpoch: 2,
+    command: { documentId: 'policy_a', expectedVersion: 0, previousVersion: null, purpose: 'MANDATE_POLICY', text: 'PRIVATE_DRAFT_SENTINEL' },
+  } };
+  const driverError = (code: string) => Object.assign(new Error('PRIVATE_DRIVER_SENTINEL FA001'), {
+    code, detail: 'PRIVATE_DETAIL_SENTINEL', hint: 'PRIVATE_HINT_SENTINEL', query: 'PRIVATE_SQL_SENTINEL',
+    schema: 'PRIVATE_SCHEMA_SENTINEL', table: 'PRIVATE_TABLE_SENTINEL', constraint: 'PRIVATE_CONSTRAINT_SENTINEL',
+    cause: new Error('PRIVATE_CAUSE_SENTINEL'), fields: { key: [key] },
+  });
+  function boundary(error: unknown, phase: 'resolve' | 'commit' | 'lookup') {
+    const actor = identity(), now = new Date().toISOString(), earlier = new Date(Date.now() - 60_000).toISOString();
+    const context: MandateResolvedContext = { organizationId: 'org_a', organizationEpoch: 2, organizationStatus: 'active', now,
+      reader: { actor: { actorId: 'finance_a', principalKind: 'human', organizationId: 'org_a', environment: 'development', roles: ['finance'],
+        siteIds: ['site_a'], actionSiteIds: ['site_a'], sessionId: actor.sessionId, authenticatedAt: actor.authenticatedAt, correlationId: 'trace' },
+      status: 'active', expiresAt: null, assignedResponsibilityIds: [], externalSubject: actor.subject,
+      externalMembershipId: actor.externalMembershipId, grantBasis: 'internal' }, requesters: [],
+      currentResponsibility: { id: 'responsibility_a', organizationId: 'org_a', environment: 'development', ownerId: 'operations_a', siteId: 'site_a',
+        title: 'Error boundary fixture', description: '', version: 1, window: { startsAt: earlier, endsAt: new Date(Date.now() + 3_600_000).toISOString(), timeZone: 'America/Chicago' },
+        requirements: [], acceptancePolicy: 'Signed delivery evidence.', executionState: 'DRAFT', authorityState: null, coverageState: 'UNKNOWN', createdAt: earlier, updatedAt: earlier },
+      sites: [{ id: 'site_a', organizationId: 'org_a', environment: 'development', name: 'Site A', timeZone: 'America/Chicago', active: true }] };
+    const queries: { sql: string; params: unknown[] | undefined }[] = [], released: (boolean | undefined)[] = [];
+    // Supply an empty valid read only to reach COMMIT. No writes or database invariants are emulated.
+    const pool = { async connect() { return {
+      async query(sql: string, params?: unknown[]) {
+        queries.push({ sql, params });
+        if ((phase === 'commit' && sql === 'COMMIT') || (phase === 'resolve' && sql.startsWith('SELECT pactwoven.mandate_resolve_context')) ||
+          (phase === 'lookup' && sql.startsWith('SELECT responsibility_id FROM pactwoven.mandate_operations'))) throw error;
+        if (sql.startsWith('SELECT pactwoven.mandate_resolve_context')) return { rows: [{ response: context }] };
+        if (sql.includes('FROM pactwoven.mandate_responsibility_versions')) return { rows: [{ body: context.currentResponsibility }] };
+        return { rows: [] };
+      }, release(failed?: boolean) { released.push(failed); },
+    }; } } as unknown as Pool;
+    return { repository: new PostgresMandateRepository(pool, 'development'), queries, released };
+  }
+  function assertPrivate(error: unknown) {
+    expect(error).toBeInstanceOf(DomainError);
+    const safe = error as DomainError;
+    expect(JSON.stringify({ ...safe, message: safe.message })).not.toMatch(/PRIVATE_|FA00|PF00|PM00|original_request_key/);
+    expect(safe.fields).toBeUndefined(); expect(safe.cause).toBeUndefined();
+  }
+  const financial = [
+    ['FA001', 'FORBIDDEN', 403, 'Current mandate and site capability are required.'],
+    ['FA002', 'AUTHORITY_CHANGED', 409, 'Mandate authority or its controls changed. Refresh before reviewing again.'],
+    ['FA004', 'VALIDATION_FAILED', 422, 'The exact mandate command and records are required.'],
+    ['FA007', 'MANDATE_READ_INVALID', 409, 'Mandate history or policy provenance could not be verified.'],
+    ['FA008', 'AUTHORITY_CHANGED', 409, 'This mandate cannot accept another authority change. Review its current state before proceeding.'],
+  ] as const;
+  for (const phase of ['resolve', 'commit'] as const) {
+    it.each(financial)(`maps %s safely at ${phase} without returning a result or retrying`, async (sqlstate, code, status, message) => {
+      const input = await verified(mutation, key), original = structuredClone({ input, mutation }), fixture = boundary(driverError(sqlstate), phase);
+      const promise = phase === 'resolve' ? fixture.repository.mutate(input, 'responsibility_a', key, mutation, 'trace')
+        : fixture.repository.list(input.identity, 'responsibility_a', { limit: 25 }, 'trace');
+      const error: unknown = await promise.then(() => undefined, failure => failure);
+      expect(error).toMatchObject({ code, status, message }); assertPrivate(error);
+      expect({ input, mutation }).toEqual(original);
+      expect(fixture.queries.at(-1)?.sql).toBe('ROLLBACK'); expect(fixture.released).toEqual([true]);
+      expect(fixture.queries.filter(query => query.sql === 'BEGIN')).toHaveLength(1);
+      expect(fixture.queries.filter(query => query.sql === 'COMMIT')).toHaveLength(phase === 'commit' ? 1 : 0);
+    });
+  }
+  it.each([
+    ['PM001', 'FORBIDDEN', 403], ['PM002', 'AUTHORITY_CHANGED', 409], ['PM004', 'VALIDATION_FAILED', 422],
+    ['PM005', 'STEP_UP_REQUIRED', 403], ['PM006', 'MANDATE_READ_INVALID', 409],
+  ] as const)('preserves the established %s mapping', async (sqlstate, code, status) => {
+    const fixture = boundary(driverError(sqlstate), 'resolve');
+    const error: unknown = await fixture.repository.mutate(await verified(mutation, key), 'responsibility_a', key, mutation, 'trace').catch(failure => failure);
+    expect(error).toMatchObject({ code, status }); assertPrivate(error);
+  });
+  for (const phase of ['resolve', 'commit'] as const) {
+    it.each(['PF004', 'PF007', 'ECONNRESET', 'fa001', 'FA001_private']) (`preserves unrecognized %s behavior at ${phase} without classifying database text`, async sqlstate => {
+      const fixture = boundary(driverError(sqlstate), phase), input = await verified(mutation, key);
+      const promise = phase === 'resolve' ? fixture.repository.mutate(input, 'responsibility_a', key, mutation, 'trace')
+        : fixture.repository.list(input.identity, 'responsibility_a', { limit: 25 }, 'trace');
+      const error: unknown = await promise.then(() => undefined, failure => failure);
+      expect(error).toMatchObject({ code: phase === 'commit' ? 'OUTCOME_UNKNOWN' : 'SERVICE_UNAVAILABLE', status: 503,
+        message: phase === 'commit' ? 'The mandate outcome is unknown. Recover the original request before trying another change.' : 'Mandate storage is temporarily unavailable.' });
+      assertPrivate(error); expect(fixture.queries.at(-1)?.sql).toBe('ROLLBACK'); expect(fixture.released).toEqual([true]);
+    });
+  }
+  it('retains the original caller command and key for scoped result lookup after a mapped failure', async () => {
+    const input = await verified(mutation, key), original = structuredClone({ input, mutation, key });
+    const failed = boundary(driverError('FA002'), 'resolve');
+    await expect(failed.repository.mutate(input, 'responsibility_a', key, mutation, 'trace')).rejects.toMatchObject({ code: 'AUTHORITY_CHANGED' });
+    const recovery = boundary(driverError('FA007'), 'lookup');
+    const error: unknown = await recovery.repository.operation(input.identity, { kind: 'mandate.document.create', key }, 'trace').catch(failure => failure);
+    expect(error).toMatchObject({ code: 'MANDATE_READ_INVALID' }); assertPrivate(error);
+    expect(recovery.queries.find(query => query.sql.startsWith('SELECT responsibility_id FROM pactwoven.mandate_operations'))?.params)
+      .toEqual(['development', 'org_a', 'mandate.document.create', key, 'finance_a']);
+    expect(recovery.queries.some(query => /^(INSERT|UPDATE|DELETE)/.test(query.sql))).toBe(false);
+    expect({ input, mutation, key }).toEqual(original);
+  });
+});
 
 suite('isolated real PostgreSQL mandate authority', () => {
   let admin: Pool, writer: Pool, repository: PostgresMandateRepository, testLock: PoolClient;

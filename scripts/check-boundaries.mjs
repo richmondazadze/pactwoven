@@ -27,6 +27,13 @@ const ignored = new Set(['node_modules', '.next', '.turbo', 'dist', 'build', 'ta
 const sourcePattern = /\.(?:[cm]?[jt]s|[jt]sx)$/;
 const testPattern = /(?:^|\/)(?:__tests__|tests)\/|\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const safePureExternals = new Set(['zod']);
+// These exact root exports contain deterministic codecs/parsing only. Keep the
+// capability local to adapters; full RPC, wallet and signer SDKs stay forbidden.
+const adapterCodecVersions = Object.freeze({
+  '@solana/codecs-numbers': '8.6.0',
+  '@solana/codecs-strings': '8.6.0',
+  'jsonc-parser': '3.3.1',
+});
 const safeTestExternals = new Set(['vitest', 'node:test', 'node:assert', 'node:assert/strict', 'assert', 'assert/strict']);
 const builtins = new Set(builtinModules.flatMap((name) => [name, `node:${name}`]));
 const privilegedWebExternals = /^(?:pg(?:-native)?|postgres|drizzle-orm|drizzle-kit|@neondatabase\/[^/]+|@prisma\/client|@coinbase\/cdp-sdk|@clerk\/backend|@aws-sdk\/[^/]+|@azure\/[^/]+|stripe|googleapis|openai|@anthropic-ai\/[^/]+|@supabase\/supabase-js)(?:\/|$)/;
@@ -178,7 +185,10 @@ export function checkBoundaries({ root = process.cwd() } = {}) {
     if (test && safeTestExternals.has(packageName(specifier))) return;
     if (test && safeTestExternals.has(specifier)) return;
     if (/^(?:node:)?module(?:\/|$)/.test(specifier)) add(file, 'custom runtime module loading requires boundary review', line);
-    if (pureModules.has(workspace.owner) && !safePureExternals.has(packageName(specifier))) add(file, `unreviewed effect or SDK dependency in deterministic module: ${packageName(specifier)}`, line);
+    const codecVersion = Object.hasOwn(adapterCodecVersions, specifier) ? adapterCodecVersions[specifier] : null;
+    const reviewedCodec = workspace.owner === 'packages/adapters' && codecVersion !== null
+      && workspace.manifest.dependencies?.[specifier] === codecVersion;
+    if (pureModules.has(workspace.owner) && !safePureExternals.has(packageName(specifier)) && !reviewedCodec) add(file, `unreviewed effect or SDK dependency in deterministic module: ${packageName(specifier)}`, line);
     if (workspace.owner === 'apps/web' && (privilegedWebExternals.test(specifier) || webEffectBuiltins.test(specifier))) add(file, `privileged dependency is unavailable to web: ${packageName(specifier)}`, line);
   }
 
@@ -209,6 +219,10 @@ export function checkBoundaries({ root = process.cwd() } = {}) {
     const dependency = workspace.manifest.dependencies?.[name] ?? workspace.manifest.devDependencies?.[name] ?? workspace.manifest.optionalDependencies?.[name] ?? workspace.manifest.peerDependencies?.[name];
     if (dependency?.startsWith('npm:')) {
       const target = dependency.slice(4).replace(/@[^@/]+$/, '');
+      if (Object.hasOwn(adapterCodecVersions, packageName(target))) {
+        add(file, 'reviewed codec dependencies require a direct package name and exact pin', line);
+        return;
+      }
       resolveSpecifier(workspace, target + clean.slice(name.length), file, line, test, new Set(seen));
       return;
     }

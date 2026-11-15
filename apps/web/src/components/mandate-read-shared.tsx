@@ -9,6 +9,7 @@ import { RequestError } from '../lib/api';
 import { revealAccessTarget } from '../lib/access-viewport';
 import { useWorkspace } from './workspace-provider';
 import { useMandateAuthoringMemory } from './mandate-authoring-memory';
+import { useMandateAuthorityMemory } from './mandate-authority-memory';
 import { useMandateRecoveryMemory } from './mandate-recovery-memory';
 import { useArrival, useMotion } from './motion';
 import { ActionLabel, Alert, ButtonLink, Disclosure, Panel, StatusBadge } from './ui';
@@ -25,9 +26,10 @@ export function useMandateScopeLifetime(scope:MandateReadScope) {
 export function useMandateReadPrivacy(error:unknown) {
   const client=useQueryClient();const [denied,setDenied]=useState<RequestError|null>(null);
   const authoring=useMandateAuthoringMemory();const authoringRef=useRef(authoring);authoringRef.current=authoring;
+  const authority=useMandateAuthorityMemory();const authorityRef=useRef(authority);authorityRef.current=authority;
   const memory=useMandateRecoveryMemory();const recovery=useRef(memory);recovery.current=memory;
-  useLayoutEffect(()=>{if(error instanceof RequestError&&[401,403].includes(error.status)){setDenied(error);recovery.current.deny();authoringRef.current.deny();void client.cancelQueries({queryKey:['mandate-documents']});client.removeQueries({queryKey:['mandate-documents']});void client.cancelQueries({queryKey:['mandates']});client.removeQueries({queryKey:['mandates']});void client.invalidateQueries({queryKey:['session']});}},[error,client]);
-  return denied??((memory.hidden||authoring.hidden)?new RequestError('MANDATE_SCOPE_CHANGED','Current mandate access needs checking.',403):null);
+  useLayoutEffect(()=>{if(error instanceof RequestError&&[401,403].includes(error.status)){setDenied(error);authorityRef.current.deny();recovery.current.deny();authoringRef.current.deny();void client.cancelQueries({queryKey:['mandate-documents']});client.removeQueries({queryKey:['mandate-documents']});void client.cancelQueries({queryKey:['mandates']});client.removeQueries({queryKey:['mandates']});void client.invalidateQueries({queryKey:['session']});}},[error,client]);
+  return denied??((memory.hidden||authoring.hidden||authority.hidden)?new RequestError('MANDATE_SCOPE_CHANGED','Current mandate access needs checking.',403):null);
 }
 export function useMandateClock(observation:MandateObservation<MandatePage|MandateReview>|undefined) {
   const [,tick]=useState(0);

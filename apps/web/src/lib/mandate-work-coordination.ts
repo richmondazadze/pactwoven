@@ -32,10 +32,41 @@ export function mandateWorkAllowed(request: MandateWorkRequest, snapshot: Mandat
 }
 export type MandateWorkTicket = Readonly<{ id: number; request: MandateWorkRequest }>;
 export type MandateWorkTicketState = 'unsent' | 'dispatched';
+export type MandateGrantInput = { scope: MandateRecoveryScope; responsibilityId: string; targetId: string; key: string; kind: 'AUTHORIZE' | 'RESUME'; integrityHash: string };
+export type MandateGrantPreparation = Readonly<MandateGrantInput & { id: number; generation: number }>;
 export function createMandateWorkCoordinator(snapshot: () => MandateWorkSnapshot) {
   let next = 0, ended = false;
   const active = new Map<number, { ticket: MandateWorkTicket; state: MandateWorkTicketState }>();
+  const generations = new Map<string, number>(), preparations = new Map<number, { value: MandateGrantPreparation; ticket: MandateWorkTicket | null; listeners: Set<() => void> }>();
+  const preparationScope = (scope: MandateRecoveryScope, responsibilityId: string) => canonicalJson([mandateRecoveryScope(scope), responsibilityId]);
   function fail(): never { throw new RequestError('MANDATE_WORK_CONFLICT', 'This original request or another related mandate operation needs checking before continuing.'); }
+  function generation(scope: MandateRecoveryScope, responsibilityId: string) { if (ended) fail(); return generations.get(preparationScope(scope, responsibilityId)) ?? 0; }
+  function preparationCurrent(value: MandateGrantPreparation) { const entry = preparations.get(value.id); return !ended && entry?.value === value && (!entry.ticket || state(entry.ticket) === 'unsent') && generation(value.scope, value.responsibilityId) === value.generation; }
+  function registerPreparation(input: MandateGrantInput, expectedGeneration: number): MandateGrantPreparation {
+    if (ended || generation(input.scope, input.responsibilityId) !== expectedGeneration || !mandateWorkAllowed({ ...input, action: 'prepare' }, snapshot())) fail();
+    const value = immutableMandate({ ...structuredClone(input), scope: mandateRecoveryScope(input.scope), id: ++next, generation: expectedGeneration });
+    preparations.set(value.id, { value, ticket: null, listeners: new Set() }); return value;
+  }
+  function watchPreparation(value: MandateGrantPreparation, listener: () => void) {
+    if (!preparationCurrent(value)) { listener(); return () => {}; }
+    const entry = preparations.get(value.id)!; entry.listeners.add(listener); return () => { entry.listeners.delete(listener); };
+  }
+  function bindPreparation(value: MandateGrantPreparation, ticket: MandateWorkTicket) {
+    if (!preparationCurrent(value) || ticket.request.action !== 'send' || !original({ ...value, phase: 'unsent' }, ticket.request)) fail();
+    assert(ticket); const entry = preparations.get(value.id)!; if (entry.ticket) fail(); entry.ticket = ticket;
+  }
+  function releasePreparation(value: MandateGrantPreparation) { if (preparations.get(value.id)?.value === value) preparations.delete(value.id); }
+  function invalidatePreparations(request: MandateWorkRequest) {
+    const key = preparationScope(request.scope, request.responsibilityId); generations.set(key, (generations.get(key) ?? 0) + 1);
+    const listeners: (() => void)[] = [];
+    for (const [id, entry] of preparations) {
+      if (preparationScope(entry.value.scope, entry.value.responsibilityId) !== key || (entry.ticket && state(entry.ticket) === 'dispatched')) continue;
+      preparations.delete(id); listeners.push(...entry.listeners);
+    }
+    // Revoke all identities before notifying React callers; no listener may restore
+    // a stale generation. Notifications never dispatch or erase durable originals.
+    for (const listener of listeners) { try { listener(); } catch { /* Revoked identities stay revoked even if a view notification fails. */ } }
+  }
   function acquire(input: MandateWorkRequest): MandateWorkTicket {
     const request = immutableMandate(structuredClone(input));
     if (ended || !mandateWorkAllowed(request, snapshot())) fail();
@@ -55,7 +86,9 @@ export function createMandateWorkCoordinator(snapshot: () => MandateWorkSnapshot
     }
     // A rejected stop acquisition never invalidates another owner.
     for (const id of invalidated) active.delete(id);
-    const ticket = Object.freeze({ id: ++next, request }); active.set(ticket.id, { ticket, state: 'unsent' }); return ticket;
+    const ticket = Object.freeze({ id: ++next, request }); active.set(ticket.id, { ticket, state: 'unsent' });
+    if (stop(request.kind) && request.action === 'send') invalidatePreparations(request);
+    return ticket;
   }
   function assert(ticket: MandateWorkTicket) {
     const entry = active.get(ticket.id);
@@ -72,11 +105,12 @@ export function createMandateWorkCoordinator(snapshot: () => MandateWorkSnapshot
     const entry = active.get(ticket.id)!;
     if (entry.state !== 'unsent' || (ticket.request.action !== 'send' && ticket.request.action !== 'retry')) fail();
     entry.state = 'dispatched';
+    for (const [id, preparation] of preparations) if (preparation.ticket === ticket) preparations.delete(id);
   }
   function state(ticket: MandateWorkTicket): MandateWorkTicketState | null { const entry = active.get(ticket.id); return entry?.ticket === ticket ? entry.state : null; }
-  function release(ticket: MandateWorkTicket) { if (active.get(ticket.id)?.ticket === ticket) active.delete(ticket.id); }
+  function release(ticket: MandateWorkTicket) { if (active.get(ticket.id)?.ticket === ticket) { active.delete(ticket.id); for (const entry of preparations.values()) if (entry.ticket === ticket) entry.ticket = null; } }
   // Revoking client ownership never deletes a durable locator or cancels server work.
-  function clear() { ended = true; active.clear(); }
-  return { acquire, assert, markDispatched, state, release, clear };
+  function clear() { ended = true; active.clear(); preparations.clear(); generations.clear(); }
+  return { acquire, assert, markDispatched, state, release, clear, generation, registerPreparation, preparationCurrent, watchPreparation, bindPreparation, releasePreparation };
 }
 export type MandateWorkCoordinator = ReturnType<typeof createMandateWorkCoordinator>;

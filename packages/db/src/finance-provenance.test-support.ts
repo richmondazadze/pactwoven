@@ -53,7 +53,7 @@ export async function financeFixture() {
     await lock.query("SELECT pg_advisory_lock(hashtextextended('finance_provenance_b2a_fixture',0))"); locked = true;
     await admin.query('DROP SCHEMA IF EXISTS pactwoven CASCADE');
     const migrations = await loadMigrations();
-    if (migrations.length !== 7) throw new Error('Exactly the allocated seven migrations are required.');
+    if (migrations.length !== 8 || migrations[7]!.filename !== '0008_financial_authority_fences.sql') throw new Error('Exactly the allocated eight migrations are required.');
     for (const migration of migrations) {
       const client = await admin.connect();
       try { await client.query('BEGIN'); for (const [index,statement] of migration.statements.entries()) {

@@ -281,8 +281,8 @@ async function project(source: MandateReadSource): Promise<MandateReview> {
   const requester = (id: string) => { const row = requesterRows.get(id); return row ? currentReadActor(row, source) : null; };
   const eligible = (action: MandateEligibility['action'], blockers: string[]): MandateEligibility => ({ action, eligible: blockers.length === 0,
     requiresStepUp: action === 'AUTHORIZE' || action === 'RESUME', blockers: [...new Set(blockers)] });
-  const actorBlockers = (roles: string[]) => {
-    try { assertMandateActor(reader, context, roles); return currentSite.active ? [] : ['SITE_UNAVAILABLE']; }
+  const actorBlockers = (roles: string[], allowInactiveSite = false) => {
+    try { assertMandateActor(reader, context, roles); return currentSite.active || allowInactiveSite ? [] : ['SITE_UNAVAILABLE']; }
     catch (error) { if (error instanceof DomainError) return [error.code]; throw error; }
   };
   const proposeBlockers = actorBlockers(['owner', 'finance', 'operations']);
@@ -295,7 +295,7 @@ async function project(source: MandateReadSource): Promise<MandateReview> {
   } else eligibility.push(eligible('AUTHORIZE', ['NO_PROPOSAL']), eligible('REJECT', ['NO_PROPOSAL']));
   const authority = effectiveAuthority(source, currentAcceptedProposal, currentSite);
   for (const action of ['PAUSE', 'REVOKE', 'RESUME'] as const) {
-    const blockers = actorBlockers(['owner', 'finance']);
+    const blockers = actorBlockers(['owner', 'finance'], action !== 'RESUME');
     if (!source.head) blockers.push('NO_AUTHORITY');
     else if (['REVOKED', 'EXPIRED'].includes(source.head.state) || instant(source.head.expiresAt) <= instant(source.now)) blockers.push('AUTHORITY_TERMINAL');
     else if ((action === 'PAUSE' && source.head.state !== 'ACTIVE') || (action === 'RESUME' && source.head.state !== 'PAUSED')) blockers.push('AUTHORITY_CHANGED');

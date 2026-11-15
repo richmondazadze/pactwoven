@@ -11,7 +11,7 @@ import { immutable, instant, nextVersion } from './financial-primitives.js';
 import {
   assertMandateActor, assertMandateDecisionOpen, assertMandateProposalCurrent, equalMandateValue, mandateHeadReference,
   mandateReference, mandateResponsibilityReference, mandateVersionReference, resolveMandatePolicyDocuments,
-  validateConnectedMandatePolicy, validateMandateCurrentContext, validateMandateDecision, validateMandateProposalVersion,
+  validateConnectedMandatePolicy, validateMandateCurrentContext, validateMandateStopContext, validateMandateDecision, validateMandateProposalVersion,
   type MandateCurrentContext,
 } from './mandate-proposals.js';
 
@@ -143,7 +143,8 @@ export async function changeMandateAuthority(context: MandateCurrentContext & {
   acceptedProposal: MandateProposalVersion | null; acceptedDecision: MandateDecision | null; operationId: string;
 }, input: MandateAuthorityIntent) {
   const intent = MandateAuthorityIntentSchema.parse(input);
-  await validateMandateCurrentContext(context);
+  if (intent.action === 'PAUSE' || intent.action === 'REVOKE') await validateMandateStopContext(context);
+  else await validateMandateCurrentContext(context);
   const actor = assertMandateActor(context.actor, context, ['owner', 'finance']);
   if (!context.head || !context.acceptedVersion || intent.expectedOrganizationEpoch !== context.organizationEpoch ||
       !equalMandateValue(intent.head, await mandateHeadReference(context.head)) ||

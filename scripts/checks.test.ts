@@ -142,6 +142,71 @@ describe('dependency and import boundaries', () => {
     expect(rules(root)).toContain('local import cannot be resolved for boundary inspection');
     expect(rules(root)).toContain('package export escapes its owning module');
   });
+
+  it('permits only pinned root codec exports in the adapters workspace', () => {
+    const root = workspace();
+    write(root, 'packages/adapters/package.json', JSON.stringify({ name: '@pactwoven/adapters', dependencies: {
+      '@solana/codecs-numbers': '8.6.0', '@solana/codecs-strings': '8.6.0', 'jsonc-parser': '3.3.1',
+    } }));
+    write(root, 'packages/adapters/src/index.ts', 'export * from "@solana/codecs-numbers"; export * from "@solana/codecs-strings"; export * from "jsonc-parser";');
+    expect(rules(root)).toEqual([]);
+    write(root, 'apps/web/src/index.ts', 'export * from "@pactwoven/adapters";');
+    expect(rules(root)).toContain('forbidden dependency: apps/web -> packages/adapters');
+  });
+
+  it.each(['packages/domain', 'packages/contracts', 'packages/testkit'])('does not extend codec capability to %s', owner => {
+    const root = workspace();
+    write(root, `${owner}/package.json`, JSON.stringify({ name: '@pactwoven/' + owner.split('/')[1], dependencies: {
+      '@solana/codecs-numbers': '8.6.0', '@solana/codecs-strings': '8.6.0', 'jsonc-parser': '3.3.1',
+    } }));
+    write(root, `${owner}/src/index.ts`, 'export * from "@solana/codecs-numbers";');
+    expect(rules(root)).toContain('unreviewed effect or SDK dependency in deterministic module: @solana/codecs-numbers');
+  });
+
+  it.each([
+    ['@solana/codecs-numbers', '8.5.0'],
+    ['@solana/codecs-strings', '8.7.0'],
+    ['jsonc-parser', '3.3.0'],
+    ['@solana/kit', '8.6.0'],
+    ['@solana-program/token', '0.18.0'],
+    ['@solana/codecs-numbers/internal', '8.6.0'],
+    ['jsonc-parser/lib/umd/main', '3.3.1'],
+  ])('rejects unreviewed adapter dependency/export %s@%s', (specifier, version) => {
+    const root = workspace();
+    const name = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0]!;
+    write(root, 'packages/adapters/package.json', JSON.stringify({ name: '@pactwoven/adapters', dependencies: { [name]: version } }));
+    write(root, 'packages/adapters/src/index.ts', `export * from ${JSON.stringify(specifier)};`);
+    expect(rules(root)).toContain(`unreviewed effect or SDK dependency in deterministic module: ${name}`);
+  });
+
+  it('keeps ambient network and credentials forbidden beside reviewed codecs', () => {
+    const root = workspace();
+    write(root, 'packages/adapters/package.json', JSON.stringify({ name: '@pactwoven/adapters', dependencies: { '@solana/codecs-numbers': '8.6.0' } }));
+    write(root, 'packages/adapters/src/index.ts', 'import "@solana/codecs-numbers"; fetch("https://example.test"); const config = process.env;');
+    expect(rules(root)).toContain('ambient network, credentials, or executable-code capability in deterministic module');
+    expect(rules(root)).toContain('ambient credentials in deterministic module');
+  });
+
+  it.each(['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'])('rejects codec aliases in %s even beside a canonical approved pin', section => {
+    for (const [name, approved, alternate] of [
+      ['@solana/codecs-numbers', '8.6.0', '8.5.0'],
+      ['@solana/codecs-strings', '8.6.0', '8.5.0'],
+      ['jsonc-parser', '3.3.1', '3.3.0'],
+    ]) {
+      for (const version of [approved, alternate]) {
+        const root = workspace();
+        const manifest: Record<string, unknown> = { name: '@pactwoven/adapters', dependencies: { [name!]: approved } };
+        manifest[section] = { ...(section === 'dependencies' ? manifest.dependencies as object : {}), alternate: `npm:${name}@${version}` };
+        write(root, 'packages/adapters/package.json', JSON.stringify(manifest));
+        write(root, 'packages/adapters/src/index.ts', 'export * from "alternate";');
+        const result = checkBoundaries({ root });
+        expect(result.findings).toContainEqual(expect.objectContaining({
+          file: 'packages/adapters/src/index.ts',
+          rule: 'reviewed codec dependencies require a direct package name and exact pin',
+        }));
+      }
+    }
+  });
 });
 
 describe('code-only publication', () => {

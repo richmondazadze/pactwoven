@@ -200,6 +200,31 @@ describe('independent initial mandate authorization', () => {
 });
 
 describe('immediate stop and independently qualified resume', () => {
+  it.each(['PAUSE', 'REVOKE'] as const)('permits %s at an inactive site only with current explicit stop authority', async action => {
+    const base = await acceptedFixture();
+    const context = { ...base.control, site: { ...base.control.site, active: false }, requester: null, stepUp: null };
+    for (const role of ['owner', 'finance'] as const) {
+      const result = await changeMandateAuthority({ ...context, actor: { ...context.actor, roles: [role] } }, { ...base.controlIntent, action });
+      expect(result.head).toMatchObject({ state: action === 'PAUSE' ? 'PAUSED' : 'REVOKED', mandateEpoch: 2, mandateVersion: 1 });
+      expect(result.stepUp).toBeNull();
+    }
+    for (const actor of [
+      { ...context.actor, roles: ['operations'] as const },
+      { ...context.actor, siteIds: [] }, { ...context.actor, actionSiteIds: [] },
+      { ...context.actor, organizationId: 'other_org' }, { ...context.actor, principalKind: 'service' as const },
+    ]) await expect(changeMandateAuthority({ ...context, actor: { ...actor, roles: [...actor.roles] } }, { ...base.controlIntent, action })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    for (const site of [
+      { ...context.site, id: 'other_site' }, { ...context.site, organizationId: 'other_org' },
+      { ...context.site, environment: 'production' as const }, { ...context.site, active: null as unknown as boolean },
+    ]) await expect(changeMandateAuthority({ ...context, site }, { ...base.controlIntent, action })).rejects.toMatchObject({ code: 'SITE_UNAVAILABLE' });
+    await expect(changeMandateAuthority(context, { ...base.controlIntent, action, expectedOrganizationEpoch: 3 })).rejects.toMatchObject({ code: 'AUTHORITY_CHANGED' });
+    await expect(changeMandateAuthority(context, { ...base.controlIntent, action, head: { ...base.controlIntent.head, hash: 'f'.repeat(64) } })).rejects.toMatchObject({ code: 'AUTHORITY_CHANGED' });
+  });
+  it('still rejects resume at an inactive site despite otherwise valid independent verification', async () => {
+    const base = await pausedFixture();
+    await expect(changeMandateAuthority({ ...base.pausedContext, site: { ...base.pausedContext.site, active: false } }, base.resume))
+      .rejects.toMatchObject({ code: 'SITE_UNAVAILABLE' });
+  });
   it('pauses and revokes without an MFA delay, advances only the head epoch, and preserves the immutable accepted policy', async () => {
     const base = await acceptedFixture();
     const paused = await changeMandateAuthority({ ...base.control, stepUp: null }, base.controlIntent);

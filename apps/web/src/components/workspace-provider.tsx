@@ -10,6 +10,7 @@ import { canCreateResponsibility } from '@/lib/access-review';
 import { capsuleMatchesSession } from '@/lib/access-capsule';
 import { AccessRecoveryMemoryProvider,useAccessRecoveryMemory } from './access-recovery-memory';
 import { MandateAuthoringMemoryProvider } from './mandate-authoring-memory';
+import { MandateAuthorityMemoryProvider } from './mandate-authority-memory';
 import { MandateWorkNotice } from './mandate-work-notice';
 import { MandateRecoveryMemoryProvider, MandateRecoveryNotice } from './mandate-recovery-memory';
 import { visibleAccessFenceReceipt, visibleAccessReceipt } from '@/lib/access-feedback';
@@ -49,7 +50,7 @@ function SessionContent({ children }: { children: ReactNode }) {
   if (requiresSetup) return <main className="workspace-connection"><LoadingState label="Opening organization setup"/><Link href="/app/onboarding" className="button secondary">Continue setup</Link></main>;
   if (query.isPending) return <main className="workspace-connection"><LoadingState label="Verifying organization access"/></main>;
   if (query.isError) { const error = query.error; const denied = error instanceof RequestError && [401,403].includes(error.status); return <main className="workspace-connection"><Link href="/" className="brand-link"><img src="/brand/logo.svg" alt="Pactwoven" width="170" height="38"/></Link><h1>{denied ? 'Your workspace access needs attention.' : 'The workspace is temporarily unavailable.'}</h1><Alert title={denied ? 'Access not verified' : 'Unable to retrieve your organization'} tone="red"><p>{error.message}</p>{error instanceof RequestError && error.correlationId && <p className="fine">Reference: {error.correlationId}</p>}</Alert><div className="actions"><button className="button" disabled={query.isFetching} onClick={() => void query.refetch()}>{query.isFetching ? 'Checking access…' : 'Check again'}</button><button className="button secondary" onClick={() => void signOut({ redirectUrl: '/sign-in' })}>Sign out</button></div></main>; }
-  return <WorkspaceContext key={authorizationScope} value={{ session: query.data, getToken, drafts }}>{mandateMemoryScope ? <MandateRecoveryMemoryProvider key={authorizationScope} scope={mandateMemoryScope}><MandateAuthoringMemoryProvider scope={mandateMemoryScope}><MandateRecoveryNotice workspace/><MandateWorkNotice/>{children}</MandateAuthoringMemoryProvider></MandateRecoveryMemoryProvider> : children}</WorkspaceContext>;
+  return <WorkspaceContext key={authorizationScope} value={{ session: query.data, getToken, drafts }}>{mandateMemoryScope ? <MandateRecoveryMemoryProvider key={authorizationScope} scope={mandateMemoryScope}><MandateAuthoringMemoryProvider scope={mandateMemoryScope}><MandateAuthorityMemoryProvider scope={mandateMemoryScope}><MandateRecoveryNotice workspace/><MandateWorkNotice/>{children}</MandateAuthorityMemoryProvider></MandateAuthoringMemoryProvider></MandateRecoveryMemoryProvider> : children}</WorkspaceContext>;
 }
 function ScopedQueries({ children }: { children: ReactNode }) {
   const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false }, mutations: { retry: false } } }));

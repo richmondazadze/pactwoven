@@ -12,8 +12,8 @@ describe.skipIf(!financeFixtureEnabled)('PostgreSQL inert provenance persistence
     expect(decoded).toBe(Buffer.from(decodeSolanaBase58(FINANCE_DEVNET_ASSET.mint,32)).toString('hex'));
     expect(await rawFinanceAppend(f.a.pool,await f.input('direct_sql_observation'))).toMatchObject({kind:'delivery',disposition:'recorded'});
   });
-  it('applies all seven fresh migrations and concurrent duplicates have one committed receipt',async()=>{
-    expect(f.migrations).toHaveLength(7);const input=await f.input('parallel_delivery');
+  it('applies all eight fresh migrations and concurrent duplicates have one committed receipt',async()=>{
+    expect(f.migrations).toHaveLength(8);const input=await f.input('parallel_delivery');
     const results=await Promise.all(Array.from({length:8},()=>f.repository.append(input)));
     expect(new Set(results.map(x=>x.kind==='delivery'?x.receiptId:x.conflictId)).size).toBe(1);expect(results[0]).toMatchObject({kind:'delivery',disposition:'recorded',transferKey:null,effectKey:null});
     expect(await f.repository.get(financeLookup(input))).toEqual(results[0]);

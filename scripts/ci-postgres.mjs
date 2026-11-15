@@ -17,8 +17,8 @@ const base = new URL('postgresql://127.0.0.1:55440/postgres');
 base.username = 'postgres';
 base.password = process.env.CI_POSTGRES_PASSWORD;
 const admin = new Pool({ connectionString: base.href, max: 1, connectionTimeoutMillis: 5000 });
-const environment = { ...process.env };
-delete environment.CI_POSTGRES_PASSWORD;
+const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+  key !== 'CI_POSTGRES_PASSWORD' && !key.startsWith('PACTWOVEN_') && !key.startsWith('PG')));
 
 async function protectedUrl(name, database, username = 'postgres', password = base.password) {
   const url = new URL(base.href);
@@ -39,7 +39,7 @@ async function run(files, extra) {
   });
 }
 try {
-  for (const database of ['pactwoven_backend_test', 'pactwoven_migration_test', 'pactwoven_mandate_b1b_test', 'pactwoven_recovery_b1_test', 'pactwoven_finance_provenance_b2a_test']) {
+  for (const database of ['pactwoven_backend_test', 'pactwoven_migration_test', 'pactwoven_mandate_b1b_test', 'pactwoven_recovery_b1_test', 'pactwoven_finance_provenance_b2a_test', 'pactwoven_financial_fences_fa0_test']) {
     // Refuse reuse: each CI run must have a fresh disposable database container.
     const existing = await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [database]);
     if (existing.rowCount) throw new Error('CI fixture database already exists.');
@@ -103,6 +103,12 @@ try {
   await run(['packages/db/src/finance-provenance-repository.test.ts'], finance);
   await run(['packages/db/src/finance-provenance-isolation.test.ts'], finance);
   await run(['packages/db/src/finance-provenance-pool.test.ts'], finance);
+  const financialFences = {
+    PACTWOVEN_FINANCIAL_FENCES_TEST_ADMIN_URL_FILE: await protectedUrl('financial-fences-admin', 'pactwoven_financial_fences_fa0_test'),
+  };
+  // Prior suites provision all five shared capability roles; FA-0 verifies they stay unchanged.
+  await run(['packages/db/src/financial-fences.test.ts'], financialFences);
+  await run(['packages/db/src/financial-fences-isolation.test.ts'], financialFences);
   await run(['packages/db/src/migrate.test.ts'], {
     PACTWOVEN_RUN_MIGRATION_TESTS: '1',
     PACTWOVEN_MIGRATION_TEST_DATABASE_URL_FILE: await protectedUrl('migration-admin', 'pactwoven_migration_test'),

@@ -284,8 +284,20 @@ describe('authority history and current eligibility', () => {
     const stale = await projectMandateRead({ ...base.source, sites: [{ ...base.source.sites[0]!, active: false }] });
     expect(stale.effectiveAuthority).toEqual({ state: 'STALE', blockers: ['SITE_UNAVAILABLE'] });
     expect(stale.envelope.eligibility.find(item => item.action === 'RESUME')!.eligible).toBe(false);
+    expect(stale.envelope.eligibility.find(item => item.action === 'REVOKE')).toMatchObject({ eligible: true, requiresStepUp: false, blockers: [] });
     const expired = await projectMandateRead({ ...base.source, now: expiry });
     expect(expired.effectiveAuthority.state).toBe('EXPIRED');
     expect(expired.envelope.acceptedDecision!.state).toBe('APPROVED');
+  });
+  it('offers inactive-site stops separately from new use and still requires explicit action-site scope', async () => {
+    const base = await fixture(true), source = { ...base.source, sites: [{ ...base.source.sites[0]!, active: false }] };
+    const review = await projectMandateRead(source);
+    expect(review.effectiveAuthority).toEqual({ state: 'STALE', blockers: ['SITE_UNAVAILABLE'] });
+    for (const action of ['PAUSE', 'REVOKE']) expect(review.envelope.eligibility.find(item => item.action === action))
+      .toMatchObject({ eligible: true, requiresStepUp: false, blockers: [] });
+    expect(review.envelope.eligibility.find(item => item.action === 'PROPOSE')!.blockers).toContain('SITE_UNAVAILABLE');
+    const limited = await projectMandateRead({ ...source, reader: membership({ ...approver, actionSiteIds: [] }) });
+    for (const action of ['PAUSE', 'REVOKE']) expect(limited.envelope.eligibility.find(item => item.action === action))
+      .toMatchObject({ eligible: false, blockers: ['FORBIDDEN'] });
   });
 });

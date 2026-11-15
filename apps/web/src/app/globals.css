@@ -55,3 +55,13 @@ html[data-motion=reduced] *,html[data-motion=off] *,html[data-input=keyboard] *{
 @media(max-width:720px){.mandate-authoring-steps{grid-template-columns:minmax(0,1fr);gap:8px;margin:24px 0}.mandate-authoring-steps button{min-height:48px}.mandate-authoring .mandate-authoring-facts,.mandate-authoring-dates{grid-template-columns:minmax(0,1fr);gap:18px}.mandate-authoring .form-footer .actions,.mandate-authoring .panel-body>.actions{width:100%;display:grid;grid-template-columns:minmax(0,1fr)}.mandate-authoring .button{font-size:12px;width:100%;padding-inline:14px}.mandate-authoring-text{font-size:13px;line-height:1.9}.mandate-authoring .panel-body{padding:20px}.mandate-authoring .panel .panel .panel-body{padding:16px}.mandate-authoring .panel-heading{padding-inline:20px}.mandate-authoring .mandate-authoring-step-status{align-items:flex-start}.mandate-authoring textarea{font-size:16px;min-height:260px}.mandate-authoring input[type=datetime-local]{font-size:16px}.mandate-authoring-document>button{margin-right:0}}
 @media(prefers-reduced-motion:reduce){.mandate-authoring-steps button{transition:background-color var(--feedback) var(--ease),border-color var(--feedback) var(--ease),color var(--feedback) var(--ease)}}
 html[data-motion=off] .mandate-authoring-steps button,html[data-input=keyboard] .mandate-authoring-steps button{transition:none}
+/* Authority reviews stay opaque and readable; motion uses the shared arrival and button system. */
+.mandate-authority-controls,.mandate-authority-recovery{display:grid;gap:1rem;min-width:0;margin-block:1.5rem}
+.mandate-authority-review,.mandate-authority-original{display:grid;gap:1rem;min-width:0}
+.mandate-authority-controls fieldset{border:0;padding:0;margin:0;min-width:0}
+.mandate-authority-controls legend{font-weight:600;margin-bottom:.75rem}
+.mandate-authority-controls textarea{width:100%;min-height:7rem;resize:vertical}
+.mandate-authority-controls .access-heading-focus,.mandate-authority-original .access-heading-focus{scroll-margin-top:1.5rem}
+.mandate-authority-original{padding-block:1rem;border-bottom:1px solid var(--line)}
+.mandate-authority-review .review-key-values dd,.mandate-authority-original .review-key-values dd{overflow-wrap:anywhere}
+@media(max-width:640px){.mandate-authority-controls textarea{font-size:16px}.mandate-authority-controls .actions,.mandate-authority-original .actions{display:flex;flex-direction:column;align-items:stretch}.mandate-authority-controls .actions .button,.mandate-authority-original .actions .button{width:100%}.mandate-authority-controls .mandate-action-choices{display:grid;grid-template-columns:1fr}}

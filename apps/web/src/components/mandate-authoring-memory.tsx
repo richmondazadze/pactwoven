@@ -10,6 +10,7 @@ import { qualifyAuthoringOperation, type MandateAuthoringCapsule } from '../lib/
 import { assertAuthoringAttempt, listAuthoringManifests, locatorFromAuthoringCapsule, type AuthoringLocator } from '../lib/mandate-authoring-recovery';
 import { authoringWork, createMandateWorkCoordinator, decisionWork } from '../lib/mandate-work-coordination';
 import { mandateRecoveryScope, readMandateRecovery } from '../lib/mandate-recovery';
+import { authorityWork, listAuthorityRecovery } from '../lib/mandate-authority-recovery';
 import type { AuthoringQualifiedReceipt } from '../lib/mandate-authoring-transport';
 import type { MandateReadScope } from '../lib/mandates';
 import { useMandateRecoveryMemory } from './mandate-recovery-memory';
@@ -24,8 +25,8 @@ function useAuthoringStore(scope: MemoryScope) {
   function checkScope(value: MandateReadScope) { const { responsibilityId: _, ...owner } = value; if (!same(owner, scope)) throw new RequestError('MANDATE_SCOPE_CHANGED', 'The original private authoring scope changed.', 403); }
   const coordinator = useRef<ReturnType<typeof createMandateWorkCoordinator> | null>(null);
   function makeCoordinator() { return createMandateWorkCoordinator(() => {
-    assertAlive(); const storage = browserRecoveryStorage(), list = listAuthoringManifests(storage, scope), old = readMandateRecovery(storage, scope);
-    return { blocked: list.blocked || old.state === 'blocked', records: [...list.manifests.flatMap(item => item.pending ? [authoringWork(item.pending)] : []), ...(old.state === 'pending' ? [decisionWork(old.locator)] : [])] };
+    assertAlive(); const storage = browserRecoveryStorage(), list = listAuthoringManifests(storage, scope), old = readMandateRecovery(storage, scope), authority = listAuthorityRecovery(storage, scope);
+    return { blocked: list.blocked || old.state === 'blocked' || authority.blocked, records: [...list.manifests.flatMap(item => item.pending ? [authoringWork(item.pending)] : []), ...(old.state === 'pending' ? [decisionWork(old.locator)] : []), ...authority.locators.map(authorityWork)] };
   }); }
   if (!coordinator.current) coordinator.current = makeCoordinator();
   function reload() { assertAlive(); setInventory(listAuthoringManifests(browserRecoveryStorage(), scope)); setReady(true); update(n => n + 1); }
@@ -53,7 +54,15 @@ function useAuthoringStore(scope: MemoryScope) {
   return { ready, hidden, inventory, reload, deny, retain, select, original, recorded, onRecorded, onPending, onQualified, qualified,
     selected: () => { assertAlive(); return selection.current ? { preparationId: selection.current.manifest.preparationId, integrityHash: selection.current.integrityHash } : null; },
     storage: () => { assertAlive(); return browserRecoveryStorage(); },
-    work: { acquire: (input: Parameters<ReturnType<typeof createMandateWorkCoordinator>['acquire']>[0]) => { assertAlive(); return coordinator.current!.acquire(input); }, assert: (ticket: Parameters<ReturnType<typeof createMandateWorkCoordinator>['assert']>[0]) => { assertAlive(); coordinator.current!.assert(ticket); }, markDispatched: (ticket: Parameters<ReturnType<typeof createMandateWorkCoordinator>['markDispatched']>[0]) => { assertAlive(); coordinator.current!.markDispatched(ticket); }, state: (ticket: Parameters<ReturnType<typeof createMandateWorkCoordinator>['state']>[0]) => coordinator.current!.state(ticket), release: (ticket: Parameters<ReturnType<typeof createMandateWorkCoordinator>['release']>[0]) => coordinator.current!.release(ticket), clear: () => coordinator.current!.clear() },
+    work: {
+      acquire: (input: Parameters<ReturnType<typeof createMandateWorkCoordinator>['acquire']>[0]) => { assertAlive(); return coordinator.current!.acquire(input); }, assert: (ticket: Parameters<ReturnType<typeof createMandateWorkCoordinator>['assert']>[0]) => { assertAlive(); coordinator.current!.assert(ticket); }, markDispatched: (ticket: Parameters<ReturnType<typeof createMandateWorkCoordinator>['markDispatched']>[0]) => { assertAlive(); coordinator.current!.markDispatched(ticket); }, state: (ticket: Parameters<ReturnType<typeof createMandateWorkCoordinator>['state']>[0]) => coordinator.current!.state(ticket), release: (ticket: Parameters<ReturnType<typeof createMandateWorkCoordinator>['release']>[0]) => coordinator.current!.release(ticket), clear: () => coordinator.current!.clear(),
+      generation: (...args: Parameters<ReturnType<typeof createMandateWorkCoordinator>['generation']>) => { assertAlive(); return coordinator.current!.generation(...args); },
+      registerPreparation: (...args: Parameters<ReturnType<typeof createMandateWorkCoordinator>['registerPreparation']>) => { assertAlive(); return coordinator.current!.registerPreparation(...args); },
+      preparationCurrent: (...args: Parameters<ReturnType<typeof createMandateWorkCoordinator>['preparationCurrent']>) => alive.current && !denied.current && !c1Ref.current.hidden && coordinator.current!.preparationCurrent(...args),
+      watchPreparation: (...args: Parameters<ReturnType<typeof createMandateWorkCoordinator>['watchPreparation']>) => { assertAlive(); return coordinator.current!.watchPreparation(...args); },
+      bindPreparation: (...args: Parameters<ReturnType<typeof createMandateWorkCoordinator>['bindPreparation']>) => { assertAlive(); return coordinator.current!.bindPreparation(...args); },
+      releasePreparation: (...args: Parameters<ReturnType<typeof createMandateWorkCoordinator>['releasePreparation']>) => coordinator.current!.releasePreparation(...args),
+    },
   };
 }
 type Memory = ReturnType<typeof useAuthoringStore>;

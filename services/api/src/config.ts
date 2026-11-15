@@ -43,7 +43,7 @@ export function readDevelopmentConfig(values: EnvironmentValues) {
       .split(',').map(value => exactOrigin(value.trim()));
     if (!allowedOrigins.length || new Set(allowedOrigins).size !== allowedOrigins.length) throw new ConfigurationError();
     const bindings = [values.DATABASE_URL, values.CLERK_SECRET_KEY, values.CLERK_ISSUER, values.CLERK_PUBLISHABLE_KEY];
-    if (bindings.every(value => !value) && !values.PROVISIONER_DATABASE_URL && !values.ACCESS_DATABASE_URL) {
+    if (bindings.every(value => !value) && !values.PROVISIONER_DATABASE_URL && !values.ACCESS_DATABASE_URL && !values.MANDATE_DATABASE_URL) {
       return { environment, port, allowedOrigins, credentials: null };
     }
     const databaseUrl = z.string().min(1).parse(values.DATABASE_URL);
@@ -72,7 +72,16 @@ export function readDevelopmentConfig(values: EnvironmentValues) {
           (provisionerDatabaseUrl && decodeURIComponent(access.username) === decodeURIComponent(new URL(provisionerDatabaseUrl).username))) throw new ConfigurationError();
       accessDatabaseUrl = access.href;
     }
+    let mandateDatabaseUrl: string | undefined;
+    if (values.MANDATE_DATABASE_URL) {
+      const mandate = developmentDatabase(values.MANDATE_DATABASE_URL);
+      const existingUsers = [database.href, provisionerDatabaseUrl, accessDatabaseUrl].filter((value): value is string => Boolean(value))
+        .map(value => decodeURIComponent(new URL(value).username));
+      if (mandate.host !== database.host || mandate.pathname !== database.pathname || existingUsers.includes(decodeURIComponent(mandate.username))) throw new ConfigurationError();
+      mandateDatabaseUrl = mandate.href;
+    }
     return { environment, port, allowedOrigins, credentials: { databaseUrl: database.href, secretKey, issuer, publishableKey,
-      ...(provisionerDatabaseUrl ? { provisionerDatabaseUrl } : {}), ...(accessDatabaseUrl ? { accessDatabaseUrl } : {}) } };
+      ...(provisionerDatabaseUrl ? { provisionerDatabaseUrl } : {}), ...(accessDatabaseUrl ? { accessDatabaseUrl } : {}),
+      ...(mandateDatabaseUrl ? { mandateDatabaseUrl } : {}) } };
   } catch { throw new ConfigurationError(); }
 }

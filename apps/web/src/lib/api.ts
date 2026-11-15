@@ -5,7 +5,7 @@ export class RequestError extends Error {
   constructor(public readonly code: string, message: string, public readonly status = 0, public readonly correlationId?: string, public readonly fields?: Record<string, string[]>) { super(message); this.name = 'RequestError'; }
 }
 export type TokenSource = () => Promise<string | null>;
-export async function apiRequest<T>(path: string, schema: z.ZodType<T>, getToken: TokenSource, options: { signal?: AbortSignal; body?: unknown; idempotencyKey?: string } = {}): Promise<T> {
+export async function apiRequest<T>(path: string, schema: z.ZodType<T>, getToken: TokenSource, options: { signal?: AbortSignal; body?: unknown; idempotencyKey?: string; beforeDispatch?: () => undefined } = {}): Promise<T> {
   const base = getApiBase();
   if (!base) throw new RequestError('API_NOT_CONFIGURED', 'The workspace service is not connected yet.');
   if (!path.startsWith('/v1/')) throw new RequestError('INVALID_PATH', 'This request is not supported.');
@@ -16,9 +16,15 @@ export async function apiRequest<T>(path: string, schema: z.ZodType<T>, getToken
   const headers: Record<string, string> = { Authorization: `Bearer ${token}`, Accept: 'application/json', 'X-Correlation-Id': crypto.randomUUID() };
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
+  const url = `${base}${path}`;
+  const init: RequestInit = { method: options.body === undefined ? 'GET' : 'POST', headers, cache: 'no-store', credentials: 'omit', ...(options.signal ? { signal: options.signal } : {}), ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }) };
+  // No async handoff remains between this current-state check and transport.
+  // A rejected local check is not a lost network response.
+  options.beforeDispatch?.();
+  options.signal?.throwIfAborted();
   let response: Response;
   try {
-    response = await fetch(`${base}${path}`, { method: options.body === undefined ? 'GET' : 'POST', headers, cache: 'no-store', credentials: 'omit', ...(options.signal ? { signal: options.signal } : {}), ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }) });
+    response = await fetch(url, init);
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     throw new RequestError('NETWORK_UNAVAILABLE', options.body === undefined ? 'The workspace could not be reached. Try again when your connection returns.' : 'The response could not be confirmed. Keep this draft and request reference; do not create a second request.');

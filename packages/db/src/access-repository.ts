@@ -6,6 +6,8 @@ import { AccessQuerySchema, AccessOperationQuerySchema, GrantAccessCommandSchema
   type MemberCandidate, type MemberAccess, type MemberAccessPage, type Operation, type Environment } from '@pactwoven/contracts';
 import { commandDigest, DomainError, validateAccessScope } from '@pactwoven/domain';
 import { assertUnprivilegedPool, type VerifiedIdentity } from './repository.js';
+import { assertLegacyMandateIsolation } from './mandate-isolation.js';
+import { assertAccessRecoveryIsolation } from './access-recovery-isolation.js';
 
 // Internal verified evidence only. No public request accepts this object.
 export const AccessMfaEvidenceSchema = z.strictObject({
@@ -30,15 +32,17 @@ export interface AccessRepository {
 }
 export async function assertAccessPool(pool: Pool): Promise<void> {
   await assertUnprivilegedPool(pool);
+  await assertLegacyMandateIsolation(pool);
+  await assertAccessRecoveryIsolation(pool, 'access');
   const result = await pool.query<{ access: boolean; other: boolean; tables: boolean }>(`SELECT
-    pg_has_role(current_user,'pactwoven_access_provisioner','MEMBER') AS access,
-    (pg_has_role(current_user,'pactwoven_runtime','MEMBER') OR pg_has_role(current_user,'pactwoven_provisioner','MEMBER')
-      OR EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='pactwoven'
-        AND p.proname='bootstrap_organization' AND has_function_privilege(current_user,p.oid,'EXECUTE'))) AS other,
-    EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pactwoven' AND c.relkind IN ('r','p')
-      AND has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')) AS tables`);
-  const row = result.rows[0];
-  if (!row?.access || row.other || row.tables) throw new DomainError('UNSAFE_DATABASE_ROLE', 503, 'Member access requires its isolated function-only database role.');
+    pg_catalog.pg_has_role(current_user,'pactwoven_access_provisioner','MEMBER') AS access,
+    (pg_catalog.pg_has_role(current_user,'pactwoven_runtime','MEMBER') OR pg_catalog.pg_has_role(current_user,'pactwoven_provisioner','MEMBER')
+      OR EXISTS (SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace WHERE n.nspname OPERATOR(pg_catalog.=) 'pactwoven'
+        AND p.proname OPERATOR(pg_catalog.=) 'bootstrap_organization' AND pg_catalog.has_function_privilege(current_user,p.oid,'EXECUTE'))) AS other,
+    EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace WHERE n.nspname OPERATOR(pg_catalog.=) 'pactwoven' AND c.relkind OPERATOR(pg_catalog.=) ANY (ARRAY['r','p']::pg_catalog."char"[])
+      AND pg_catalog.has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')) AS tables`);
+  const row = Array.isArray(result?.rows) && result.rows.length === 1 ? result.rows[0] : undefined;
+  if (row?.access !== true || row.other !== false || row.tables !== false) throw new DomainError('UNSAFE_DATABASE_ROLE', 503, 'Member access requires its isolated function-only database role.');
 }
 export async function createAccessPool(connectionString: string): Promise<Pool> {
   const pool = new Pool({ connectionString, max: 3, connectionTimeoutMillis: 5_000, idleTimeoutMillis: 30_000, statement_timeout: 5_000 });
@@ -53,6 +57,7 @@ function databaseError(error: unknown): never {
     PA003: ['IDEMPOTENCY_CONFLICT', 409, 'This request key was already used for a different change.'],
     PA004: ['VALIDATION_FAILED', 422, 'Check the member access details.'],
     PA005: ['STEP_UP_REQUIRED', 403, 'Verify both authentication factors again before changing access.'],
+    PA006: ['ACCESS_KEY_FENCED', 409, 'This access request reference is closed. Check its original outcome.'],
   } as const;
   if (typeof code === 'string' && Object.hasOwn(errors, code)) {
     const [name, status, message] = errors[code as keyof typeof errors];

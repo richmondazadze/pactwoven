@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
   accessPool: vi.fn(), verifyStepUp: vi.fn(), members: vi.fn(), candidateList: vi.fn(), candidateResolve: vi.fn(),
   member: vi.fn(), accessChange: vi.fn(), accessOperation: vi.fn(),
 }));
-vi.mock('@pactwoven/db', () => ({
+vi.mock('@pactwoven/db', async importOriginal => ({ ...await importOriginal<typeof import('@pactwoven/db')>(),
   createRuntimePool: mocks.runtimePool, createProvisionerPool: mocks.provisionerPool, createAccessPool: mocks.accessPool,
   PostgresFoundationRepository: class { getSession(...args: unknown[]) { return mocks.session(...args); } },
   PostgresOrganizationProvisioner: class { bootstrapOrganization(...args: unknown[]) { return mocks.bootstrap(...args); } },

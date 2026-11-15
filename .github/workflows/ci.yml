@@ -67,3 +67,4 @@ jobs:
         run: |
           pnpm exec wrangler deploy --config services/api/wrangler.provisioner.json --dry-run --outdir "$RUNNER_TEMP/pactwoven-provisioner"
           pnpm exec wrangler deploy --config services/api/wrangler.api.json --dry-run --outdir "$RUNNER_TEMP/pactwoven-api"
+          pnpm exec wrangler deploy --config services/api/wrangler.mandate.json --dry-run --outdir "$RUNNER_TEMP/pactwoven-mandate"

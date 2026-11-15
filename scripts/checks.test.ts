@@ -145,7 +145,10 @@ describe('dependency and import boundaries', () => {
 });
 
 describe('code-only publication', () => {
-  it.each(['docs/spec.json', 'PRD.md', 'apps/web/README.MD', 'AGENTS.md', 'evidence/run.json', '.local/state.sql', '.env', '.env.example', 'apps/web/.env.production', 'infra/local.env.sample', 'env.sample.json', 'credentials/account.json', 'keys/signing-keypair.json', 'infra/id.json', 'private.pem', 'apps/web/secrets/key.ts', '../escape.ts', 'apps/../source.ts', 'apps/web\\file.ts', 'notes.txt', 'tests/output.pdf', 'node_modules/library/index.js'])('rejects %s', (file) => {
+  it.each(['apps/web/wrangler.jsonc', 'apps/web/public/_headers'])('allows reviewed Cloudflare source configuration %s', file => {
+    expect(inspectPath(file)).toBeNull();
+  });
+  it.each(['docs/spec.json', 'PRD.md', 'apps/web/README.MD', 'AGENTS.md', 'evidence/run.json', '.local/state.sql', '.env', '.env.example', 'apps/web/.env.production', 'infra/local.env.sample', 'env.sample.json', 'credentials/account.json', 'keys/signing-keypair.json', 'infra/id.json', 'private.pem', 'apps/web/secrets/key.ts', '../escape.ts', 'apps/../source.ts', 'apps/web\\file.ts', 'notes.txt', 'tests/output.pdf', 'node_modules/library/index.js', 'apps/web/.open-next/worker.js', 'apps/web/.open-next/assets/image.svg', 'apps/other/wrangler.jsonc', 'apps/other/public/_headers'])('rejects %s', (file) => {
     expect(inspectPath(file)).not.toBeNull();
   });
 

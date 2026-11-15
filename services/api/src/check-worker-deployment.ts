@@ -1,6 +1,6 @@
 import { assertDevelopmentWorkerDeployment } from './worker-deployment.js';
 
-// Read the two configs, fresh sanitized Hyperdrive observations and Worker
+// Read the three configs, fresh sanitized Hyperdrive observations and Worker
 // secret-name inventories on stdin. Never supply or echo secret values.
 try {
   let input = '';

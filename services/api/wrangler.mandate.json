@@ -1,0 +1,28 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "pactwoven-mandate-development",
+  "main": "src/mandate-worker.ts",
+  "compatibility_date": "2026-11-14",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [],
+  "send_metrics": false,
+  "observability": {
+    "enabled": false
+  },
+  "vars": {
+    "APP_ENVIRONMENT": "development",
+    "WORKER_ROLE": "mandate",
+    "ALLOWED_ORIGINS": "http://127.0.0.1:3001,http://localhost:3001,https://pactwoven-web-development.richmondazadze1313.workers.dev",
+    "EXPECTED_MANDATE_DATABASE_USER": "pactwoven_dev_mandate"
+  },
+  "hyperdrive": [
+    {
+      "binding": "MANDATE_DATABASE",
+      "id": "4f684eee26b54f17834a03e0bd059d77"
+    }
+  ]
+}

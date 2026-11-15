@@ -55,6 +55,7 @@ export function serviceIdentityVerifier(binding: ServiceBinding, originalAuthori
   return async token => {
     if (originalAuthorization !== `Bearer ${token}`) throw new DomainError('AUTH_REQUIRED', 401, 'Sign in again to continue.');
     const startedAt = Date.now();
+    let verifiedFailure: DomainError | undefined;
     try {
       const nonce = crypto.randomUUID();
       const hash = await tokenHash(token);
@@ -64,8 +65,9 @@ export function serviceIdentityVerifier(binding: ServiceBinding, originalAuthori
       }), 8 * 1024);
       if (response.status !== 200) {
         const error = z.strictObject({ error: z.strictObject({ code: z.enum(['AUTH_REQUIRED', 'FORBIDDEN', 'IDENTITY_UNAVAILABLE', 'VALIDATION_FAILED']) }) }).safeParse(data);
-        if (error.success && error.data.error.code === 'AUTH_REQUIRED' && response.status === 401) throw new DomainError('AUTH_REQUIRED', 401, 'Sign in again to continue.');
-        if (error.success && error.data.error.code === 'FORBIDDEN' && response.status === 403) throw new DomainError('FORBIDDEN', 403, 'Your selected organization membership is not active.');
+        if (error.success && error.data.error.code === 'AUTH_REQUIRED' && response.status === 401) verifiedFailure = new DomainError('AUTH_REQUIRED', 401, 'Sign in again to continue.');
+        if (error.success && error.data.error.code === 'FORBIDDEN' && response.status === 403) verifiedFailure = new DomainError('FORBIDDEN', 403, 'Your selected organization membership is not active.');
+        if (verifiedFailure) throw verifiedFailure;
         throw new Error('Private identity was not confirmed');
       }
       const result = responseSchema.parse(data);
@@ -77,7 +79,7 @@ export function serviceIdentityVerifier(binding: ServiceBinding, originalAuthori
       }
       return result.identity;
     } catch (error) {
-      if (error instanceof DomainError && (error.code === 'AUTH_REQUIRED' || error.code === 'FORBIDDEN')) throw error;
+      if (verifiedFailure && error === verifiedFailure) throw verifiedFailure;
       throw new DomainError('IDENTITY_UNAVAILABLE', 503, 'Identity verification is temporarily unavailable.');
     }
   };

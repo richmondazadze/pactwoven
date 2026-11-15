@@ -2,3 +2,6 @@ export * from './core';
 export * from './financial';
 export * from './access';
 export * from './mandates';
+export * from './mandate-http';
+export * from './mandate-documents-http';
+export * from './access-recovery';

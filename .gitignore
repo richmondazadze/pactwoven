@@ -38,6 +38,7 @@ id.json
 # Dependencies, generated build output, caches, and local machine state.
 node_modules/
 .next/
+.open-next/
 .turbo/
 .wrangler/
 .vercel/

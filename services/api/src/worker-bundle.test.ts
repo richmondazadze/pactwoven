@@ -11,14 +11,14 @@ const run = promisify(execFile);
 it('keeps administrative Clerk, MFA issuance and privileged SQL out of the compiled public Worker', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pactwoven-worker-bundle-'));
   const wrangler = fileURLToPath(new URL('../../../node_modules/wrangler/bin/wrangler.js', import.meta.url));
-  async function bundle(role: 'api' | 'provisioner'): Promise<string> {
+  async function bundle(role: 'api' | 'provisioner' | 'mandate'): Promise<string> {
     const config = fileURLToPath(new URL(`../wrangler.${role}.json`, import.meta.url));
     const output = join(directory, role);
     await run(process.execPath, [wrangler, 'deploy', '--dry-run', '--config', config, '--outdir', output], { timeout: 20_000 });
-    return readFile(join(output, role === 'api' ? 'worker.js' : 'provisioner-worker.js'), 'utf8');
+    return readFile(join(output, role === 'api' ? 'worker.js' : `${role}-worker.js`), 'utf8');
   }
   try {
-    const publicBundle = await bundle('api'), privateBundle = await bundle('provisioner');
+    const publicBundle = await bundle('api'), privateBundle = await bundle('provisioner'), mandateBundle = await bundle('mandate');
     for (const marker of ['createClerkClient', 'createClerkStepUpVerifier', 'createClerkMembershipDirectory', 'createAccessGateway',
       'SELECT pactwoven.bootstrap_organization(', 'SELECT pactwoven.change_member_access(', 'SELECT pactwoven.read_member_access(', 'SELECT pactwoven.read_access_operation(']) {
       expect(publicBundle, `Public bundle contains ${marker}`).not.toContain(marker);
@@ -26,5 +26,25 @@ it('keeps administrative Clerk, MFA issuance and privileged SQL out of the compi
     }
     expect(publicBundle).toContain('internal/access/dispatch');
     expect(publicBundle).toContain('serviceAccessGateway');
+    for (const marker of ['createAccessRecoveryGateway', 'createClerkAccessRecoveryStepUpVerifier',
+      'PostgresAccessRecoveryRepository', 'SELECT pactwoven.read_access_recovery(', 'SELECT pactwoven.close_access_recovery(']) {
+      expect(publicBundle, `Public bundle contains ${marker}`).not.toContain(marker);
+      expect(privateBundle, `Identity bundle lost ${marker}`).toContain(marker);
+      expect(mandateBundle, `Mandate bundle contains ${marker}`).not.toContain(marker);
+    }
+    expect(publicBundle).toContain('internal/access-recovery/dispatch');
+    expect(publicBundle).toContain('serviceAccessRecoveryGateway');
+    for (const marker of ['createMandateGateway', 'createClerkMandateStepUpVerifier', 'createMandatePool',
+      'PostgresMandateRepository', 'pactwoven.mandate_resolve_context(']) {
+      expect(publicBundle, `Public bundle contains ${marker}`).not.toContain(marker);
+      expect(privateBundle, `Identity bundle contains ${marker}`).not.toContain(marker);
+      expect(mandateBundle, `Mandate bundle lost ${marker}`).toContain(marker);
+    }
+    for (const marker of ['SELECT pactwoven.bootstrap_organization(', 'SELECT pactwoven.change_member_access(',
+      'SELECT pactwoven.read_member_access(', 'SELECT pactwoven.read_access_operation(']) {
+      expect(mandateBundle, `Mandate bundle contains ${marker}`).not.toContain(marker);
+    }
+    expect(publicBundle).toContain('internal/mandates/dispatch');
+    expect(publicBundle).toContain('serviceMandateGateway');
   } finally { await rm(directory, { recursive: true, force: true }); }
 }, 45_000);

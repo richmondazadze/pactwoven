@@ -4,6 +4,8 @@ import { readWorkerConfig, requestResource, workerUnavailable, type WorkerBindin
 import { serviceProvisioner } from './worker-provisioner.js';
 import { serviceIdentityVerifier } from './worker-identity.js';
 import { serviceAccessGateway } from './worker-access.js';
+import { serviceAccessRecoveryGateway } from './worker-access-recovery.js';
+import { serviceMandateGateway } from './worker-mandate.js';
 
 export default {
   async fetch(request: Request, bindings: WorkerBindings, context: WorkerContext): Promise<Response> {
@@ -21,6 +23,8 @@ export default {
       verifyIdentity: serviceIdentityVerifier(bindings.IDENTITY_PROVISIONER!, request.headers.get('Authorization') ?? '', config.issuer),
       provisioner: serviceProvisioner(bindings.IDENTITY_PROVISIONER!, request.headers.get('Authorization') ?? ''),
       accessGateway: serviceAccessGateway(bindings.IDENTITY_PROVISIONER!, request, config.issuer),
+      accessRecoveryGateway: serviceAccessRecoveryGateway(bindings.IDENTITY_PROVISIONER!, request, config.issuer),
+      ...(bindings.MANDATE_AUTHORITY ? { mandateGateway: serviceMandateGateway(bindings.MANDATE_AUTHORITY, request, config.issuer) } : {}),
     });
     try { return await app.fetch(request); }
     finally { context.waitUntil(pool.close()); }

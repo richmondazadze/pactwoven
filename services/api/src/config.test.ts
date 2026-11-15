@@ -16,6 +16,19 @@ const valid = () => ({
 });
 
 describe('development environment boundary', () => {
+  it('keeps mandate credentials distinct from every other development capability', () => {
+    const values = { ...valid(), PROVISIONER_DATABASE_URL: fixtureDatabaseUrl('postgresql://provisioner@127.0.0.1:55439/pactwoven_dev'),
+      ACCESS_DATABASE_URL: fixtureDatabaseUrl('postgresql://access@127.0.0.1:55439/pactwoven_dev') };
+    const mandate = fixtureDatabaseUrl('postgresql://mandate@127.0.0.1:55439/pactwoven_dev');
+    expect(readDevelopmentConfig({ ...values, MANDATE_DATABASE_URL: mandate }).credentials?.mandateDatabaseUrl).toBe(mandate);
+    for (const MANDATE_DATABASE_URL of [values.DATABASE_URL, values.PROVISIONER_DATABASE_URL, values.ACCESS_DATABASE_URL,
+      fixtureDatabaseUrl('postgresql://acce%73s@127.0.0.1:55439/pactwoven_dev'),
+      fixtureDatabaseUrl('postgresql://mandate@localhost:55440/pactwoven_dev'),
+      fixtureDatabaseUrl('postgresql://mandate@127.0.0.1:55439/other_database'), mandate + '?options=role%3Downer']) {
+      expect(() => readDevelopmentConfig({ ...values, MANDATE_DATABASE_URL })).toThrow(ConfigurationError);
+    }
+    expect(() => readDevelopmentConfig({ MANDATE_DATABASE_URL: mandate })).toThrow(ConfigurationError);
+  });
   it('requires a third distinct access identity on the same protected development database', () => {
     const PROVISIONER_DATABASE_URL = fixtureDatabaseUrl('postgresql://provisioner@127.0.0.1:55439/pactwoven_dev');
     const access = fixtureDatabaseUrl('postgresql://access@127.0.0.1:55439/pactwoven_dev');

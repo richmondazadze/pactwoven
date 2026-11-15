@@ -39,7 +39,7 @@ async function run(files, extra) {
   });
 }
 try {
-  for (const database of ['pactwoven_backend_test', 'pactwoven_migration_test']) {
+  for (const database of ['pactwoven_backend_test', 'pactwoven_migration_test', 'pactwoven_mandate_b1b_test', 'pactwoven_recovery_b1_test']) {
     // Refuse reuse: each CI run must have a fresh disposable database container.
     const existing = await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [database]);
     if (existing.rowCount) throw new Error('CI fixture database already exists.');
@@ -49,13 +49,15 @@ try {
   const runtimePassword = randomBytes(32).toString('base64url');
   const provisionerPassword = randomBytes(32).toString('base64url');
   const accessPassword = randomBytes(32).toString('base64url');
-  for (const [name, password] of [['pactwoven_ci_app', runtimePassword], ['pactwoven_ci_identity', provisionerPassword], ['pactwoven_ci_access', accessPassword]]) {
+  const mandatePassword = randomBytes(32).toString('base64url');
+  for (const [name, password] of [['pactwoven_ci_app', runtimePassword], ['pactwoven_ci_identity', provisionerPassword], ['pactwoven_ci_access', accessPassword], ['pactwoven_mandate_b1b_test_login', mandatePassword]]) {
     const sql = await admin.query("SELECT format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L', $1::text, $2::text) AS statement", [name, password]);
     await admin.query(sql.rows[0].statement);
   }
   const backend = {
     PACTWOVEN_RUN_DB_TESTS: '1',
     PACTWOVEN_RUN_ACCESS_DB_TESTS: '1',
+    PACTWOVEN_RUN_ACCESS_ACCEPTANCE_TESTS: '1',
     PACTWOVEN_TEST_ADMIN_DATABASE_URL_FILE: await protectedUrl('backend-admin', 'pactwoven_backend_test'),
     PACTWOVEN_TEST_DATABASE_URL_FILE: await protectedUrl('backend-runtime', 'pactwoven_backend_test', 'pactwoven_ci_app', runtimePassword),
     PACTWOVEN_TEST_PROVISIONER_DATABASE_URL_FILE: await protectedUrl('backend-provisioner', 'pactwoven_backend_test', 'pactwoven_ci_identity', provisionerPassword),
@@ -64,8 +66,36 @@ try {
   // Resetting repository suites run sequentially; guards and API integration use the final schema.
   await run(['packages/db/src/repository.test.ts'], backend);
   await run(['packages/db/src/access-repository.test.ts'], backend);
+  await run(['packages/db/src/access-acceptance.test.ts'], backend);
   await run(['packages/db/src/pool-guards.test.ts'], backend);
   await run(['services/api/src/access-postgres.test.ts'], backend);
+  await admin.query('CREATE ROLE pactwoven_mandate_writer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS');
+  await admin.query('GRANT pactwoven_mandate_writer TO pactwoven_mandate_b1b_test_login');
+  const mandate = {
+    PACTWOVEN_RUN_MANDATE_DB_TESTS: '1', PACTWOVEN_RUN_MANDATE_POOL_TESTS: '1',
+    PACTWOVEN_MANDATE_TEST_ADMIN_URL_FILE: await protectedUrl('mandate-admin', 'pactwoven_mandate_b1b_test'),
+    PACTWOVEN_MANDATE_TEST_WRITER_URL_FILE: await protectedUrl('mandate-writer', 'pactwoven_mandate_b1b_test', 'pactwoven_mandate_b1b_test_login', mandatePassword),
+  };
+  await run(['packages/db/src/mandate-repository.test.ts'], mandate);
+  await run(['packages/db/src/mandate-document-reads.test.ts'], mandate);
+  await run(['packages/db/src/mandate-pool.test.ts'], mandate);
+  await run(['services/api/src/mandate-postgres.test.ts'], mandate);
+  await admin.query("COMMENT ON DATABASE pactwoven_recovery_b1_test IS 'Pactwoven RECOVERY-01B B1 exclusive fixture'");
+  const recovery = {
+    PACTWOVEN_RUN_ACCESS_RECOVERY_DB_TESTS: '1',
+    PACTWOVEN_RECOVERY_TEST_ADMIN_URL_FILE: await protectedUrl('recovery-admin', 'pactwoven_recovery_b1_test'),
+  };
+  for (const [label, role] of [['runtime', 'pactwoven_runtime'], ['bootstrap', 'pactwoven_provisioner'],
+    ['access', 'pactwoven_access_provisioner'], ['mandate', 'pactwoven_mandate_writer']]) {
+    const name = `pactwoven_recovery_b1_test_${label}`, password = randomBytes(32).toString('base64url');
+    const create = await admin.query("SELECT format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L', $1::text, $2::text) AS statement", [name, password]);
+    await admin.query(create.rows[0].statement);
+    const grant = await admin.query("SELECT format('GRANT %I TO %I', $1::text, $2::text) AS statement", [role, name]);
+    await admin.query(grant.rows[0].statement);
+    recovery[`PACTWOVEN_RECOVERY_TEST_${label.toUpperCase()}_URL_FILE`] = await protectedUrl(`recovery-${label}`, 'pactwoven_recovery_b1_test', name, password);
+  }
+  await run(['packages/db/src/access-recovery-repository.test.ts'], recovery);
+  await run(['packages/db/src/access-recovery-isolation.test.ts'], recovery);
   await run(['packages/db/src/migrate.test.ts'], {
     PACTWOVEN_RUN_MIGRATION_TESTS: '1',
     PACTWOVEN_MIGRATION_TEST_DATABASE_URL_FILE: await protectedUrl('migration-admin', 'pactwoven_migration_test'),

@@ -4,12 +4,14 @@ import { assertDevelopmentWorkerDeployment } from './worker-deployment.js';
 
 const apiSource = JSON.parse(await readFile(new URL('../wrangler.api.json', import.meta.url), 'utf8'));
 const provisionerSource = JSON.parse(await readFile(new URL('../wrangler.provisioner.json', import.meta.url), 'utf8'));
+const mandateSource = JSON.parse(await readFile(new URL('../wrangler.mandate.json', import.meta.url), 'utf8'));
 function fixture() {
-  const apiId = 'a'.repeat(32), provisionerId = 'b'.repeat(32), accessId = 'c'.repeat(32);
+  const apiId = 'a'.repeat(32), provisionerId = 'b'.repeat(32), accessId = 'c'.repeat(32), mandateId = 'd'.repeat(32);
   return {
-    workerSecrets: { api: ['CLERK_ISSUER', 'CLERK_PUBLISHABLE_KEY'], provisioner: ['CLERK_ISSUER', 'CLERK_PUBLISHABLE_KEY', 'CLERK_SECRET_KEY'] },
+    workerSecrets: { api: ['CLERK_ISSUER', 'CLERK_PUBLISHABLE_KEY'], provisioner: ['CLERK_ISSUER', 'CLERK_PUBLISHABLE_KEY', 'CLERK_SECRET_KEY'], mandate: ['CLERK_ISSUER', 'CLERK_PUBLISHABLE_KEY', 'CLERK_SECRET_KEY'] },
     api: { ...structuredClone(apiSource), hyperdrive: [{ binding: 'DATABASE', id: apiId }] },
     provisioner: { ...structuredClone(provisionerSource), hyperdrive: [{ binding: 'DATABASE', id: provisionerId }, { binding: 'ACCESS_DATABASE', id: accessId }] },
+    mandate: { ...structuredClone(mandateSource), hyperdrive: [{ binding: 'MANDATE_DATABASE', id: mandateId }] },
     hyperdrives: [
       { id: apiId, caching: { disabled: true }, mtls: { sslmode: 'verify-full' }, origin_connection_limit: 5,
         origin: { database: 'pactwoven_dev', user: 'pactwoven_dev_app', scheme: 'postgresql', host: 'ep-fixture.us-east-2.aws.neon.tech', port: 5432 } },
@@ -17,6 +19,8 @@ function fixture() {
         origin: { database: 'pactwoven_dev', user: 'pactwoven_dev_identity', scheme: 'postgresql', host: 'ep-fixture.us-east-2.aws.neon.tech', port: 5432 } },
       { id: accessId, caching: { disabled: true }, mtls: { sslmode: 'verify-full' }, origin_connection_limit: 3,
         origin: { database: 'pactwoven_dev', user: 'pactwoven_dev_access', scheme: 'postgresql', host: 'ep-fixture.us-east-2.aws.neon.tech', port: 5432 } },
+      { id: mandateId, caching: { disabled: true }, mtls: { sslmode: 'verify-full' }, origin_connection_limit: 3,
+        origin: { database: 'pactwoven_dev', user: 'pactwoven_dev_mandate', scheme: 'postgresql', host: 'ep-fixture.us-east-2.aws.neon.tech', port: 5432 } },
     ],
   };
 }
@@ -101,5 +105,52 @@ describe('development Worker deployment guard', () => {
       (data: ReturnType<typeof fixture>) => { data.hyperdrives[2]!.mtls.sslmode = 'require'; },
       (data: ReturnType<typeof fixture>) => { data.workerSecrets.provisioner.push('ACCESS_DATABASE_URL'); },
     ]) { const data = fixture(); change(data); expect(() => assertDevelopmentWorkerDeployment(data)).toThrow(); }
+  });
+
+  it.each([
+    ['public mandate endpoint', (data: ReturnType<typeof fixture>) => { data.mandate.workers_dev = true; }],
+    ['mandate preview', (data: ReturnType<typeof fixture>) => { data.mandate.preview_urls = true; }],
+    ['mandate route', (data: ReturnType<typeof fixture>) => { data.mandate.routes = ['example.com/*']; }],
+    ['wrong mandate entry', (data: ReturnType<typeof fixture>) => { data.mandate.main = 'src/worker.ts'; }],
+    ['wrong mandate role', (data: ReturnType<typeof fixture>) => { data.mandate.vars.WORKER_ROLE = 'api'; }],
+    ['missing mandate binding', (data: ReturnType<typeof fixture>) => { data.api.services.pop(); }],
+    ['wrong mandate service', (data: ReturnType<typeof fixture>) => { data.api.services[1].service = data.provisioner.name; }],
+    ['duplicate mandate service', (data: ReturnType<typeof fixture>) => { data.api.services[0] = data.api.services[1]; }],
+    ['outbound private service', (data: ReturnType<typeof fixture>) => { data.mandate.services = [data.api.services[0]]; }],
+    ['public mandate credential', (data: ReturnType<typeof fixture>) => { data.api.hyperdrive.push(data.mandate.hyperdrive[0]); }],
+    ['identity mandate credential', (data: ReturnType<typeof fixture>) => { data.provisioner.hyperdrive[1] = data.mandate.hyperdrive[0]; }],
+    ['mandate bootstrap credential', (data: ReturnType<typeof fixture>) => { data.mandate.hyperdrive[0] = data.provisioner.hyperdrive[0]; }],
+    ['shared resource', (data: ReturnType<typeof fixture>) => { data.mandate.hyperdrive[0].id = data.api.hyperdrive[0].id; }],
+    ['shared runtime principal', (data: ReturnType<typeof fixture>) => { data.mandate.vars.EXPECTED_MANDATE_DATABASE_USER = data.api.vars.EXPECTED_DATABASE_USER; }],
+    ['shared access principal', (data: ReturnType<typeof fixture>) => { data.mandate.vars.EXPECTED_MANDATE_DATABASE_USER = data.provisioner.vars.EXPECTED_ACCESS_DATABASE_USER; }],
+    ['shared bootstrap principal', (data: ReturnType<typeof fixture>) => { data.mandate.vars.EXPECTED_MANDATE_DATABASE_USER = data.provisioner.vars.EXPECTED_DATABASE_USER; }],
+    ['public expected mandate principal', (data: ReturnType<typeof fixture>) => { data.api.vars.EXPECTED_MANDATE_DATABASE_USER = 'pactwoven_dev_mandate'; }],
+    ['identity expected mandate principal', (data: ReturnType<typeof fixture>) => { data.provisioner.vars.EXPECTED_MANDATE_DATABASE_USER = 'pactwoven_dev_mandate'; }],
+    ['missing expected principal', (data: ReturnType<typeof fixture>) => { delete data.mandate.vars.EXPECTED_MANDATE_DATABASE_USER; }],
+    ['unobserved mandate', (data: ReturnType<typeof fixture>) => { data.hyperdrives.pop(); }],
+    ['different origin', (data: ReturnType<typeof fixture>) => { data.hyperdrives[3]!.origin.host = 'ep-other.us-east-2.aws.neon.tech'; }],
+    ['wrong observed principal', (data: ReturnType<typeof fixture>) => { data.hyperdrives[3]!.origin.user = 'database_owner'; }],
+    ['cached mandate reads', (data: ReturnType<typeof fixture>) => { data.hyperdrives[3]!.caching.disabled = false; }],
+    ['unverified origin TLS', (data: ReturnType<typeof fixture>) => { data.hyperdrives[3]!.mtls.sslmode = 'require'; }],
+    ['private origin mismatch', (data: ReturnType<typeof fixture>) => { data.mandate.vars.ALLOWED_ORIGINS = 'https://other.example'; }],
+    ['missing Clerk key', (data: ReturnType<typeof fixture>) => { data.workerSecrets.mandate.pop(); }],
+    ['direct database secret', (data: ReturnType<typeof fixture>) => { data.workerSecrets.mandate.push('MANDATE_DATABASE_URL'); }],
+  ] as const)('rejects %s', (_name, change) => {
+    const data = fixture(); change(data);
+    expect(() => assertDevelopmentWorkerDeployment(data)).toThrow();
+  });
+
+  it('keeps credentials and malformed source values out of complete thrown errors', () => {
+    const data = fixture(), marker = 'PRIVATE_SENTINEL_NOT_A_REAL_SECRET';
+    const privateUrl = new URL('postgresql://example.com/private');
+    privateUrl.username = 'private';
+    privateUrl.password = marker;
+    data.mandate.vars.MANDATE_DATABASE_URL = privateUrl.href;
+    try { assertDevelopmentWorkerDeployment(data); expect.fail('Unsafe deployment accepted'); }
+    catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).not.toContain(marker);
+      expect(JSON.stringify(error, Object.getOwnPropertyNames(error))).not.toContain(marker);
+    }
   });
 });

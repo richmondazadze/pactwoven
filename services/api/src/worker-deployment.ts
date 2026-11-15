@@ -5,11 +5,12 @@ const configSchema = z.strictObject({
   $schema: z.string(), name: z.string(), main: z.string(), compatibility_date: z.literal('2026-11-14'),
   compatibility_flags: z.tuple([z.literal('nodejs_compat')]), workers_dev: z.boolean(), preview_urls: z.literal(false),
   routes: z.tuple([]), send_metrics: z.literal(false), observability: z.strictObject({ enabled: z.literal(false) }),
-  vars: z.strictObject({ APP_ENVIRONMENT: z.literal('development'), WORKER_ROLE: z.enum(['api', 'provisioner']),
-    ALLOWED_ORIGINS: z.string().min(1), EXPECTED_DATABASE_USER: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/),
-    EXPECTED_ACCESS_DATABASE_USER: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/).optional() }),
+  vars: z.strictObject({ APP_ENVIRONMENT: z.literal('development'), WORKER_ROLE: z.enum(['api', 'provisioner', 'mandate']),
+    ALLOWED_ORIGINS: z.string().min(1), EXPECTED_DATABASE_USER: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/).optional(),
+    EXPECTED_ACCESS_DATABASE_USER: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/).optional(),
+    EXPECTED_MANDATE_DATABASE_USER: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/).optional() }),
   services: z.array(z.strictObject({ binding: z.string(), service: z.string() })).optional(),
-  hyperdrive: z.array(z.strictObject({ binding: z.enum(['DATABASE', 'ACCESS_DATABASE']), id })).min(1).max(2),
+  hyperdrive: z.array(z.strictObject({ binding: z.enum(['DATABASE', 'ACCESS_DATABASE', 'MANDATE_DATABASE']), id })).min(1).max(2),
 });
 const hyperdriveSchema = z.object({
   id, caching: z.object({ disabled: z.literal(true) }),
@@ -23,14 +24,14 @@ const hyperdriveSchema = z.object({
 /** Consume fresh control-plane observations before deploy; runtime bindings do
  * not reveal caching or origin TLS configuration. Never print input values. */
 export function assertDevelopmentWorkerDeployment(input: unknown): void {
-  const parsed = z.object({ api: configSchema, provisioner: configSchema, hyperdrives: z.array(hyperdriveSchema),
-    workerSecrets: z.strictObject({ api: z.array(z.string()), provisioner: z.array(z.string()) }),
+  const parsed = z.object({ api: configSchema, provisioner: configSchema, mandate: configSchema, hyperdrives: z.array(hyperdriveSchema),
+    workerSecrets: z.strictObject({ api: z.array(z.string()), provisioner: z.array(z.string()), mandate: z.array(z.string()) }),
   }).safeParse(input);
   if (!parsed.success) throw new Error('Development Worker deployment configuration is incomplete or unsafe.');
-  const { api, provisioner, hyperdrives, workerSecrets } = parsed.data;
+  const { api, provisioner, mandate, hyperdrives, workerSecrets } = parsed.data;
   const publicNames = ['CLERK_ISSUER', 'CLERK_PUBLISHABLE_KEY'];
   const privateNames = [...publicNames, 'CLERK_SECRET_KEY'];
-  for (const [actual, expected] of [[workerSecrets.api, publicNames], [workerSecrets.provisioner, privateNames]]) {
+  for (const [actual, expected] of [[workerSecrets.api, publicNames], [workerSecrets.provisioner, privateNames], [workerSecrets.mandate, privateNames]]) {
     if (actual!.length !== expected!.length || new Set(actual).size !== actual!.length || expected!.some(name => !actual!.includes(name))) {
       throw new Error('Development Worker secret placement is invalid.');
     }
@@ -38,20 +39,29 @@ export function assertDevelopmentWorkerDeployment(input: unknown): void {
   if (api.name !== 'pactwoven-api-development' || api.main !== 'src/worker.ts' || api.vars.WORKER_ROLE !== 'api' || !api.workers_dev ||
       provisioner.name !== 'pactwoven-provisioner-development' || provisioner.main !== 'src/provisioner-worker.ts' ||
       provisioner.vars.WORKER_ROLE !== 'provisioner' || provisioner.workers_dev || provisioner.services?.length ||
-      api.services?.length !== 1 || api.services[0]?.binding !== 'IDENTITY_PROVISIONER' || api.services[0].service !== provisioner.name ||
+      api.services?.length !== 2 ||
+      api.services.filter(binding => binding.binding === 'IDENTITY_PROVISIONER' && binding.service === provisioner.name).length !== 1 ||
+      api.services.filter(binding => binding.binding === 'MANDATE_AUTHORITY' && binding.service === mandate.name).length !== 1 ||
+      !api.vars.EXPECTED_DATABASE_USER || !provisioner.vars.EXPECTED_DATABASE_USER ||
+      api.vars.EXPECTED_MANDATE_DATABASE_USER !== undefined || provisioner.vars.EXPECTED_MANDATE_DATABASE_USER !== undefined ||
+      mandate.name !== 'pactwoven-mandate-development' || mandate.main !== 'src/mandate-worker.ts' ||
+      mandate.vars.WORKER_ROLE !== 'mandate' || mandate.workers_dev || mandate.services?.length ||
+      mandate.vars.EXPECTED_DATABASE_USER !== undefined || mandate.vars.EXPECTED_ACCESS_DATABASE_USER !== undefined ||
+      !mandate.vars.EXPECTED_MANDATE_DATABASE_USER || mandate.hyperdrive.length !== 1 || mandate.hyperdrive[0]?.binding !== 'MANDATE_DATABASE' ||
       api.vars.EXPECTED_ACCESS_DATABASE_USER !== undefined || !provisioner.vars.EXPECTED_ACCESS_DATABASE_USER ||
-      new Set([api.vars.EXPECTED_DATABASE_USER, provisioner.vars.EXPECTED_DATABASE_USER, provisioner.vars.EXPECTED_ACCESS_DATABASE_USER]).size !== 3 ||
-      api.vars.ALLOWED_ORIGINS !== provisioner.vars.ALLOWED_ORIGINS ||
+      new Set([api.vars.EXPECTED_DATABASE_USER, provisioner.vars.EXPECTED_DATABASE_USER, provisioner.vars.EXPECTED_ACCESS_DATABASE_USER, mandate.vars.EXPECTED_MANDATE_DATABASE_USER]).size !== 4 ||
+      api.vars.ALLOWED_ORIGINS !== provisioner.vars.ALLOWED_ORIGINS || api.vars.ALLOWED_ORIGINS !== mandate.vars.ALLOWED_ORIGINS ||
       api.hyperdrive.length !== 1 || api.hyperdrive[0]?.binding !== 'DATABASE' || provisioner.hyperdrive.length !== 2 ||
       provisioner.hyperdrive.filter(binding => binding.binding === 'DATABASE').length !== 1 ||
       provisioner.hyperdrive.filter(binding => binding.binding === 'ACCESS_DATABASE').length !== 1 ||
-      new Set([...api.hyperdrive, ...provisioner.hyperdrive].map(binding => binding.id)).size !== 3) {
+      new Set([...api.hyperdrive, ...provisioner.hyperdrive, ...mandate.hyperdrive].map(binding => binding.id)).size !== 4) {
     throw new Error('Development Worker service isolation is invalid.');
   }
-  for (const config of [api, provisioner]) {
+  for (const config of [api, provisioner, mandate]) {
     for (const binding of config.hyperdrive) {
       const matches = hyperdrives.filter(resource => resource.id === binding.id);
-      const user = binding.binding === 'ACCESS_DATABASE' ? config.vars.EXPECTED_ACCESS_DATABASE_USER : config.vars.EXPECTED_DATABASE_USER;
+      const user = binding.binding === 'MANDATE_DATABASE' ? config.vars.EXPECTED_MANDATE_DATABASE_USER
+        : binding.binding === 'ACCESS_DATABASE' ? config.vars.EXPECTED_ACCESS_DATABASE_USER : config.vars.EXPECTED_DATABASE_USER;
       if (matches.length !== 1 || matches[0]?.origin.user !== user) {
         throw new Error('Development Hyperdrive role binding does not match the observed resource.');
       }
@@ -66,6 +76,6 @@ export function assertDevelopmentWorkerDeployment(input: unknown): void {
       } catch { throw new Error('Development Worker origins are invalid.'); }
     }
   }
-  const resources = [...api.hyperdrive, ...provisioner.hyperdrive].map(binding => hyperdrives.find(resource => resource.id === binding.id)!);
+  const resources = [...api.hyperdrive, ...provisioner.hyperdrive, ...mandate.hyperdrive].map(binding => hyperdrives.find(resource => resource.id === binding.id)!);
   if (new Set(resources.map(resource => resource.origin.host)).size !== 1) throw new Error('Development Worker databases must be the same dedicated development database.');
 }

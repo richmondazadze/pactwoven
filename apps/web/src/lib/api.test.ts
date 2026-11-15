@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { apiRequest } from './api';
+import { apiRequest, RequestError } from './api';
 const record = z.strictObject({ id: z.string() });
 describe('authenticated API boundary', () => {
   beforeEach(()=>vi.stubEnv('NEXT_PUBLIC_API_BASE_URL','https://api.example.test'));
@@ -26,6 +26,18 @@ describe('authenticated API boundary', () => {
     await expect(apiRequest('/v1/responsibilities',record,async()=>'verified-token',{body:{payload:{title:'A responsibility'}},idempotencyKey:'request_123456789'})).rejects.toMatchObject({code:'NETWORK_UNAVAILABLE'});
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(fetcher.mock.calls[0]?.[1]).toMatchObject({method:'POST',credentials:'omit',cache:'no-store',headers:{Authorization:'Bearer verified-token','Idempotency-Key':'request_123456789'}});
+  });
+  it('checks current action conditions after the final token handoff and does not turn rejection into network uncertainty',async()=>{
+    let allowed=true;const fetcher=vi.fn();vi.stubGlobal('fetch',fetcher);
+    const failure=new RequestError('REVIEW_CHANGED','Review the current state again.');
+    const token=async()=>{await Promise.resolve();queueMicrotask(()=>{allowed=false;});return 'verified-token';};
+    await expect(apiRequest('/v1/member-access/recovery/close',record,token,{body:{},beforeDispatch:()=>{if(!allowed)throw failure;}})).rejects.toBe(failure);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it('calls the synchronous guard once immediately before the only fetch',async()=>{
+    const order:string[]=[];vi.stubGlobal('fetch',vi.fn(async()=>{order.push('fetch');return Response.json({id:'receipt'});}));
+    const result=await apiRequest('/v1/member-access/recovery/close',record,async()=>{order.push('token');return 'verified-token';},{body:{},beforeDispatch:()=>{order.push('guard');}});
+    expect(result).toEqual({id:'receipt'});expect(order).toEqual(['token','guard','fetch']);
   });
   it('does not turn an unrecognized successful response into an application record',async()=>{
     vi.stubGlobal('fetch',vi.fn().mockResolvedValue(new Response(JSON.stringify({success:true}),{status:200})));

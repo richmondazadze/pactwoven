@@ -1,7 +1,9 @@
 import { serve } from '@hono/node-server';
-import { createRuntimePool, createProvisionerPool, createAccessPool, PostgresAccessRepository, PostgresFoundationRepository, PostgresOrganizationProvisioner } from '@pactwoven/db';
-import { createClerkIdentityVerifier, createClerkStepUpVerifier } from './auth.js';
+import { createRuntimePool, createProvisionerPool, createAccessPool, createMandatePool, PostgresMandateRepository, PostgresAccessRepository, PostgresAccessRecoveryRepository, PostgresFoundationRepository, PostgresOrganizationProvisioner } from '@pactwoven/db';
+import { createClerkIdentityVerifier, createClerkStepUpVerifier, createClerkMandateStepUpVerifier, createClerkAccessRecoveryStepUpVerifier } from './auth.js';
 import { createAccessGateway, createClerkMembershipDirectory } from './access-service.js';
+import { createAccessRecoveryGateway } from './access-recovery-service.js';
+import { createMandateGateway } from './mandate-service.js';
 import { createApp, type AppDependencies } from './app.js';
 import { readDevelopmentConfig } from './config.js';
 
@@ -10,6 +12,7 @@ const dependencies: AppDependencies = { allowedOrigins };
 let pool: Awaited<ReturnType<typeof createRuntimePool>> | undefined;
 let provisionerPool: Awaited<ReturnType<typeof createProvisionerPool>> | undefined;
 let accessPool: Awaited<ReturnType<typeof createAccessPool>> | undefined;
+let mandatePool: Awaited<ReturnType<typeof createMandatePool>> | undefined;
 if (credentials) {
   try {
     pool = await createRuntimePool(credentials.databaseUrl);
@@ -26,9 +29,19 @@ if (credentials) {
       const identityConfig = { secretKey: credentials.secretKey, issuer: credentials.issuer, authorizedParties: allowedOrigins };
       dependencies.accessGateway = createAccessGateway({ repository: new PostgresAccessRepository(accessPool, environment),
         verifyIdentity: dependencies.verifyIdentity, verifyStepUp: createClerkStepUpVerifier(identityConfig), directory: createClerkMembershipDirectory(identityConfig) });
+      dependencies.accessRecoveryGateway = createAccessRecoveryGateway({ environment,
+        repository: new PostgresAccessRecoveryRepository(accessPool, environment), verifyIdentity: dependencies.verifyIdentity,
+        verifyRecoveryStepUp: createClerkAccessRecoveryStepUpVerifier(identityConfig) });
+    }
+    if (credentials.mandateDatabaseUrl) {
+      mandatePool = await createMandatePool(credentials.mandateDatabaseUrl);
+      const identityConfig = { secretKey: credentials.secretKey, issuer: credentials.issuer, authorizedParties: allowedOrigins };
+      dependencies.mandateGateway = createMandateGateway({ repository: new PostgresMandateRepository(mandatePool, environment),
+        verifyIdentity: dependencies.verifyIdentity, verifyMandateStepUp: createClerkMandateStepUpVerifier(identityConfig),
+        directory: createClerkMembershipDirectory(identityConfig) });
     }
   } catch {
-    await Promise.allSettled([pool?.end(), provisionerPool?.end(), accessPool?.end()]);
+    await Promise.allSettled([pool?.end(), provisionerPool?.end(), accessPool?.end(), mandatePool?.end()]);
     throw new Error('Pactwoven API setup failed. Check the protected identity and runtime database configuration.');
   }
 }
@@ -37,5 +50,5 @@ const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, () => {
   console.info(`Pactwoven development API listening on http://127.0.0.1:${port}`);
 });
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => {
-  server.close(() => { void Promise.allSettled([pool?.end(), provisionerPool?.end(), accessPool?.end()]).then(() => process.exit(0)); });
+  server.close(() => { void Promise.allSettled([pool?.end(), provisionerPool?.end(), accessPool?.end(), mandatePool?.end()]).then(() => process.exit(0)); });
 });

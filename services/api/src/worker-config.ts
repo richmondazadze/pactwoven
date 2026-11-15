@@ -24,6 +24,10 @@ export type WorkerBindings = {
   DATABASE_URL?: unknown;
   PROVISIONER_DATABASE_URL?: unknown;
   ACCESS_DATABASE_URL?: unknown;
+  MANDATE_DATABASE_URL?: unknown;
+  MANDATE_DATABASE?: HyperdriveBinding;
+  EXPECTED_MANDATE_DATABASE_USER?: string;
+  MANDATE_AUTHORITY?: ServiceBinding;
 };
 
 export class WorkerConfigurationError extends Error {
@@ -32,7 +36,7 @@ export class WorkerConfigurationError extends Error {
 export type WorkerRuntimeConfig = { environment: 'development'; allowedOrigins: string[]; issuer: string; connectionString: string };
 export type PrivateWorkerConfig = WorkerRuntimeConfig & { secretKey: string; accessConnectionString: string };
 
-function readDatabaseBinding(database: HyperdriveBinding | undefined, expectedUser: string): string {
+export function readDatabaseBinding(database: HyperdriveBinding | undefined, expectedUser: string): string {
   if (!database || database.database !== 'pactwoven_dev' || database.user !== expectedUser) throw new WorkerConfigurationError();
   const url = new URL(database.connectionString);
   // Only Hyperdrive's synthetic local proxy may disable TLS. Deployment validation
@@ -51,7 +55,8 @@ export function readWorkerConfig(bindings: WorkerBindings, role: 'provisioner'):
 export function readWorkerConfig(bindings: WorkerBindings, role: 'api' | 'provisioner'): WorkerRuntimeConfig | PrivateWorkerConfig {
   try {
     if (bindings.APP_ENVIRONMENT !== 'development' || bindings.WORKER_ROLE !== role ||
-        bindings.DATABASE_URL !== undefined || bindings.PROVISIONER_DATABASE_URL !== undefined || bindings.ACCESS_DATABASE_URL !== undefined) throw new WorkerConfigurationError();
+        bindings.DATABASE_URL !== undefined || bindings.PROVISIONER_DATABASE_URL !== undefined || bindings.ACCESS_DATABASE_URL !== undefined ||
+        bindings.MANDATE_DATABASE_URL !== undefined || bindings.MANDATE_DATABASE !== undefined || bindings.EXPECTED_MANDATE_DATABASE_USER !== undefined) throw new WorkerConfigurationError();
     const allowedOrigins = z.string().min(1).parse(bindings.ALLOWED_ORIGINS).split(',');
     for (const origin of allowedOrigins) {
       const url = new URL(origin);
@@ -78,7 +83,9 @@ export function readWorkerConfig(bindings: WorkerBindings, role: 'api' | 'provis
       accessConnectionString = readDatabaseBinding(bindings.ACCESS_DATABASE, accessUser);
     }
     if (role === 'api' && typeof bindings.IDENTITY_PROVISIONER?.fetch !== 'function') throw new WorkerConfigurationError();
+    if (role === 'api' && bindings.MANDATE_AUTHORITY !== undefined && typeof bindings.MANDATE_AUTHORITY.fetch !== 'function') throw new WorkerConfigurationError();
     if (role === 'provisioner' && bindings.IDENTITY_PROVISIONER !== undefined) throw new WorkerConfigurationError();
+    if (role === 'provisioner' && bindings.MANDATE_AUTHORITY !== undefined) throw new WorkerConfigurationError();
     return { environment: 'development' as const, allowedOrigins, issuer, connectionString,
       ...(secretKey && accessConnectionString ? { secretKey, accessConnectionString } : {}) };
   } catch { throw new WorkerConfigurationError(); }

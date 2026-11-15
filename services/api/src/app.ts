@@ -1,17 +1,21 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { CreateResponsibilityCommandSchema, OrganizationBootstrapCommandSchema, IdempotencyKeySchema, IdSchema, PageQuerySchema, SCHEMA_VERSION, type Session } from '@pactwoven/contracts';
+import { CreateResponsibilityCommandSchema, OrganizationBootstrapCommandSchema, IdempotencyKeySchema, IdSchema, PageQuerySchema, SCHEMA_VERSION, type AccessRecoveryGateway, type MandateGateway, type Session } from '@pactwoven/contracts';
 import type { FoundationRepository, OrganizationProvisioner, VerifiedIdentity } from '@pactwoven/db';
 import { DomainError } from '@pactwoven/domain';
 import type { IdentityVerifier } from './auth.js';
 import type { AccessGateway } from './access-service.js';
 import { registerAccessRoutes } from './access-routes.js';
+import { registerMandateRoutes } from './mandate-routes.js';
+import { registerAccessRecoveryRoutes } from './access-recovery-routes.js';
 
 export type AppDependencies = {
   repository?: FoundationRepository;
   provisioner?: OrganizationProvisioner;
   verifyIdentity?: IdentityVerifier;
   accessGateway?: AccessGateway;
+  mandateGateway?: MandateGateway;
+  accessRecoveryGateway?: AccessRecoveryGateway;
   allowedOrigins: readonly string[];
 };
 export type ApiEnv = { Variables: { session: Session; identity: VerifiedIdentity; correlationId: string; requestBody: unknown } };
@@ -119,6 +123,8 @@ export function createApp(dependencies: AppDependencies) {
   });
 
   registerAccessRoutes(app, dependencies.accessGateway);
+  registerAccessRecoveryRoutes(app, dependencies.accessRecoveryGateway);
+  registerMandateRoutes(app, dependencies.mandateGateway);
 
   app.use('/v1/*', async (c, next) => {
     if (!dependencies.repository) throw new DomainError('SETUP_REQUIRED', 503, 'Development database access is not configured.');

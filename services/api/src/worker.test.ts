@@ -7,16 +7,28 @@ import provisionerWorker from './provisioner-worker.js';
 import { readWorkerConfig, requestResource, type WorkerBindings, type WorkerContext } from './worker-config.js';
 import { provisionerUrl, serviceProvisioner } from './worker-provisioner.js';
 import { identityUrl, serviceIdentityVerifier, verifyPrivateIdentityRequest } from './worker-identity.js';
+import { accessUrl } from './worker-access.js';
 
 const mocks = vi.hoisted(() => ({
   runtimePool: vi.fn(), provisionerPool: vi.fn(), verifyIdentity: vi.fn(), bootstrap: vi.fn(), session: vi.fn(),
+  accessPool: vi.fn(), verifyStepUp: vi.fn(), members: vi.fn(), candidateList: vi.fn(), candidateResolve: vi.fn(),
+  member: vi.fn(), accessChange: vi.fn(), accessOperation: vi.fn(),
 }));
 vi.mock('@pactwoven/db', () => ({
-  createRuntimePool: mocks.runtimePool, createProvisionerPool: mocks.provisionerPool,
+  createRuntimePool: mocks.runtimePool, createProvisionerPool: mocks.provisionerPool, createAccessPool: mocks.accessPool,
   PostgresFoundationRepository: class { getSession(...args: unknown[]) { return mocks.session(...args); } },
   PostgresOrganizationProvisioner: class { bootstrapOrganization(...args: unknown[]) { return mocks.bootstrap(...args); } },
+  PostgresAccessRepository: class {
+    listMembers(...args: unknown[]) { return mocks.members(...args); }
+    getMember(...args: unknown[]) { return mocks.member(...args); }
+    getOperation(...args: unknown[]) { return mocks.accessOperation(...args); }
+    changeAccess(...args: unknown[]) { return mocks.accessChange(...args); }
+  },
 }));
-vi.mock('./auth.js', () => ({ createClerkIdentityVerifier: () => mocks.verifyIdentity }));
+vi.mock('./auth.js', () => ({ createClerkIdentityVerifier: () => mocks.verifyIdentity, createClerkStepUpVerifier: () => mocks.verifyStepUp }));
+vi.mock('./access-service.js', async importOriginal => ({ ...await importOriginal<typeof import('./access-service.js')>(),
+  createClerkMembershipDirectory: () => ({ list: mocks.candidateList, resolve: mocks.candidateResolve }),
+}));
 
 const identity: VerifiedIdentity = { subject: 'test_user', externalOrganizationId: 'external_org', externalOrganizationName: 'Worker test',
   externalMembershipId: 'test_member', externalRole: 'org:admin', membershipObservedAt: '2026-11-14T12:00:00Z',
@@ -24,7 +36,7 @@ const identity: VerifiedIdentity = { subject: 'test_user', externalOrganizationI
 const operation: Operation = { id: 'bootstrap_operation', environment: 'development', status: 'succeeded', aggregateId: 'test_org',
   aggregateVersion: 1, financialState: null, evidenceRefs: [], nextCheckAt: null, error: null };
 const session: Session = { actor: { actorId: 'test_actor', organizationId: 'test_org', environment: 'development', principalKind: 'human',
-  roles: ['owner'], siteIds: ['test_site'], sessionId: 'test_session', authenticatedAt: '2026-11-14T12:00:00Z', correlationId: 'test_trace' },
+  roles: ['owner'], siteIds: ['test_site'], actionSiteIds: ['test_site'], sessionId: 'test_session', authenticatedAt: '2026-11-14T12:00:00Z', correlationId: 'test_trace' },
   organization: { id: 'test_org', name: 'Worker test', authorityEpoch: 0 }, sites: [{ id: 'test_site', name: 'Test site', timeZone: 'UTC' }] };
 const command = { expectedVersion: 0, mandateVersion: null, authorityEpoch: null,
   payload: { initialSite: { name: 'Test site', timeZone: 'America/Chicago' } } };
@@ -36,8 +48,11 @@ function bindings(role: 'api' | 'provisioner'): WorkerBindings {
   const connection = new URL('postgresql://hyperdrive.local:5432/pactwoven_dev');
   connection.username = user;
   connection.password = 'fixture';
+  const access = new URL(connection);
+  access.username = 'pactwoven_access';
   return { APP_ENVIRONMENT: 'development', WORKER_ROLE: role, ALLOWED_ORIGINS: 'http://127.0.0.1:3001',
-    ...(role === 'provisioner' ? { CLERK_SECRET_KEY: ['sk', 'test', 'fixture'].join('_') } : {}),
+    ...(role === 'provisioner' ? { CLERK_SECRET_KEY: ['sk', 'test', 'fixture'].join('_'), EXPECTED_ACCESS_DATABASE_USER: 'pactwoven_access',
+      ACCESS_DATABASE: { connectionString: access.href, host: 'hyperdrive.local', port: 5432, user: 'pactwoven_access', database: 'pactwoven_dev' } } : {}),
     CLERK_ISSUER: 'https://worker-fixture.clerk.accounts.dev',
     CLERK_PUBLISHABLE_KEY: `pk_test_${btoa('worker-fixture.clerk.accounts.dev$').replace(/=+$/, '')}`,
     EXPECTED_DATABASE_USER: user, DATABASE: { connectionString: connection.href,
@@ -65,6 +80,7 @@ beforeEach(() => {
   mocks.session.mockResolvedValue(session);
   mocks.runtimePool.mockImplementation(async () => ({ end: vi.fn(async () => {}) }));
   mocks.provisionerPool.mockImplementation(async () => ({ end: vi.fn(async () => {}) }));
+  mocks.accessPool.mockImplementation(async () => ({ end: vi.fn(async () => {}) }));
 });
 
 describe('Cloudflare request and private service boundaries', () => {
@@ -150,11 +166,13 @@ describe('Cloudflare request and private service boundaries', () => {
     const ctx = context();
     for (const request of [new Request(provisionerUrl), bootstrapRequest('https://public.example/v1/organizations/bootstrap'),
       bootstrapRequest(`${provisionerUrl}?extra=1`), new Request('https://pactwoven-provisioner.internal/health'),
-      new Request(identityUrl), bootstrapRequest(`${identityUrl}?extra=1`), bootstrapRequest('https://public.example/internal/identity/verify')]) {
+      new Request(identityUrl), bootstrapRequest(`${identityUrl}?extra=1`), bootstrapRequest('https://public.example/internal/identity/verify'),
+      new Request(accessUrl), bootstrapRequest(`${accessUrl}?extra=1`), bootstrapRequest('https://public.example/internal/access/dispatch')]) {
       expect((await provisionerWorker.fetch(request, bindings('provisioner'), ctx)).status).toBe(404);
     }
     expect(mocks.verifyIdentity).not.toHaveBeenCalled();
     expect(mocks.provisionerPool).not.toHaveBeenCalled();
+    expect(mocks.accessPool).not.toHaveBeenCalled();
   });
 
   it('never trusts claimed identity headers at the private entrypoint', async () => {
@@ -253,6 +271,21 @@ describe('Worker environment and lifecycle validation', () => {
     expect(mocks.runtimePool).not.toHaveBeenCalled();
   });
 
+  it('rejects all public access bindings and direct access DSNs, and requires a distinct valid private access binding', () => {
+    const privateBindings = bindings('provisioner');
+    for (const patch of [{ ACCESS_DATABASE: privateBindings.ACCESS_DATABASE! },
+      { EXPECTED_ACCESS_DATABASE_USER: 'pactwoven_access' }, { ACCESS_DATABASE_URL: 'not-permitted' }]) {
+      expect(() => readWorkerConfig({ ...bindings('api'), ...patch }, 'api')).toThrow();
+    }
+    for (const patch of [{ ACCESS_DATABASE: undefined }, { EXPECTED_ACCESS_DATABASE_USER: undefined },
+      { ACCESS_DATABASE_URL: 'not-permitted' }, { EXPECTED_ACCESS_DATABASE_USER: privateBindings.EXPECTED_DATABASE_USER },
+      { ACCESS_DATABASE: privateBindings.DATABASE },
+      { ACCESS_DATABASE: { ...privateBindings.ACCESS_DATABASE!, connectionString: `${privateBindings.ACCESS_DATABASE!.connectionString}?options=role` } },
+      { ACCESS_DATABASE: { ...privateBindings.ACCESS_DATABASE!, database: 'production' } }]) {
+      expect(() => readWorkerConfig({ ...privateBindings, ...patch } as WorkerBindings, 'provisioner')).toThrow();
+    }
+  });
+
   it('shares only within one request resource and safely handles failed initialization', async () => {
     const end = vi.fn(async () => {}), factory = vi.fn(async () => ({ end }));
     const resource = requestResource(factory);
@@ -264,6 +297,75 @@ describe('Worker environment and lifecycle validation', () => {
     const failed = requestResource(async () => { throw new Error('private driver detail'); });
     await expect(failed.get()).rejects.toThrow();
     await expect(failed.close()).resolves.toBeUndefined();
+  });
+});
+
+describe('private access Worker integration', () => {
+  const accessCommand = { expectedVersion: 0, mandateVersion: null, authorityEpoch: 0, payload: {
+    externalMembershipId: 'target_member', externalSubject: 'target_subject', roles: ['receiver'], siteIds: ['test_site'], actionSiteIds: ['test_site'], expiresAt: null,
+  } };
+  const accessPage = () => ({ items: [], nextCursor: null, observedAt: new Date().toISOString(), authorityEpoch: 0 });
+  const request = (path: string, body?: unknown) => new Request(`https://api.example${path}`, {
+    method: body === undefined ? 'GET' : 'POST', headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+
+  it('independently re-verifies list and candidate tokens with one access pool and no other database role', async () => {
+    mocks.members.mockImplementation(async () => accessPage());
+    mocks.candidateList.mockImplementation(async () => ({ items: [], nextCursor: null, observedAt: new Date().toISOString() }));
+    const ctx = context();
+    expect((await apiWorker.fetch(request('/v1/members'), bindings('api'), ctx)).status).toBe(200);
+    expect((await apiWorker.fetch(request('/v1/members/candidates'), bindings('api'), ctx)).status).toBe(200);
+    await ctx.done();
+    expect(mocks.verifyIdentity).toHaveBeenCalledTimes(5);
+    for (const [token] of mocks.verifyIdentity.mock.calls) expect(token).toBe('synthetic-worker-token');
+    expect(mocks.accessPool).toHaveBeenCalledTimes(2);
+    for (const result of mocks.accessPool.mock.results) expect((await result.value).end).toHaveBeenCalledOnce();
+    expect(mocks.runtimePool).not.toHaveBeenCalled(); expect(mocks.provisionerPool).not.toHaveBeenCalled();
+    expect(mocks.verifyStepUp).not.toHaveBeenCalled();
+  });
+
+  it('resolves accepted target and verifies MFA privately using the original token before the isolated mutation', async () => {
+    mocks.members.mockImplementation(async () => accessPage());
+    const target = { externalOrganizationId: identity.externalOrganizationId, externalMembershipId: 'target_member', externalSubject: 'target_subject',
+      displayName: 'Target member', externalRole: 'org:member', observedAt: new Date().toISOString() };
+    const verified = { identity, evidence: { id: 'private_mfa_fixture' } };
+    mocks.candidateResolve.mockResolvedValue(target); mocks.verifyStepUp.mockResolvedValue(verified); mocks.accessChange.mockResolvedValue(operation);
+    const ctx = context();
+    const response = await apiWorker.fetch(request('/v1/members/grant', accessCommand), bindings('api'), ctx);
+    expect(response.status).toBe(201); expect(await response.json()).toEqual(operation);
+    expect(mocks.verifyIdentity).toHaveBeenCalledTimes(2);
+    expect(mocks.verifyStepUp).toHaveBeenCalledExactlyOnceWith('synthetic-worker-token');
+    expect(mocks.accessChange).toHaveBeenCalledExactlyOnceWith(verified, headers['Idempotency-Key'], { kind: 'grant', command: accessCommand, target }, 'worker_trace');
+    await ctx.done();
+    expect(mocks.accessPool).toHaveBeenCalledOnce(); expect((await mocks.accessPool.mock.results[0]?.value).end).toHaveBeenCalledOnce();
+    expect(mocks.runtimePool).not.toHaveBeenCalled(); expect(mocks.provisionerPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects revoked identity or insufficient MFA independently without the access effect', async () => {
+    mocks.verifyIdentity.mockResolvedValueOnce(identity).mockRejectedValueOnce(new DomainError('AUTH_REQUIRED', 401, 'Revoked'));
+    const ctx = context();
+    expect((await apiWorker.fetch(request('/v1/members/grant', accessCommand), bindings('api'), ctx)).status).toBe(401);
+    expect(mocks.accessPool).not.toHaveBeenCalled();
+    mocks.verifyIdentity.mockResolvedValue(identity);
+    mocks.verifyStepUp.mockRejectedValue(new DomainError('STEP_UP_REQUIRED', 403, 'Private MFA detail'));
+    const response = await apiWorker.fetch(request('/v1/members/target_actor/revoke', { expectedVersion: 1, mandateVersion: null, authorityEpoch: 0,
+      payload: { reason: 'Access ended' } }), bindings('api'), ctx);
+    expect(response.status).toBe(403); expect(await response.text()).not.toContain('Private MFA detail');
+    expect(mocks.accessPool).not.toHaveBeenCalled(); expect(mocks.accessChange).not.toHaveBeenCalled();
+    await ctx.done();
+  });
+
+  it('reads unknown operation state through access recovery without a new mutation and closes failed pools safely', async () => {
+    const ctx = context(), unknown = { ...operation, status: 'unknown', error: { code: 'OUTCOME_UNKNOWN', retryable: false, detailRef: null } };
+    mocks.accessOperation.mockResolvedValue(unknown);
+    const response = await apiWorker.fetch(request(`/v1/member-access/operations?kind=grant&key=${headers['Idempotency-Key']}`), bindings('api'), ctx);
+    expect(response.status).toBe(200); expect(await response.json()).toEqual(unknown);
+    mocks.members.mockRejectedValue(new Error('private-access-driver-details'));
+    const failed = await apiWorker.fetch(request('/v1/members'), bindings('api'), ctx);
+    expect(failed.status).toBe(503); expect(await failed.text()).not.toContain('private-access-driver-details');
+    await ctx.done();
+    for (const result of mocks.accessPool.mock.results) expect((await result.value).end).toHaveBeenCalledOnce();
+    expect(mocks.accessChange).not.toHaveBeenCalled(); expect(mocks.provisionerPool).not.toHaveBeenCalled(); expect(mocks.runtimePool).not.toHaveBeenCalled();
   });
 });
 

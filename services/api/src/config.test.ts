@@ -16,6 +16,18 @@ const valid = () => ({
 });
 
 describe('development environment boundary', () => {
+  it('requires a third distinct access identity on the same protected development database', () => {
+    const PROVISIONER_DATABASE_URL = fixtureDatabaseUrl('postgresql://provisioner@127.0.0.1:55439/pactwoven_dev');
+    const access = fixtureDatabaseUrl('postgresql://access@127.0.0.1:55439/pactwoven_dev');
+    expect(readDevelopmentConfig({ ...valid(), PROVISIONER_DATABASE_URL, ACCESS_DATABASE_URL: access }).credentials?.accessDatabaseUrl).toBe(access);
+    for (const ACCESS_DATABASE_URL of [valid().DATABASE_URL, PROVISIONER_DATABASE_URL,
+      fixtureDatabaseUrl('postgresql://runtim%65@127.0.0.1:55439/pactwoven_dev'),
+      fixtureDatabaseUrl('postgresql://access@localhost:55440/pactwoven_dev'),
+      fixtureDatabaseUrl('postgresql://access@127.0.0.1:55439/pactwoven_backend_test'), access + '?options=role%3Downer']) {
+      expect(() => readDevelopmentConfig({ ...valid(), PROVISIONER_DATABASE_URL, ACCESS_DATABASE_URL })).toThrow(ConfigurationError);
+    }
+    expect(() => readDevelopmentConfig({ ACCESS_DATABASE_URL: access })).toThrow(ConfigurationError);
+  });
   it('permits dedicated development configuration and an explicitly unconfigured local shell', () => {
     expect(readDevelopmentConfig(valid()).environment).toBe('development');
     expect(readDevelopmentConfig({}).credentials).toBeNull();

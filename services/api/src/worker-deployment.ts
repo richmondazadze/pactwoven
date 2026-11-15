@@ -6,9 +6,10 @@ const configSchema = z.strictObject({
   compatibility_flags: z.tuple([z.literal('nodejs_compat')]), workers_dev: z.boolean(), preview_urls: z.literal(false),
   routes: z.tuple([]), send_metrics: z.literal(false), observability: z.strictObject({ enabled: z.literal(false) }),
   vars: z.strictObject({ APP_ENVIRONMENT: z.literal('development'), WORKER_ROLE: z.enum(['api', 'provisioner']),
-    ALLOWED_ORIGINS: z.string().min(1), EXPECTED_DATABASE_USER: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/) }),
+    ALLOWED_ORIGINS: z.string().min(1), EXPECTED_DATABASE_USER: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/),
+    EXPECTED_ACCESS_DATABASE_USER: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/).optional() }),
   services: z.array(z.strictObject({ binding: z.string(), service: z.string() })).optional(),
-  hyperdrive: z.tuple([z.strictObject({ binding: z.literal('DATABASE'), id })]),
+  hyperdrive: z.array(z.strictObject({ binding: z.enum(['DATABASE', 'ACCESS_DATABASE']), id })).min(1).max(2),
 });
 const hyperdriveSchema = z.object({
   id, caching: z.object({ disabled: z.literal(true) }),
@@ -38,14 +39,22 @@ export function assertDevelopmentWorkerDeployment(input: unknown): void {
       provisioner.name !== 'pactwoven-provisioner-development' || provisioner.main !== 'src/provisioner-worker.ts' ||
       provisioner.vars.WORKER_ROLE !== 'provisioner' || provisioner.workers_dev || provisioner.services?.length ||
       api.services?.length !== 1 || api.services[0]?.binding !== 'IDENTITY_PROVISIONER' || api.services[0].service !== provisioner.name ||
-      api.vars.EXPECTED_DATABASE_USER === provisioner.vars.EXPECTED_DATABASE_USER ||
-      api.vars.ALLOWED_ORIGINS !== provisioner.vars.ALLOWED_ORIGINS || api.hyperdrive[0].id === provisioner.hyperdrive[0].id) {
+      api.vars.EXPECTED_ACCESS_DATABASE_USER !== undefined || !provisioner.vars.EXPECTED_ACCESS_DATABASE_USER ||
+      new Set([api.vars.EXPECTED_DATABASE_USER, provisioner.vars.EXPECTED_DATABASE_USER, provisioner.vars.EXPECTED_ACCESS_DATABASE_USER]).size !== 3 ||
+      api.vars.ALLOWED_ORIGINS !== provisioner.vars.ALLOWED_ORIGINS ||
+      api.hyperdrive.length !== 1 || api.hyperdrive[0]?.binding !== 'DATABASE' || provisioner.hyperdrive.length !== 2 ||
+      provisioner.hyperdrive.filter(binding => binding.binding === 'DATABASE').length !== 1 ||
+      provisioner.hyperdrive.filter(binding => binding.binding === 'ACCESS_DATABASE').length !== 1 ||
+      new Set([...api.hyperdrive, ...provisioner.hyperdrive].map(binding => binding.id)).size !== 3) {
     throw new Error('Development Worker service isolation is invalid.');
   }
   for (const config of [api, provisioner]) {
-    const matches = hyperdrives.filter(resource => resource.id === config.hyperdrive[0].id);
-    if (matches.length !== 1 || matches[0]?.origin.user !== config.vars.EXPECTED_DATABASE_USER) {
-      throw new Error('Development Hyperdrive role binding does not match the observed resource.');
+    for (const binding of config.hyperdrive) {
+      const matches = hyperdrives.filter(resource => resource.id === binding.id);
+      const user = binding.binding === 'ACCESS_DATABASE' ? config.vars.EXPECTED_ACCESS_DATABASE_USER : config.vars.EXPECTED_DATABASE_USER;
+      if (matches.length !== 1 || matches[0]?.origin.user !== user) {
+        throw new Error('Development Hyperdrive role binding does not match the observed resource.');
+      }
     }
     const origins = config.vars.ALLOWED_ORIGINS.split(',');
     if (origins.length !== new Set(origins).size) throw new Error('Development Worker origins are invalid.');
@@ -57,7 +66,6 @@ export function assertDevelopmentWorkerDeployment(input: unknown): void {
       } catch { throw new Error('Development Worker origins are invalid.'); }
     }
   }
-  const a = hyperdrives.find(resource => resource.id === api.hyperdrive[0].id)!;
-  const b = hyperdrives.find(resource => resource.id === provisioner.hyperdrive[0].id)!;
-  if (a.origin.host !== b.origin.host) throw new Error('Development Worker databases must be the same dedicated development database.');
+  const resources = [...api.hyperdrive, ...provisioner.hyperdrive].map(binding => hyperdrives.find(resource => resource.id === binding.id)!);
+  if (new Set(resources.map(resource => resource.origin.host)).size !== 1) throw new Error('Development Worker databases must be the same dedicated development database.');
 }

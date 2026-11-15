@@ -4,14 +4,17 @@ import { CreateResponsibilityCommandSchema, OrganizationBootstrapCommandSchema, 
 import type { FoundationRepository, OrganizationProvisioner, VerifiedIdentity } from '@pactwoven/db';
 import { DomainError } from '@pactwoven/domain';
 import type { IdentityVerifier } from './auth.js';
+import type { AccessGateway } from './access-service.js';
+import { registerAccessRoutes } from './access-routes.js';
 
 export type AppDependencies = {
   repository?: FoundationRepository;
   provisioner?: OrganizationProvisioner;
   verifyIdentity?: IdentityVerifier;
+  accessGateway?: AccessGateway;
   allowedOrigins: readonly string[];
 };
-type ApiEnv = { Variables: { session: Session; identity: VerifiedIdentity; correlationId: string; requestBody: unknown } };
+export type ApiEnv = { Variables: { session: Session; identity: VerifiedIdentity; correlationId: string; requestBody: unknown } };
 const allowedRequestHeaders = ['authorization', 'content-type', 'idempotency-key', 'x-correlation-id'];
 const maximumBodyBytes = 64 * 1024;
 const bodyDeadlineMilliseconds = 5_000;
@@ -114,6 +117,8 @@ export function createApp(dependencies: AppDependencies) {
     c.header('Location', '/v1/session');
     return c.json(operation, 201);
   });
+
+  registerAccessRoutes(app, dependencies.accessGateway);
 
   app.use('/v1/*', async (c, next) => {
     if (!dependencies.repository) throw new DomainError('SETUP_REQUIRED', 503, 'Development database access is not configured.');

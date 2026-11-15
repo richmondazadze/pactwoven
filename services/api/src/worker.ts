@@ -3,6 +3,7 @@ import { createApp } from './app.js';
 import { readWorkerConfig, requestResource, workerUnavailable, type WorkerBindings, type WorkerContext, type WorkerRuntimeConfig } from './worker-config.js';
 import { serviceProvisioner } from './worker-provisioner.js';
 import { serviceIdentityVerifier } from './worker-identity.js';
+import { serviceAccessGateway } from './worker-access.js';
 
 export default {
   async fetch(request: Request, bindings: WorkerBindings, context: WorkerContext): Promise<Response> {
@@ -19,6 +20,7 @@ export default {
     const app = createApp({ allowedOrigins: config.allowedOrigins, repository: lazyRepository,
       verifyIdentity: serviceIdentityVerifier(bindings.IDENTITY_PROVISIONER!, request.headers.get('Authorization') ?? '', config.issuer),
       provisioner: serviceProvisioner(bindings.IDENTITY_PROVISIONER!, request.headers.get('Authorization') ?? ''),
+      accessGateway: serviceAccessGateway(bindings.IDENTITY_PROVISIONER!, request, config.issuer),
     });
     try { return await app.fetch(request); }
     finally { context.waitUntil(pool.close()); }

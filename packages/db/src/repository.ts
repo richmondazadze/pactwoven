@@ -51,11 +51,11 @@ export async function assertUnprivilegedPool(pool: Pool): Promise<void> {
 export async function assertRuntimePool(pool: Pool): Promise<void> {
   await assertUnprivilegedPool(pool);
   const result = await pool.query<{ can_provision: boolean }>(`SELECT EXISTS (
-    SELECT 1 FROM pg_roles r WHERE r.rolname = 'pactwoven_provisioner'
+    SELECT 1 FROM pg_roles r WHERE r.rolname IN ('pactwoven_provisioner','pactwoven_access_provisioner')
       AND (pg_has_role(current_user,r.oid,'MEMBER') OR pg_has_role(session_user,r.oid,'MEMBER')))
     OR EXISTS (
     SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-    WHERE n.nspname = 'pactwoven' AND p.proname = 'bootstrap_organization'
+    WHERE n.nspname = 'pactwoven' AND p.proname IN ('bootstrap_organization','change_member_access','read_member_access','read_access_operation')
       AND has_function_privilege(current_user,p.oid,'EXECUTE')) AS can_provision`);
   if (result.rows[0]?.can_provision) {
     throw new DomainError('UNSAFE_DATABASE_ROLE', 503, 'The API runtime must not have identity provisioning authority.');
@@ -114,7 +114,9 @@ export class PostgresFoundationRepository implements FoundationRepository {
     if (!current.rows[0]) throw new DomainError('FORBIDDEN', 403, 'Your organization membership or session is no longer active.');
     const siteRows = await drizzle(client).select({ id: schema.sites.id }).from(schema.sites)
       .where(and(eq(schema.sites.environment, this.environment), eq(schema.sites.organizationId, actor.organizationId)));
-    return ActorContextSchema.parse({ ...actor, roles: z.array(RoleSchema).parse(current.rows[0].roles), siteIds: siteRows.map(site => site.id) });
+    const actionSites = await drizzle(client).select({ id: schema.memberActionSites.siteId }).from(schema.memberActionSites)
+      .where(and(eq(schema.memberActionSites.environment, this.environment), eq(schema.memberActionSites.organizationId, actor.organizationId), eq(schema.memberActionSites.actorId, actor.actorId)));
+    return ActorContextSchema.parse({ ...actor, roles: z.array(RoleSchema).parse(current.rows[0].roles), siteIds: siteRows.map(site => site.id), actionSiteIds: actionSites.map(site => site.id) });
   }
 
   async getSession(identity: VerifiedIdentity, correlationId: string): Promise<Session> {
@@ -133,7 +135,7 @@ export class PostgresFoundationRepository implements FoundationRepository {
       }
       const actor = await this.currentActor(client, ActorContextSchema.parse({
         actorId: member.actor_id, principalKind: 'human', organizationId: member.organization_id,
-        environment: this.environment, roles: member.roles, siteIds: [], sessionId: identity.sessionId,
+        environment: this.environment, roles: member.roles, siteIds: [], actionSiteIds: [], sessionId: identity.sessionId,
         authenticatedAt: identity.authenticatedAt, correlationId,
       }));
       const siteRows = await drizzle(client).select({ id: schema.sites.id, name: schema.sites.name, timeZone: schema.sites.timeZone })

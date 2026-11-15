@@ -6,7 +6,7 @@ import { createApp } from './app.js';
 
 const origin = 'http://localhost:3001';
 const session: Session = {
-  actor: { actorId: 'actor_a', organizationId: 'org_a', environment: 'development', principalKind: 'human', roles: ['owner'], siteIds: ['site_a'],
+  actor: { actorId: 'actor_a', organizationId: 'org_a', environment: 'development', principalKind: 'human', roles: ['owner'], siteIds: ['site_a'], actionSiteIds: ['site_a'],
     sessionId: 'session_a', authenticatedAt: '2026-11-14T00:00:00.000Z', correlationId: 'trace_a' },
   organization: { id: 'org_a', name: 'Harbor Events', authorityEpoch: 0 }, sites: [{ id: 'site_a', name: 'Harbor Hall', timeZone: 'America/Chicago' }],
 };

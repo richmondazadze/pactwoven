@@ -65,7 +65,7 @@ export function validateActionBinding(input: ActionBinding): ActionBinding {
 /** ActorContext is freshly resolved by the command service, never accepted from the caller payload. */
 export function assertActionActorScope(action: ActionBinding, input: ActorContext): ActorContext {
   const actor = ActorContextSchema.parse(input);
-  if (actor.organizationId !== action.authority.organizationId || actor.environment !== action.authority.environment || !actor.siteIds.includes(action.siteId)) {
+  if (actor.organizationId !== action.authority.organizationId || actor.environment !== action.authority.environment || !actor.actionSiteIds.includes(action.siteId)) {
     throw new DomainError('FORBIDDEN', 403, 'Current organization, environment and site access are required.');
   }
   return actor;

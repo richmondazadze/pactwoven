@@ -24,3 +24,5 @@ export function MobileDrawer({ trigger, title, children, open, onOpenChange }: {
   const presence = useDrawerPresence(open);
   return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Trigger asChild>{trigger}</Dialog.Trigger>{presence.present && <Dialog.Portal forceMount><Dialog.Overlay forceMount className="dialog-overlay"/><Dialog.Content forceMount ref={presence.ref} inert={!open} className="mobile-drawer managed-drawer"><div className="drawer-title"><Dialog.Title>{title}</Dialog.Title><Dialog.Close className="icon-button" aria-label="Close navigation"><Icon name="close"/></Dialog.Close></div><Dialog.Description className="sr-only">Navigate your current organization workspace.</Dialog.Description>{children}</Dialog.Content></Dialog.Portal>}</Dialog.Root>;
 }
+
+export function ActionLabel({ label, reserve }: { label: string; reserve: string[] }) { return <span className="action-label">{reserve.map(text=><span className="action-label-reserve" aria-hidden="true" key={text}>{text}</span>)}<span>{label}</span></span>; }

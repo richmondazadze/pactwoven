@@ -5,3 +5,4 @@ export * from './authority.js';
 export * from './approvals.js';
 export * from './commercial.js';
 export * from './finance.js';
+export * from './access.js';

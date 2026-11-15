@@ -47,6 +47,8 @@ jobs:
           run_install: false
       - name: Install frozen dependencies
         run: pnpm install --frozen-lockfile
+      - name: Generate Next route declarations
+        run: pnpm --filter @pactwoven/web exec next typegen
       - name: Check import and dependency boundaries
         run: pnpm check:boundaries
       - name: Audit dependencies

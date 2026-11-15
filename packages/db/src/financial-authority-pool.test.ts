@@ -28,10 +28,11 @@ describe('financial policy fixture and capability boundaries',()=>{
   it('pins separated routine allowlists and checks every checkout',async()=>{
     const query=vi.fn().mockResolvedValue({rows:[{safe:true}]});await assertFinancialAuthorityConnection({query} as unknown as PoolClient,'verifier');
     expect(query.mock.calls[0]?.[1]).toEqual([financialPolicyRoutines.verifier,expect.any(Array),'pactwoven_financial_verifier','pactwoven_financial_authorizer']);
-    expect(financialPolicyRoutines.authorizer).toHaveLength(8);expect(financialPolicyRoutines.verifier).toEqual(['pactwoven.financial_policy_attest(jsonb)', 'pactwoven.financial_policy_resolve_observer(text,jsonb)']);
+    expect(financialPolicyRoutines.authorizer).toHaveLength(9);expect(financialPolicyRoutines.verifier).toEqual(['pactwoven.financial_policy_attest(jsonb)', 'pactwoven.financial_policy_resolve_observer(text,jsonb)']);
     expect(financialPolicyRoutines.authorizer).toEqual(expect.arrayContaining([
       'pactwoven.financial_policy_read_context(uuid,jsonb,jsonb)', 'pactwoven.financial_policy_governance_index(uuid,jsonb,jsonb)',
       'pactwoven.financial_policy_original_read(uuid,jsonb,jsonb)', 'pactwoven.financial_policy_proposer_observation(uuid,jsonb,jsonb)',
+      'pactwoven.financial_policy_prepare(uuid,jsonb,jsonb)',
     ]));
   });
   it('preserves an unknown COMMIT and discards its connection without an automatic retry',async()=>{

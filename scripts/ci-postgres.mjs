@@ -144,6 +144,7 @@ try {
   await run(['packages/db/src/financial-policy-read-isolation.test.ts'], financialPolicyReads);
   await run(['services/api/src/financial-policy-postgres.test.ts'], financialPolicyReads);
   await run(['services/api/src/financial-policy-write-postgres.test.ts'], financialPolicyReads);
+  await run(['packages/db/src/financial-policy-preparation.postgres.test.ts'], financialPolicyReads);
   await run(['packages/db/src/migrate.test.ts'], {
     PACTWOVEN_RUN_MIGRATION_TESTS: '1',
     PACTWOVEN_MIGRATION_TEST_DATABASE_URL_FILE: await protectedUrl('migration-admin', 'pactwoven_migration_test'),

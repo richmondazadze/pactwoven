@@ -38,3 +38,8 @@ export type { FinancialPolicyReadObservation, FinancialPolicyReaderScope, Financ
   FinancialPolicyContext, FinancialGovernanceIndexQuery, FinancialGovernanceIndex, FinancialPolicyOriginalQuery,
   FinancialPolicyOriginal, FinancialPolicyProposerObservation, FinancialPolicyReaders } from './financial-policy-read-schema.js';
 export { PostgresFinancialPolicyReaders } from './financial-policy-read-repository.js';
+export { FinancialPolicyPreparationQuerySchema, FinancialPolicyPreparationSchema,
+  financialPolicyPreparationReasons } from './financial-policy-preparation-schema.js';
+export type { FinancialPolicyPreparationQuery, FinancialPolicyPreparation,
+  FinancialPolicyPreparationReader } from './financial-policy-preparation-schema.js';
+export { PostgresFinancialPolicyPreparationReader } from './financial-policy-preparation-repository.js';

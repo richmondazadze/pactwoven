@@ -7,6 +7,10 @@ import { once } from 'node:events';
 import { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { hasLoopbackMigrationTransport, hasVerifiedMigrationTls, loadMigrations, migrateDatabase, migrationPoolConfig, migrationStatements, runMigrationsFromEnvironment } from './migrate.js';
+const authoredMigrationFiles = ['0001_foundation.sql', '0002_organization_bootstrap.sql', '0003_identity_access.sql',
+  '0004_mandate_authority.sql', '0005_access_acceptance.sql', '0006_access_recovery_fences.sql', '0007_finance_provenance.sql',
+  '0008_financial_authority_fences.sql', '0009_custody_setup_owner_bindings.sql', '0010_custody_setup_private_reads.sql',
+  '0011_financial_policy_authority.sql'];
 function fixtureDatabaseUrl(source: string): string {
   const url = new URL(source);
   url.password = 'fixture';
@@ -133,6 +137,15 @@ describe('development migration validation', () => {
     await expect(loadMigrations(gap)).rejects.toMatchObject({ code: 'MIGRATION_ORDER_INVALID' });
     await expect(loadMigrations(duplicate)).rejects.toMatchObject({ code: 'MIGRATION_ORDER_INVALID' });
   });
+  it('loads the exact eleven authored migrations including reserved financial-policy SQL without a database connection', async () => {
+    const migrations = await loadMigrations();
+    expect(migrations.map(migration => migration.filename)).toEqual(authoredMigrationFiles);
+    expect(migrations.map(migration => migration.number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    for (const migration of migrations) {
+      expect(migration.checksum).toMatch(/^[a-f0-9]{64}$/);
+      expect(migration.statements.length).toBeGreaterThan(0);
+    }
+  });
 });
 
 const dbSuite = process.env.PACTWOVEN_RUN_MIGRATION_TESTS === '1' ? describe : describe.skip;
@@ -155,13 +168,13 @@ dbSuite('development migrations — dedicated real PostgreSQL database', () => {
   afterAll(async () => { await admin?.end(); });
 
   it('applies authored migrations once and leaves exact checksum history on retry', async () => {
+    const migrations = await loadMigrations();
     const first = await migrateDatabase(connectionString, 'pactwoven_migration_test');
-    expect(first.applied).toEqual(['0001_foundation.sql', '0002_organization_bootstrap.sql', '0003_identity_access.sql', '0004_mandate_authority.sql', '0005_access_acceptance.sql', '0006_access_recovery_fences.sql', '0007_finance_provenance.sql', '0008_financial_authority_fences.sql', '0009_custody_setup_owner_bindings.sql', '0010_custody_setup_private_reads.sql']);
+    expect(first.applied).toEqual(authoredMigrationFiles);
     const replay = await migrateDatabase(connectionString, 'pactwoven_migration_test');
     expect(replay).toEqual({ database: 'pactwoven_migration_test', applied: [], skipped: first.applied });
     const rows = await admin.query('SELECT number,filename,checksum FROM pactwoven_migrations.applied_migrations ORDER BY number');
-    expect(rows.rows).toHaveLength(10);
-    expect(rows.rows[0].checksum).toMatch(/^[a-f0-9]{64}$/);
+    expect(rows.rows).toEqual(migrations.map(({ number, filename, checksum }) => ({ number, filename, checksum })));
     expect((await admin.query("SELECT to_regprocedure('pactwoven.bootstrap_organization(text,text,text,text,text,text,text,text,text,text,text,text)') AS function")).rows[0].function).not.toBeNull();
   });
 

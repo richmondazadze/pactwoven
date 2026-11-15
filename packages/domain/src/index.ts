@@ -12,3 +12,4 @@ export * from './mandate-reads.js';
 export * from './finance-provenance.js';
 export * from './financial-fences.js';
 export * from './custody-owner-binding.js';
+export * from './financial-policies.js';

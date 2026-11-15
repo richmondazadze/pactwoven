@@ -31,7 +31,7 @@ async function protectedUrl(name, database, username = 'postgres', password = ba
 }
 async function run(files, extra) {
   await new Promise((resolveRun, reject) => {
-    const child = spawn(process.execPath, ['node_modules/vitest/vitest.mjs', 'run', ...files], {
+    const child = spawn(process.execPath, ['node_modules/vitest/vitest.mjs', 'run', ...files, '--no-file-parallelism'], {
       cwd: resolve(import.meta.dirname, '..'), env: { ...environment, ...extra }, stdio: 'inherit',
     });
     child.once('error', reject);
@@ -39,7 +39,7 @@ async function run(files, extra) {
   });
 }
 try {
-  for (const database of ['pactwoven_backend_test', 'pactwoven_migration_test', 'pactwoven_mandate_b1b_test', 'pactwoven_recovery_b1_test', 'pactwoven_finance_provenance_b2a_test', 'pactwoven_financial_fences_fa0_test', 'pactwoven_custody_setup_test', 'pactwoven_custody_reads_test']) {
+  for (const database of ['pactwoven_backend_test', 'pactwoven_migration_test', 'pactwoven_mandate_b1b_test', 'pactwoven_recovery_b1_test', 'pactwoven_finance_provenance_b2a_test', 'pactwoven_financial_fences_fa0_test', 'pactwoven_custody_setup_test', 'pactwoven_custody_reads_test', 'pactwoven_financial_policy_fa1_test']) {
     // Refuse reuse: each CI run must have a fresh disposable database container.
     const existing = await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [database]);
     if (existing.rowCount) throw new Error('CI fixture database already exists.');
@@ -128,6 +128,14 @@ try {
   await run(['packages/db/src/custody-setup-read-isolation.test.ts'], custodyReads);
   await run(['packages/db/src/custody-setup-read-recovery.test.ts'], custodyReads);
   await run(['packages/db/src/custody-setup-system-privileges.test.ts'], custodyReads);
+  const financialPolicy = {
+    PACTWOVEN_FINANCIAL_POLICY_TEST_ADMIN_URL_FILE: await protectedUrl('financial-policy-admin', 'pactwoven_financial_policy_fa1_test'),
+  };
+  // Each policy suite resets only its exclusive database and preserves shared capability roles.
+  await run(['packages/db/src/financial-policy-repository.test.ts'], financialPolicy);
+  await run(['packages/db/src/financial-authentication-repository.test.ts'], financialPolicy);
+  await run(['packages/db/src/financial-policy-isolation.test.ts'], financialPolicy);
+  await run(['packages/db/src/financial-authority-pool.test.ts'], financialPolicy);
   await run(['packages/db/src/migrate.test.ts'], {
     PACTWOVEN_RUN_MIGRATION_TESTS: '1',
     PACTWOVEN_MIGRATION_TEST_DATABASE_URL_FILE: await protectedUrl('migration-admin', 'pactwoven_migration_test'),

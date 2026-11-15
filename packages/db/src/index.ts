@@ -24,3 +24,7 @@ export type { CustodyReadObservation, CustodyReadOwnerScope, CustodyPrivateRecor
   CustodyPrivateRecord, CustodyOriginalOperation, CustodySetupReaders } from './custody-setup-read-schema.js';
 export { PostgresCustodySetupReaders } from './custody-setup-read-repository.js';
 export { createCustodySetupPool } from './custody-setup-pool.js';
+export type { FinancialPolicyRepository, FinancialAuthorityCapability } from './financial-policy-schema.js';
+export { PostgresFinancialPolicyRepository } from './financial-policy-repository.js';
+export { PostgresFinancialAuthenticationRepository } from './financial-authentication-repository.js';
+export { assertFinancialAuthorityPool, createFinancialAuthorityPool } from './financial-authority-pool.js';

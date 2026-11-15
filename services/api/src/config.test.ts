@@ -16,6 +16,41 @@ const valid = () => ({
 });
 
 describe('development environment boundary', () => {
+  it('requires a complete custody writer/verifier pair distinct from all other capabilities', () => {
+    const named = (name: string) => fixtureDatabaseUrl(`postgresql://${name}@127.0.0.1:55439/pactwoven_dev`);
+    const values = { ...valid(), PROVISIONER_DATABASE_URL: named('provisioner'), ACCESS_DATABASE_URL: named('access'),
+      MANDATE_DATABASE_URL: named('mandate'), CUSTODY_SETUP_WRITER_DATABASE_URL: named('custody_writer'),
+      CUSTODY_SETUP_VERIFIER_DATABASE_URL: named('custody_verifier') };
+    expect(readDevelopmentConfig(values).credentials?.custodySetup).toEqual({ writerDatabaseUrl: named('custody_writer'), verifierDatabaseUrl: named('custody_verifier') });
+    expect(readDevelopmentConfig(valid()).credentials).not.toHaveProperty('custodySetup');
+    for (const field of ['CUSTODY_SETUP_WRITER_DATABASE_URL', 'CUSTODY_SETUP_VERIFIER_DATABASE_URL'] as const) {
+      for (const username of ['runtime', 'provisioner', 'access', 'mandate', 'runtim%65']) {
+        expect(() => readDevelopmentConfig({ ...values, [field]: named(username) })).toThrow(ConfigurationError);
+      }
+      for (const value of [undefined, '', named('custody_other').replace(':55439', ':55440'),
+        named('custody_other').replace('/pactwoven_dev', '/other_database'), named('custody_other') + '?user=runtime']) {
+        expect(() => readDevelopmentConfig({ ...values, [field]: value })).toThrow(ConfigurationError);
+      }
+      expect(() => readDevelopmentConfig({ [field]: values[field] })).toThrow(ConfigurationError);
+    }
+    expect(() => readDevelopmentConfig({ ...values, CUSTODY_SETUP_VERIFIER_DATABASE_URL: named('custody_writer') })).toThrow(ConfigurationError);
+    expect(() => readDevelopmentConfig({ ...values, CUSTODY_SETUP_VERIFIER_DATABASE_URL: named('custody_writ%65r') })).toThrow(ConfigurationError);
+  });
+  it('applies verified hosted TLS and sanitized errors to each custody connection', () => {
+    const named = (name: string) => fixtureDatabaseUrl(`postgresql://${name}@ep-fixture.aws.neon.tech/pactwoven_dev?sslmode=verify-full`);
+    const values = { ...valid(), DATABASE_URL: named('runtime'), CUSTODY_SETUP_WRITER_DATABASE_URL: named('custody_writer'),
+      CUSTODY_SETUP_VERIFIER_DATABASE_URL: named('custody_verifier') };
+    expect(readDevelopmentConfig(values).credentials?.custodySetup?.writerDatabaseUrl).toBe(named('custody_writer'));
+    for (const field of ['CUSTODY_SETUP_WRITER_DATABASE_URL', 'CUSTODY_SETUP_VERIFIER_DATABASE_URL'] as const) {
+      for (const value of [values[field].replace('verify-full', 'require'), values[field] + '&sslmode=disable',
+        values[field].replace('ep-fixture', 'ep-other'), values[field] + '&options=role%3Downer', 'invalid-sensitive-connection']) {
+        let failure: unknown;
+        try { readDevelopmentConfig({ ...values, [field]: value }); } catch (error) { failure = error; }
+        expect(failure).toBeInstanceOf(ConfigurationError);
+        expect(String(failure)).not.toMatch(/postgres|fixture|sensitive|owner|verify-full/);
+      }
+    }
+  });
   it('keeps mandate credentials distinct from every other development capability', () => {
     const values = { ...valid(), PROVISIONER_DATABASE_URL: fixtureDatabaseUrl('postgresql://provisioner@127.0.0.1:55439/pactwoven_dev'),
       ACCESS_DATABASE_URL: fixtureDatabaseUrl('postgresql://access@127.0.0.1:55439/pactwoven_dev') };

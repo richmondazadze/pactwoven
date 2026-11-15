@@ -39,7 +39,7 @@ async function run(files, extra) {
   });
 }
 try {
-  for (const database of ['pactwoven_backend_test', 'pactwoven_migration_test', 'pactwoven_mandate_b1b_test', 'pactwoven_recovery_b1_test', 'pactwoven_finance_provenance_b2a_test', 'pactwoven_financial_fences_fa0_test', 'pactwoven_custody_setup_test']) {
+  for (const database of ['pactwoven_backend_test', 'pactwoven_migration_test', 'pactwoven_mandate_b1b_test', 'pactwoven_recovery_b1_test', 'pactwoven_finance_provenance_b2a_test', 'pactwoven_financial_fences_fa0_test', 'pactwoven_custody_setup_test', 'pactwoven_custody_reads_test']) {
     // Refuse reuse: each CI run must have a fresh disposable database container.
     const existing = await admin.query('SELECT 1 FROM pg_database WHERE datname=$1', [database]);
     if (existing.rowCount) throw new Error('CI fixture database already exists.');
@@ -118,6 +118,16 @@ try {
   await run(['packages/db/src/custody-setup-isolation.test.ts'], custody);
   await run(['packages/db/src/custody-setup-recovery.test.ts'], custody);
   await run(['packages/db/src/custody-setup-pool.test.ts'], custody);
+  await admin.query("COMMENT ON DATABASE pactwoven_custody_reads_test IS 'Pactwoven SETUP-0B private readers exclusive fixture'");
+  const custodyReads = {
+    PACTWOVEN_CUSTODY_READ_TEST_ADMIN_URL_FILE: await protectedUrl('custody-reads-admin', 'pactwoven_custody_reads_test'),
+    PACTWOVEN_CUSTODY_READ_TEST_ACK: 'exclusive-pactwoven-custody-reads-test',
+  };
+  // Private readers retain separate scope and capability checks in a fresh database.
+  await run(['packages/db/src/custody-setup-read-repository.test.ts'], custodyReads);
+  await run(['packages/db/src/custody-setup-read-isolation.test.ts'], custodyReads);
+  await run(['packages/db/src/custody-setup-read-recovery.test.ts'], custodyReads);
+  await run(['packages/db/src/custody-setup-system-privileges.test.ts'], custodyReads);
   await run(['packages/db/src/migrate.test.ts'], {
     PACTWOVEN_RUN_MIGRATION_TESTS: '1',
     PACTWOVEN_MIGRATION_TEST_DATABASE_URL_FILE: await protectedUrl('migration-admin', 'pactwoven_migration_test'),

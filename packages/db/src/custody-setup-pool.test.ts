@@ -66,3 +66,11 @@ describe.skipIf(!custodyFixtureEnabled)('custody exact connection privilege gate
  it('rejects direct column grants and extra helper execution',async()=>{await f.admin.query(`GRANT SELECT(body) ON pactwoven.custody_setup_evidence TO "${f.writer.role}"`);await expect(assertCustodySetupPool(f.writer.pool,'writer')).rejects.toMatchObject({code:'UNSAFE_DATABASE_ROLE'});await f.admin.query(`REVOKE SELECT(body) ON pactwoven.custody_setup_evidence FROM "${f.writer.role}"`);await f.admin.query(`GRANT EXECUTE ON FUNCTION pactwoven.custody_principal(text,text) TO "${f.writer.role}"`);await expect(assertCustodySetupPool(f.writer.pool,'writer')).rejects.toMatchObject({code:'UNSAFE_DATABASE_ROLE'});});
  it('rejects reachability to forbidden capabilities even with INHERIT FALSE',async()=>{await f.admin.query(`GRANT pactwoven_finance_observer TO "${f.writer.role}" WITH INHERIT FALSE,SET TRUE`);await expect(assertCustodySetupPool(f.writer.pool,'writer')).rejects.toMatchObject({code:'UNSAFE_DATABASE_ROLE'});});
 });
+
+// The application capability lists include exactly the dedicated private readers.
+import {custodySetupRoutines} from './custody-setup-schema.js';
+it('appends only the four exact private reader routines to their matching capabilities',()=>{
+ expect(custodySetupRoutines.writer).toEqual(['pactwoven.custody_setup_command(uuid,jsonb)','pactwoven.custody_setup_read(uuid,text,uuid)','pactwoven.custody_setup_recover(uuid,jsonb)',
+  'pactwoven.custody_setup_specification_read(uuid,text,jsonb)','pactwoven.custody_setup_record_read(uuid,text,uuid,uuid,text)','pactwoven.custody_setup_original_read(uuid,text,text,text)']);
+ expect(custodySetupRoutines.verifier).toEqual(['pactwoven.custody_setup_attest(jsonb)','pactwoven.custody_setup_resolve_owner(jsonb,text)']);
+});

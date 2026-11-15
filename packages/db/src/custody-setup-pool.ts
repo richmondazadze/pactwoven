@@ -1,5 +1,6 @@
 import { Pool, type PoolClient } from 'pg';
 import { DomainError } from '@pactwoven/domain';
+import {custodySystemPrivilegePredicate} from './custody-setup-system-privileges.js';
 import {custodySetupRoutines,custodySetupTables,type CustodySetupCapability} from './custody-setup-schema.js';
 
 const unsafe = () => new DomainError('UNSAFE_DATABASE_ROLE', 503, 'Custody setup requires a dedicated scope-bound verifier or writer with function-only privileges.');
@@ -17,7 +18,7 @@ export async function assertCustodySetupConnection(client: PoolClient, capabilit
         SELECT p.* FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
         WHERE n.nspname='pactwoven' OR(p.prosecdef AND n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema')
       ), expected AS (SELECT pg_catalog.to_regprocedure(name) AS oid FROM unnest($1::text[]) AS item(name))
-      SELECT (CURRENT_USER=SESSION_USER AND pg_catalog.current_setting('role')='none'
+      SELECT ((${custodySystemPrivilegePredicate}) AND CURRENT_USER=SESSION_USER AND pg_catalog.current_setting('role')='none'
         AND pg_catalog.current_setting('transaction_isolation')='read committed'
         AND pg_catalog.pg_has_role(SESSION_USER,$3,'USAGE')
         AND NOT EXISTS(SELECT 1 FROM reachable r JOIN pg_catalog.pg_roles p ON p.oid=r.oid WHERE p.rolsuper OR p.rolbypassrls OR p.rolcreaterole OR p.rolcreatedb OR p.rolreplication

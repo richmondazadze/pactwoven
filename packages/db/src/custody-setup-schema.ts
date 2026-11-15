@@ -9,4 +9,5 @@ export const custodySetupTables=Object.freeze(['custody_setup_principals','custo
   'custody_setup_controls','custody_setup_operations','custody_setup_audit','custody_setup_outbox','custody_setup_evidence_uses'] as const);
 export type CustodySetupCapability='writer'|'verifier';
 export const custodySetupRoutines=Object.freeze({writer:['pactwoven.custody_setup_command(uuid,jsonb)','pactwoven.custody_setup_read(uuid,text,uuid)',
-  'pactwoven.custody_setup_recover(uuid,jsonb)'],verifier:['pactwoven.custody_setup_attest(jsonb)']} as const);
+  'pactwoven.custody_setup_recover(uuid,jsonb)','pactwoven.custody_setup_specification_read(uuid,text,jsonb)',
+  'pactwoven.custody_setup_record_read(uuid,text,uuid,uuid,text)','pactwoven.custody_setup_original_read(uuid,text,text,text)'],verifier:['pactwoven.custody_setup_attest(jsonb)','pactwoven.custody_setup_resolve_owner(jsonb,text)']} as const);

@@ -3,6 +3,7 @@ import { lstat, readFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { TLSSocket } from 'node:tls';
+import { Socket } from 'node:net';
 import { Pool, type PoolClient, type PoolConfig } from 'pg';
 
 export type MigrationDatabase = 'pactwoven_dev' | 'pactwoven_migration_test';
@@ -25,6 +26,14 @@ function rejectTarget(): never {
 /** Neon may terminate TLS before PostgreSQL; verify the client transport itself. */
 export function hasVerifiedMigrationTls(stream: unknown): boolean {
   return stream instanceof TLSSocket && stream.encrypted === true && stream.authorized === true;
+}
+
+/** Docker can report a bridge address inside PostgreSQL. Verify the actual
+ * connected client endpoint, not the server's view of its network interface. */
+export function hasLoopbackMigrationTransport(stream: unknown): boolean {
+  return stream instanceof Socket && !(stream instanceof TLSSocket) &&
+    stream.readyState === 'open' && !stream.destroyed &&
+    ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(stream.remoteAddress ?? '');
 }
 
 /** URL fields are parsed once; driver query parameters cannot override them. */
@@ -181,12 +190,11 @@ export async function migrateDatabase(connectionString: string, database: Migrat
     // node-postgres exposes its live transport on connection.stream. Fail closed
     // if a future driver no longer exposes a certificate-verified TLS socket.
     const transport = (client as PoolClient & { connection?: { stream?: unknown } }).connection?.stream;
-    if (config.ssl && !hasVerifiedMigrationTls(transport)) rejectTarget();
-    const target = await client.query<{ database: string; address: string; same_identity: boolean }>(`SELECT current_database() AS database,
-      host(inet_server_addr()) AS address, current_user=session_user AS same_identity`);
+    if (config.ssl ? !hasVerifiedMigrationTls(transport) : !hasLoopbackMigrationTransport(transport)) rejectTarget();
+    const target = await client.query<{ database: string; same_identity: boolean }>(`SELECT current_database() AS database,
+      current_user=session_user AS same_identity`);
     const actual = target.rows[0];
-    if (!actual || actual.database !== database || !actual.same_identity ||
-        (!config.ssl && !['127.0.0.1', '::1'].includes(actual.address))) rejectTarget();
+    if (!actual || actual.database !== database || !actual.same_identity) rejectTarget();
     await client.query('BEGIN');
     transaction = true;
     await client.query("SET LOCAL lock_timeout = '10s'");

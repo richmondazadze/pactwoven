@@ -2,10 +2,11 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TLSSocket } from 'node:tls';
-import { Socket } from 'node:net';
+import { Socket, createServer } from 'node:net';
+import { once } from 'node:events';
 import { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { hasVerifiedMigrationTls, loadMigrations, migrateDatabase, migrationPoolConfig, migrationStatements, runMigrationsFromEnvironment } from './migrate.js';
+import { hasLoopbackMigrationTransport, hasVerifiedMigrationTls, loadMigrations, migrateDatabase, migrationPoolConfig, migrationStatements, runMigrationsFromEnvironment } from './migrate.js';
 function fixtureDatabaseUrl(source: string): string {
   const url = new URL(source);
   url.password = 'fixture';
@@ -23,6 +24,36 @@ async function fixture(files: Record<string, string>) {
 afterEach(async () => { await Promise.all(fixtureDirectories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
 describe('development migration validation', () => {
+  it('requires a live loopback client socket and rejects remote or socket-shaped transports', async () => {
+    expect(hasLoopbackMigrationTransport({ remoteAddress: '127.0.0.1', readyState: 'open', destroyed: false })).toBe(false);
+    expect(hasLoopbackMigrationTransport(undefined)).toBe(false);
+    const connections = new Set<Socket>();
+    const server = createServer(socket => { connections.add(socket); socket.on('close', () => connections.delete(socket)); });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const socket = new Socket();
+    try {
+      expect(hasLoopbackMigrationTransport(socket)).toBe(false);
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('A loopback TCP listener is required.');
+      socket.connect(address.port, '127.0.0.1');
+      await once(socket, 'connect');
+      expect(hasLoopbackMigrationTransport(socket)).toBe(true);
+      for (const remoteAddress of ['192.0.2.1', '::ffff:192.0.2.1', undefined]) {
+        Object.defineProperty(socket, 'remoteAddress', { configurable: true, value: remoteAddress });
+        expect(hasLoopbackMigrationTransport(socket)).toBe(false);
+      }
+      Object.defineProperty(socket, 'remoteAddress', { configurable: true, value: '::ffff:127.0.0.1' });
+      expect(hasLoopbackMigrationTransport(socket)).toBe(true);
+      socket.destroy();
+      expect(hasLoopbackMigrationTransport(socket)).toBe(false);
+    } finally {
+      socket.destroy();
+      for (const connection of connections) connection.destroy();
+      await new Promise<void>((resolveClose, reject) => server.close(error => error ? reject(error) : resolveClose()));
+    }
+  });
+
   it('requires a certificate-authorized TLS transport, not a server-side SSL flag or socket-shaped object', () => {
     expect(hasVerifiedMigrationTls(undefined)).toBe(false);
     expect(hasVerifiedMigrationTls({ encrypted: true, authorized: true })).toBe(false);

@@ -7,7 +7,8 @@ import { FinancialPolicyBootstrapSchema, financialPolicyLocalScope, type Financi
 import { createFinancialPolicyAttempt, type FinancialPolicyReference } from '../lib/financial-policy-contract';
 import { storeFinancialPolicyReference, type FinancialPolicyStorage } from '../lib/financial-policy-recovery';
 import { parseFinancialPolicyWriteRequest } from '../lib/financial-policy-write-transport';
-import { createFinancialPolicyAuthoringController, FinancialPolicyAuthoringWorkspaceView, focusFinancialPolicySavedRequests, type FinancialPolicyAuthoringController } from './financial-policy-authoring-workspace';
+import { createFinancialPolicyAuthoringController, FinancialPolicyAuthoringEditorGate, FinancialPolicyAuthoringWorkspaceView, focusFinancialPolicySavedRequests, type FinancialPolicyAuthoringController } from './financial-policy-authoring-workspace';
+import { FinancialPolicyDocumentEditor } from './financial-policy-document-editor';
 import { MotionProvider } from './motion';
 vi.mock('@clerk/nextjs', () => ({ useAuth: () => { throw Error('Provider is not mounted in source-only tests'); } }));
 vi.mock('@tanstack/react-query', () => ({ useQuery: () => { throw Error('Provider is not mounted in source-only tests'); } }));
@@ -581,5 +582,120 @@ describe('visible original recovery guidance', () => {
     focusFinancialPolicySavedRequests(f.controller, f.adapters, node, motion);
     expect(node.focus).not.toHaveBeenCalled(); expect(node.scrollIntoView).not.toHaveBeenCalled();
     token.resolve('prepared_token'); await pending; expect(f.writeInputs).toHaveLength(0); expect(f.storage.removeItem).not.toHaveBeenCalled();
+  });
+});
+
+describe('first verified financial context opens local editing', () => {
+  function renderEditor(f: Awaited<ReturnType<typeof fixture>>, view = f.controller.getSnapshot(), owner = f.adapters) {
+    return renderToStaticMarkup(createElement(FinancialPolicyAuthoringEditorGate, { controller: f.controller, owner, view,
+      children: createElement(FinancialPolicyDocumentEditor, { text: view.buffer.text, disabled: view.busy, reviewed: null, error: null,
+        onChange: text => f.controller.edit({ text }), onReview: () => f.controller.reviewDocument() }) }));
+  }
+  it.each([null, { id: 'mandate_doc', version: 1, kind: 'document' as const }, { id: 'draft_a', version: 1, kind: 'draft' as const }])(
+    'keeps cold new/revision entry closed and ignores local edits before financial context: %j', async revision => {
+      const f = await fixture(revision), before = f.controller.getSnapshot();
+      expect(renderEditor(f)).toBe(''); expect(before.editorOpened).toBe(false);
+      f.controller.edit({ text: 'Cold private input', dates: { timeZone: 'UTC', startsLocal: '2026-11-18T15:00', expiresLocal: '2026-11-19T15:00' } });
+      expect(f.controller.getSnapshot()).toBe(before); expect(f.token).not.toHaveBeenCalled(); expect(f.fetcher).not.toHaveBeenCalled();
+      expect(f.createKey).not.toHaveBeenCalled(); expect(f.createTargetId).not.toHaveBeenCalled(); expect(f.values.size).toBe(0);
+    });
+  it.each(['full', 'references_only'])('opens after an explicit qualified %s financial context without preparing or saving', async visibility => {
+    const f = await fixture(); f.context.configurationVisibility = visibility;
+    if (visibility === 'references_only') {
+      const operations = FinancialPolicyBootstrapSchema.parse({ ...f.bootstrap, roles: ['operations'] });
+      f.context.scope.roles = ['operations']; f.adapters.bootstrap = operations; f.current.value = operations;
+      f.controller.configure(f.adapters);
+    }
+    await f.controller.refresh(); const view = f.controller.getSnapshot();
+    expect(view.editorOpened).toBe(true); expect(view.context?.configurationVisibility).toBe(visibility);
+    expect(renderEditor(f)).toContain('<textarea'); expect(renderEditor(f)).toContain('Review exact text');
+    f.controller.edit({ text: 'Entered after verified financial context' }); expect(renderEditor(f)).toContain('Entered after verified financial context');
+    expect(f.fetcher).toHaveBeenCalledOnce(); expect(f.fetcher.mock.calls[0]?.[0]).toMatch(/\/financial-policies\/context$/);
+    expect(f.selections).toHaveLength(0); expect(f.writeInputs).toHaveLength(0); expect(f.createKey).not.toHaveBeenCalled(); expect(f.values.size).toBe(0);
+    expect(f.controller.getSnapshot()).toMatchObject({ review: null, preparation: { preparation: null } });
+  });
+  it('keeps the editor and review control absent throughout a delayed first context check', async () => {
+    const f = await fixture(), entered = deferred<void>(), response = deferred<Response>();
+    f.fetcher.mockImplementationOnce(async () => { entered.resolve(); return response.promise; });
+    const pending = f.controller.refresh(); await entered.promise;
+    expect(f.controller.getSnapshot()).toMatchObject({ busy: true, context: null }); expect(renderEditor(f)).toBe('');
+    expect(f.controller.getSnapshot().editorOpened).toBe(false);
+    f.controller.edit({ text: 'No cold editing during request' }); expect(f.controller.getSnapshot().buffer.text).toBe('');
+    response.resolve(json(f.context)); await pending;
+    expect(f.controller.getSnapshot().editorOpened).toBe(true); expect(renderEditor(f)).toContain('<textarea');
+    expect(f.fetcher).toHaveBeenCalledOnce(); expect(f.writeInputs).toHaveLength(0);
+  });
+  it.each(['denied', 'wrong-scope', 'expired'] as const)('never opens on a first %s context response', async mode => {
+    const f = await fixture();
+    const response = mode === 'denied' ? json({ error: { code: 'FORBIDDEN' } }, 403)
+      : mode === 'wrong-scope' ? json({ ...f.context, scope: { ...f.context.scope, organizationEpoch: 3 } })
+      : json({ ...f.context, observation: { observedAt: iso(at - 1000), expiresAt: iso(at) } });
+    f.fetcher.mockResolvedValueOnce(response); await f.controller.refresh(); const before = f.controller.getSnapshot();
+    expect(before.editorOpened).toBe(false); expect(before.context).toBeNull(); expect(renderEditor(f)).toBe('');
+    f.controller.edit({ text: 'Rejected cold input' }); expect(f.controller.getSnapshot()).toBe(before);
+    expect(f.fetcher).toHaveBeenCalledOnce(); expect(f.selections).toHaveLength(0); expect(f.writeInputs).toHaveLength(0); expect(f.createKey).not.toHaveBeenCalled();
+  });
+  it('keeps opened local editing visible through a same-owner explicit context refresh', async () => {
+    const f = await fixture(); await f.prepareDocument(); f.controller.edit({ text: 'Retained through explicit refresh' });
+    const states: string[] = [], unsubscribe = f.controller.subscribe(() => states.push(renderEditor(f)));
+    await f.controller.refresh(); unsubscribe();
+    expect(states.length).toBeGreaterThan(0); expect(states.every(html => html.includes('Retained through explicit refresh'))).toBe(true);
+    expect(f.controller.getSnapshot()).toMatchObject({ editorOpened: true, review: null, preparation: { preparation: null } });
+    expect(f.writeInputs).toHaveLength(0);
+  });
+  it.each(['display', 'preparation-subscription'] as const)('retains opened local edits after later GET expiry via %s', async mode => {
+    const f = await fixture(), expiry = preparationExpiryBeforeDisplay(); await f.prepareDocument();
+    f.controller.edit({ text: 'Locally retained mandate', dates: { timeZone: 'UTC', startsLocal: '2026-11-18T15:00', expiresLocal: '2026-11-19T15:00' } });
+    f.controller.reviewDocument(); await f.controller.prepare(); const before = f.controller.getSnapshot(), expirePreparation = expiry(), calls = f.fetcher.mock.calls.length;
+    f.time.wall += 19000; f.time.mono += 19000;
+    if (mode === 'display') f.controller.expireDisplay(); else expirePreparation();
+    expect(f.controller.getSnapshot()).toMatchObject({ editorOpened: true, phase: 'expired', context: null, exact: null, review: null,
+      receipt: null, preparation: { preparation: null }, buffer: before.buffer });
+    expect(renderEditor(f)).toContain('Locally retained mandate');
+    f.controller.edit({ text: 'Edited locally after expiry' }); expect(renderEditor(f)).toContain('Edited locally after expiry');
+    await f.controller.save(); expect(f.fetcher.mock.calls.length).toBe(calls); expect(f.createKey).not.toHaveBeenCalled(); expect(f.values.size).toBe(0);
+  });
+  it('restores the opened editor with local edits when an awaited preparation discovers expiry', async () => {
+    const f = await fixture(); await f.prepareDocument(); f.controller.reviewDocument();
+    const token = deferred<string>(); f.token.mockReturnValueOnce(token.promise); const before = f.controller.getSnapshot();
+    const pending = f.controller.prepare(); f.time.wall += 19000; f.time.mono += 19000; token.resolve('late_token'); await pending;
+    expect(f.controller.getSnapshot()).toMatchObject({ editorOpened: true, phase: 'expired', context: null, review: null,
+      preparation: { preparation: null }, buffer: before.buffer });
+    expect(renderEditor(f)).toContain('Exact full financial mandate'); expect(f.writeInputs).toHaveLength(0); expect(f.createKey).not.toHaveBeenCalled();
+  });
+  it('retains the opened editor and valid context after earlier preparation-only expiry', async () => {
+    const f = await fixture(), expiry = preparationExpiryBeforeDisplay();
+    f.state.prepChange = response => ({ ...response, observation: { observedAt: iso(at - 1000), expiresAt: iso(at + 2000) } });
+    await f.prepareDocument(); const before = f.controller.getSnapshot(), expirePreparation = expiry();
+    f.time.wall += 2000; f.time.mono += 2000; expirePreparation();
+    expect(f.controller.getSnapshot()).toMatchObject({ editorOpened: true, context: before.context, buffer: before.buffer, review: null,
+      preparation: { state: 'expired', preparation: null } });
+    expect(renderEditor(f)).toContain('<textarea'); f.controller.edit({ text: 'Locally edited after preparation expired' });
+    expect(renderEditor(f)).toContain('Locally edited after preparation expired'); expect(f.writeInputs).toHaveLength(0);
+  });
+  it.each(['hide', 'denial', 'owner', 'adapter', 'close'] as const)('closes editing after %s and preserves the stored original', async mode => {
+    const f = await fixture(); await f.prepareDocument(); await f.controller.save();
+    const opened = f.controller.getSnapshot(), originals = [...f.values]; expect(renderEditor(f)).toContain('<textarea');
+    if (mode === 'hide') { f.controller.suspend(); f.controller.activate(); }
+    if (mode === 'denial') { f.fetcher.mockResolvedValueOnce(json({ error: { code: 'FORBIDDEN' } }, 403)); await f.controller.refresh(); }
+    if (mode === 'owner') {
+      const replacement = { ...f.bootstrap, actorId: 'actor_b' }; f.current.value = replacement;
+      f.controller.configure({ ...f.adapters, bootstrap: replacement });
+    }
+    if (mode === 'adapter') f.controller.configure({ ...f.adapters, getToken: vi.fn(async () => 'replacement') });
+    if (mode === 'close') f.controller.close();
+    const closed = f.controller.getSnapshot(); expect(closed).toMatchObject({ editorOpened: false, context: null, buffer: { text: '' } });
+    expect(renderEditor(f)).toBe(''); expect(renderEditor(f, opened)).toBe('');
+    f.controller.edit({ text: 'Old callback input' }); expect(f.controller.getSnapshot()).toBe(closed);
+    expect([...f.values]).toEqual(originals); expect(f.storage.removeItem).not.toHaveBeenCalled(); expect(f.writeInputs).toHaveLength(1);
+  });
+  it('does not open a replacement editor from the departed owner’s delayed first context response', async () => {
+    const f = await fixture(), entered = deferred<void>(), response = deferred<Response>();
+    f.fetcher.mockImplementationOnce(async () => { entered.resolve(); return response.promise; });
+    const pending = f.controller.refresh(); await entered.promise;
+    f.controller.configure({ ...f.adapters, getToken: vi.fn(async () => 'replacement') }); const replacement = f.controller.getSnapshot();
+    response.resolve(json(f.context)); await pending;
+    expect(f.controller.getSnapshot()).toBe(replacement); expect(replacement.editorOpened).toBe(false); expect(renderEditor(f)).toBe('');
+    expect(f.fetcher).toHaveBeenCalledOnce(); expect(f.writeInputs).toHaveLength(0); expect(f.values.size).toBe(0);
   });
 });

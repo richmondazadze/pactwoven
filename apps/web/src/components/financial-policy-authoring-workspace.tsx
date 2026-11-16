@@ -1,7 +1,7 @@
 'use client';
 import { useAuth } from '@clerk/nextjs';
 import { useQuery } from '@tanstack/react-query';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { IdSchema, FinancialPolicyRefSchema, FinancialPolicyVersionSchema, financialPolicyHttpRoute,
   type FinancialPolicyHttpContext, type FinancialPolicyHttpRecordResponse, type FinancialPolicyHttpDraftIndexResponse, type FinancialPolicyHttpGovernanceIndexResponse, type FinancialPolicyRef } from '@pactwoven/contracts';
 import { apiRequest } from '../lib/api';
@@ -44,7 +44,7 @@ type Review = { kind: 'save_document'; input: Extract<FinancialPolicyWriteReques
   | { kind: 'save_draft'; input: Extract<FinancialPolicyWriteRequest, { kind: 'save_draft' }>['input']; dates: FinancialPolicyDraftDates };
 type Buffer = Readonly<{ kind: Kind; documentId: string; draftId: string; text: string; dates: FinancialPolicyDraftDates;
   document: { id: string; version: string; recordHash: string } }>;
-type View = Readonly<{ visible: boolean; phase: 'idle' | 'ready' | 'expired' | 'denied' | 'unavailable'; busy: boolean;
+type View = Readonly<{ visible: boolean; phase: 'idle' | 'ready' | 'expired' | 'denied' | 'unavailable'; busy: boolean; editorOpened: boolean;
   context: FinancialPolicyHttpContext | null; exact: FinancialPolicyHttpRecordResponse | null; preparation: FinancialPolicyPreparationSnapshot;
   index: FinancialPolicyHttpDraftIndexResponse | FinancialPolicyHttpGovernanceIndexResponse | null; documentRead: FinancialPolicyHttpRecordResponse | null;
   buffer: Buffer; review: Review | null; receipt: FinancialPolicyQualifiedReceipt | null;
@@ -52,7 +52,7 @@ type View = Readonly<{ visible: boolean; phase: 'idle' | 'ready' | 'expired' | '
 const emptyBuffer = (revision: CapturedRevision): Buffer => ({ kind: revision?.kind ?? 'document', documentId: revision?.id ?? '', draftId: revision?.id ?? '', text: '',
   dates: emptyFinancialPolicyDraftDates(), document: { id: '', version: '', recordHash: '' } });
 const idlePreparation = (): FinancialPolicyPreparationSnapshot => ({ state: 'idle', preparation: null });
-const initial = (revision: CapturedRevision): View => ({ visible: false, phase: 'idle', busy: false, context: null, exact: null, index: null, documentRead: null, preparation: idlePreparation(),
+const initial = (revision: CapturedRevision): View => ({ visible: false, phase: 'idle', busy: false, editorOpened: false, context: null, exact: null, index: null, documentRead: null, preparation: idlePreparation(),
   buffer: emptyBuffer(revision), review: null, receipt: null, rows: [], storageBlocked: false, message: 'Check current context explicitly to begin. Nothing has been saved.', focus: 0, error: null });
 const expiredMessage = 'The observation expired. Your unsent edits remain here; check current context, review and prepare again.';
 const deniedMessage = 'Current access is unavailable. Private text and review material have been cleared. Original reminders remain in this tab.';
@@ -81,8 +81,9 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
   function preserving<T>(work: () => T): T { const previous = preserveBuffer; preserveBuffer = current(); try { return work(); } finally { preserveBuffer = previous; } }
   function clearProtected() {
     timerOff(); displayNow = null; displayDeadline = 0;
-    const buffer = preserveBuffer && current() ? view.buffer : emptyBuffer(revision);
-    publish({ ...initial(revision), visible, phase: denied ? 'denied' : 'idle', busy: active !== null, buffer, focus: view.focus });
+    const keepLocal = preserveBuffer && current(), buffer = keepLocal ? view.buffer : emptyBuffer(revision);
+    publish({ ...initial(revision), visible, phase: denied ? 'denied' : 'idle', busy: active !== null, buffer,
+      editorOpened: keepLocal && view.editorOpened, focus: view.focus });
   }
   lifetime.onInvalidate(clearProtected);
   function observePreparation() {
@@ -137,7 +138,7 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
     publish({ ...view, rows: view.rows.map(row => financialSame(row.reference, reference) ? { ...row, ...update } : row) });
   }
   function suspend() { visible = false; active = null; preserveBuffer = false; lifetime.hide(); }
-  function report(error: unknown, expiredBuffer?: Buffer) {
+  function report(error: unknown, expiredBuffer?: Buffer, expiredEditorOpened = false) {
     if (!current()) { suspend(); return; }
     if (error instanceof FinancialPolicyAuthoringInputError) {
       publish({ ...view, error: { field: error.field, message: error.message }, message: error.message, focus: ++sequence }); return;
@@ -146,9 +147,9 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
     if (code === 'scope') { denied = true; preserveBuffer = false; lifetime.deny(); }
     else if (code === 'expired') preserving(() => lifetime.invalidate());
     // A synchronous freshness failure inside an awaited transport may already have
-    // cleared the view. Restore only local edits for this still-current owner;
+    // cleared the view. Restore only local editing state for this still-current owner;
     // denied, hidden and replaced owners never reach this expiry restoration.
-    publish({ ...view, ...(code === 'expired' && expiredBuffer && !denied && current() ? { buffer: expiredBuffer } : {}),
+    publish({ ...view, ...(code === 'expired' && expiredBuffer && !denied && current() ? { buffer: expiredBuffer, editorOpened: expiredEditorOpened } : {}),
       phase: code === 'scope' ? 'denied' : code === 'expired' ? 'expired' : view.context ? 'ready' : 'unavailable',
       message: code === 'scope' ? deniedMessage : code === 'expired' ? error instanceof FinancialPolicyWriteAttemptError && error.outcome === 'unknown'
         ? 'The observation expired. The original save result is unknown. Check that exact original result explicitly. Do not create a replacement request.' : expiredMessage : error instanceof FinancialPolicyWriteAttemptError
@@ -158,11 +159,11 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
   }
   async function run(message: string, work: (check: () => void) => Promise<void>) {
     if (active || !current() || denied) return;
-    const operation = {}, owner = transport, buffer = view.buffer; active = operation;
+    const operation = {}, owner = transport, buffer = view.buffer, editorOpened = view.editorOpened; active = operation;
     publish({ ...view, busy: true, error: null, message });
     const check = () => { if (active !== operation || transport !== owner || !current()) throw new FinancialPolicyClientError('scope'); };
     try { await work(check); check(); publish({ ...view, focus: ++sequence }); }
-    catch (error) { if (active === operation && transport === owner) report(error, buffer); }
+    catch (error) { if (active === operation && transport === owner) report(error, buffer, editorOpened); }
     finally { if (active === operation) { active = null; publish({ ...view, busy: false }); } }
   }
   function previous(kind: Kind): FinancialPolicyRef | null {
@@ -218,7 +219,7 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
     refresh() { return run('Checking current financial-policy context…', async check => {
       invalidateReview(); const query = { assetKey: null };
       const pending = preserving(() => transport.context(query, lifetime.authorize('context', query))), observation = await pending;
-      check(); ready(); publish({ ...view, phase: 'ready', context: observation.context, message: 'Current context checked. Review your exact input and check preparation separately.' }); rows(); arm();
+      check(); ready(); publish({ ...view, phase: 'ready', editorOpened: true, context: observation.context, message: 'Current context checked. Review your exact input and check preparation separately.' }); rows(); arm();
     }); },
     startNew(kind: Kind) { local(() => {
       if (revision || !['document', 'draft'].includes(kind)) throw new FinancialPolicyClientError('input');
@@ -229,7 +230,7 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
         ? 'Policy text started. This form keeps its chosen record through checks and retries.' : 'Draft started. Select a checked policy text or saved receipt, then review the exact terms and dates.' });
     }); },
     edit(update: Partial<Pick<Buffer, 'kind' | 'text' | 'dates'>>) {
-      if (active || !current() || denied) return;
+      if (active || !current() || denied || !view.editorOpened) return;
       invalidateReview();
       const buffer = { ...view.buffer, ...(update.kind && ['document', 'draft'].includes(update.kind) ? { kind: update.kind } : {}),
         ...(typeof update.text === 'string' ? { text: update.text } : {}), ...(update.dates ? { dates: { ...update.dates } } : {}) };
@@ -341,6 +342,14 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
 }
 export type FinancialPolicyAuthoringController = ReturnType<typeof createFinancialPolicyAuthoringController>;
 
+/** Opening local editing once never replaces fresh context or action preparation. */
+export function FinancialPolicyAuthoringEditorGate({ controller, owner, view, children }: {
+  controller: FinancialPolicyAuthoringController; owner: FinancialPolicyAuthoringAdapters; view: View; children: ReactNode;
+}) {
+  return controller.matches(owner) && controller.current() && view === controller.getSnapshot() && view.visible && view.editorOpened && view.phase !== 'denied'
+    ? <>{children}</> : null;
+}
+
 /** A deliberate navigation gesture only; it never checks, clears or resends an original. */
 export function focusFinancialPolicySavedRequests(controller: FinancialPolicyAuthoringController, owner: FinancialPolicyAuthoringAdapters,
   target: Pick<HTMLElement, 'focus' | 'scrollIntoView'> | null,
@@ -393,8 +402,9 @@ export function FinancialPolicyAuthoringWorkspaceView(props: FinancialPolicyAuth
         {safe && view.busy && showPending && motion.mode !== 'off' ? <BrandLoader/> : <span className="financial-policy-feedback-dot"/>}</span>
         <p id="financial-authoring-feedback" role="status" aria-live="polite">{displayExpired ? expiredMessage : safe ? view.message : 'Opening the current authoring scope. No request has been sent.'}</p></div>
       <p className="review-note">Configuration only. No spending authority or available funds are created.</p>
+      {safe && !view.editorOpened && view.phase !== 'denied' && <p className="review-note">Check current financial access to open the editor.</p>}
     </Panel>
-    {safe && view.phase !== 'denied' && <>
+    <FinancialPolicyAuthoringEditorGate controller={controller} owner={props} view={view}>
       <Panel title="Choose the record">
         {props.revision ? <label htmlFor="revision-kind">Record type<select id="revision-kind" value={buffer.kind} disabled={disabled} aria-invalid={view.error?.field === 'revision-kind'} aria-describedby={view.error?.field === 'revision-kind' ? 'financial-authoring-feedback' : undefined} onChange={e => controller.edit({ kind: e.target.value as Kind })}>
           <option value="document">Policy text</option><option value="draft">Incomplete draft</option></select></label>
@@ -452,7 +462,7 @@ export function FinancialPolicyAuthoringWorkspaceView(props: FinancialPolicyAuth
       {context && <div id="financial-authoring-saved-requests" ref={savedRequests} tabIndex={-1} role="region" aria-label="Saved financial requests">
         <FinancialPolicyRecoveryPanel rows={view.rows} blocked={view.storageBlocked} busy={view.busy} onRefresh={() => controller.refreshReferences()}
           onLookup={reference => void controller.lookup(reference)} onClear={reference => void controller.clear(reference)}/></div>}
-    </>}
+    </FinancialPolicyAuthoringEditorGate>
   </div>;
 }
 

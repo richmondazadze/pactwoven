@@ -68,3 +68,13 @@ export { SupplierRelationshipPartySchema, SupplierRelationshipStatusSchema,
 export type { SupplierRelationshipProposal, SupplierRelationshipApproval, SupplierRelationshipSnapshot,
   SupplierRelationshipCommand, SupplierRelationshipHead, SupplierRelationshipReceipt,
   SupplierRelationshipProjection } from './supplier-relationships';
+export { SUPPLIER_SCOPE_POLICY_MAX_VALIDITY_MS, SupplierScopePolicyPairSchema,
+  supplierScopePolicyPairsMatch, SupplierScopePolicyReferenceSchema,
+  SupplierScopeCategoryInputSchema, SupplierScopeCategorySchema, SupplierScopePolicyTermsSchema,
+  SupplierScopePolicyCommandSchema, SupplierScopePolicyMutationSchema,
+  SupplierScopePolicyCommandIdentitySchema, SupplierScopePolicyIssuerSchema,
+  SupplierScopePolicyVersionSchema, SupplierScopePolicySnapshotSchema,
+  SupplierScopePolicyReceiptSchema, SupplierRelationshipPolicyBindingSchema } from './supplier-scope-policy';
+export type { SupplierScopePolicyPair, SupplierScopePolicyReference, SupplierScopeCategory,
+  SupplierScopePolicyCommand, SupplierScopePolicyCommandIdentity, SupplierScopePolicyVersion,
+  SupplierScopePolicySnapshot, SupplierScopePolicyReceipt, SupplierRelationshipPolicyBinding } from './supplier-scope-policy';

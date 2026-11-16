@@ -24,3 +24,7 @@ export { projectFinancialPolicyHttpRecord, projectFinancialPolicyHttpView,
   projectFinancialPolicyHttpReceipt } from './financial-policy-responses.js';
 export { supplierRelationshipProposalDigest, planSupplierRelationshipMutation,
   projectSupplierRelationship } from './supplier-relationships.js';
+export { supplierScopeCategoryDigest, supplierScopePolicyDigest, supplierScopePolicyCommandDigest,
+  planSupplierScopePolicyMutation, bindSupplierRelationshipScopePolicy,
+  assessSupplierRelationshipScopePolicy, applySupplierRelationshipScopePolicy } from './supplier-scope-policy.js';
+export type { SupplierScopePolicyReadFacts, SupplierScopePolicyIssuerFacts } from './supplier-scope-policy.js';

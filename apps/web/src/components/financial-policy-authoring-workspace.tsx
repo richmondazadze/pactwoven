@@ -126,6 +126,13 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
     for (const row of view.rows) if (row.state === 'cleared' && !next.some(other => financialSame(other.reference, row.reference))) next.push(row);
     publish({ ...view, rows: next, storageBlocked: inventory.blocked });
   }
+  function hasVisibleOriginal() {
+    if (!current() || denied || !view.context || !fresh() || view.storageBlocked) return false;
+    const id = view.buffer.kind === 'document' ? view.buffer.documentId : view.buffer.draftId;
+    const scope = financialPolicyLocalScope(bootstrap);
+    // Presentation uses only current, already qualified rows. The writer retains its broader inventory barriers.
+    return Boolean(id && view.rows.some(row => row.state !== 'cleared' && row.reference.locator.targetId === id && financialSame(row.reference.scope, scope)));
+  }
   function updateRow(reference: FinancialPolicyReference, update: Partial<FinancialPolicyRecoveryRow>) {
     publish({ ...view, rows: view.rows.map(row => financialSame(row.reference, reference) ? { ...row, ...update } : row) });
   }
@@ -189,7 +196,7 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
   return {
     getSnapshot: () => view, getServerSnapshot: () => serverView,
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    matches, current, fresh, expireDisplay,
+    matches, current, fresh, expireDisplay, hasVisibleOriginal,
     preparationFresh() { try { return Boolean(current() && view.preparation.preparation && displayNow && displayNow() < view.preparation.preparation.expiresAt); } catch { return false; } },
     configure(next: FinancialPolicyAuthoringAdapters) {
       if (closed || matches(next)) return;
@@ -334,6 +341,15 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
 }
 export type FinancialPolicyAuthoringController = ReturnType<typeof createFinancialPolicyAuthoringController>;
 
+/** A deliberate navigation gesture only; it never checks, clears or resends an original. */
+export function focusFinancialPolicySavedRequests(controller: FinancialPolicyAuthoringController, owner: FinancialPolicyAuthoringAdapters,
+  target: Pick<HTMLElement, 'focus' | 'scrollIntoView'> | null,
+  motion: { mode: 'normal' | 'reduced' | 'off'; keyboard: boolean; prefersReducedMotion: boolean }) {
+  if (!target || !controller.matches(owner) || controller.getSnapshot().busy || !controller.hasVisibleOriginal()) return;
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({ block: 'start', behavior: motion.mode !== 'normal' || motion.keyboard || motion.prefersReducedMotion ? 'instant' : 'smooth' });
+}
+
 export function FinancialPolicyAuthoringWorkspaceView(props: FinancialPolicyAuthoringAdapters) {
   const revision = captureRevision(props.revision);
   const latest = useRef(props); latest.current = props;
@@ -342,6 +358,7 @@ export function FinancialPolicyAuthoringWorkspaceView(props: FinancialPolicyAuth
   controllerRef.current = controller;
   const view = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getServerSnapshot), motion = useMotion();
   const feedback = useRef<HTMLDivElement>(null), lastFocus = useRef(0), arrival = useArrival(view.context !== null);
+  const savedRequests = useRef<HTMLDivElement>(null);
   const [showPending, setShowPending] = useState(false), key = financialPolicyBootstrapKey(props.bootstrap), revisionKey = JSON.stringify(revision);
   const displayExpired = view.context !== null && !controller.fresh(), scopeLost = view.visible && !controller.current();
   useLayoutEffect(() => {
@@ -365,7 +382,8 @@ export function FinancialPolicyAuthoringWorkspaceView(props: FinancialPolicyAuth
   const buffer = safe ? view.buffer : emptyBuffer(revision), disabled = !safe || view.busy || view.phase === 'denied';
   const review = context ? view.review : null, prepared = context && controller.preparationFresh() ? view.preparation.preparation : null;
   const draftReview: DraftReview | null = review?.kind === 'save_draft' ? { draft: review.input.draft, dates: review.dates } : null;
-  const saveReady = Boolean(context && review && prepared && view.preparation.state === 'reviewable');
+  const visibleOriginal = Boolean(context && controller.hasVisibleOriginal());
+  const saveReady = Boolean(context && review && prepared && view.preparation.state === 'reviewable' && !visibleOriginal);
   return <div className="financial-policy financial-authoring" data-financial-motion={motion.mode} data-financial-pending={safe && view.busy ? 'true' : 'false'}>
     <PageHeading title={props.revision ? 'Review a configuration revision' : 'Prepare financial configuration'} description="Save full policy text, then prepare and save an incomplete draft separately."
       action={<ButtonLink href={financialPolicyCollectionPath(props.bootstrap.responsibilityId)} secondary>Back to financial policies</ButtonLink>}/>
@@ -418,16 +436,22 @@ export function FinancialPolicyAuthoringWorkspaceView(props: FinancialPolicyAuth
         <p className="review-note">Preparation details appear below the save controls. These controls keep their position when the result arrives.</p>
       </Panel>
       <Panel title="Final save"><div className="financial-authoring-save-slot"><p>Save only after reviewing your exact input and the checked preparation below.</p>
-        <button type="button" className="button" disabled={disabled || !saveReady} onClick={() => void controller.save()}>
+        <button type="button" className="button" disabled={disabled || !saveReady} aria-describedby={visibleOriginal ? 'financial-authoring-original-notice' : undefined} onClick={() => void controller.save()}>
           <ActionLabel label={view.busy && saveReady ? 'Saving configuration…' : buffer.kind === 'document' ? 'Save policy text' : 'Save draft'} reserve={['Saving configuration…', 'Save policy text', 'Save draft']}/></button>
-      </div></Panel>
+      </div>{visibleOriginal && <div>
+        <p id="financial-authoring-original-notice" className="review-note" role="status">An earlier request for this record needs review before another save. In Saved financial requests, check the original result and review its matching receipt. Then clear this tab’s reminder separately, review your edits and check fresh preparation before saving.</p>
+        <button type="button" className="button secondary" disabled={disabled} aria-controls="financial-authoring-saved-requests"
+          onClick={() => focusFinancialPolicySavedRequests(controller, props, savedRequests.current, { mode: motion.mode, keyboard: motion.keyboard.current,
+            prefersReducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches })}>Go to saved financial requests</button>
+      </div>}</Panel>
       {prepared ? <FinancialPolicyPreparationReview response={prepared.response}/> : <p className="review-note">No current preparation is available. Nothing can be saved until your exact action is checked.</p>}
       {context && view.receipt && <Panel title="Immutable original result"><FinancialPolicyReceiptReview receipt={view.receipt}/>
         {view.receipt.record.kind === 'document' && !props.revision && <button type="button" className="button secondary" disabled={disabled}
           onClick={() => { controller.startNew('draft'); controller.useDocumentReceipt(view.receipt!); }}>{buffer.draftId ? 'Continue draft with this policy text' : 'Start draft with this policy text'}</button>}
       </Panel>}
-      {context && <FinancialPolicyRecoveryPanel rows={view.rows} blocked={view.storageBlocked} busy={view.busy} onRefresh={() => controller.refreshReferences()}
-        onLookup={reference => void controller.lookup(reference)} onClear={reference => void controller.clear(reference)}/>}
+      {context && <div id="financial-authoring-saved-requests" ref={savedRequests} tabIndex={-1} role="region" aria-label="Saved financial requests">
+        <FinancialPolicyRecoveryPanel rows={view.rows} blocked={view.storageBlocked} busy={view.busy} onRefresh={() => controller.refreshReferences()}
+          onLookup={reference => void controller.lookup(reference)} onClear={reference => void controller.clear(reference)}/></div>}
     </>}
   </div>;
 }

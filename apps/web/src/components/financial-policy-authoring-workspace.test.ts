@@ -7,7 +7,7 @@ import { FinancialPolicyBootstrapSchema, financialPolicyLocalScope, type Financi
 import { createFinancialPolicyAttempt, type FinancialPolicyReference } from '../lib/financial-policy-contract';
 import { storeFinancialPolicyReference, type FinancialPolicyStorage } from '../lib/financial-policy-recovery';
 import { parseFinancialPolicyWriteRequest } from '../lib/financial-policy-write-transport';
-import { createFinancialPolicyAuthoringController, FinancialPolicyAuthoringWorkspaceView, type FinancialPolicyAuthoringController } from './financial-policy-authoring-workspace';
+import { createFinancialPolicyAuthoringController, FinancialPolicyAuthoringWorkspaceView, focusFinancialPolicySavedRequests, type FinancialPolicyAuthoringController } from './financial-policy-authoring-workspace';
 import { MotionProvider } from './motion';
 vi.mock('@clerk/nextjs', () => ({ useAuth: () => { throw Error('Provider is not mounted in source-only tests'); } }));
 vi.mock('@tanstack/react-query', () => ({ useQuery: () => { throw Error('Provider is not mounted in source-only tests'); } }));
@@ -473,5 +473,113 @@ describe('native authoring controller with injected offline transport', () => {
   it('has a side-effect-free StrictMode server render; actual DOM lifecycle remains a browser qualification', async () => {
     const f = await fixture(), html = renderToStaticMarkup(createElement(StrictMode, null, createElement(MotionProvider, null, createElement(FinancialPolicyAuthoringWorkspaceView, f.adapters))));
     expect(html).toContain('Prepare financial configuration'); expect(html).toContain('No request has been sent'); expect(f.fetcher).not.toHaveBeenCalled(); expect(f.token).not.toHaveBeenCalled();
+  });
+});
+
+describe('visible original recovery guidance', () => {
+  async function original(f: Awaited<ReturnType<typeof fixture>>) {
+    return (await createFinancialPolicyAttempt(financialPolicyLocalScope(f.bootstrap), {
+      kind: 'save_document', responsibilityId: 'responsibility_a', id: 'mandate_doc', key: 'retained_original_1',
+      route: financialPolicyHttpRoute({ kind: 'save_document', responsibilityId: 'responsibility_a', id: 'mandate_doc' }),
+      input: { schemaVersion: 1, previous: null, organizationEpoch: 2, purpose: 'financial_mandate', text: 'Earlier exact text' },
+    })).reference;
+  }
+  const motion = { mode: 'normal' as const, keyboard: false, prefersReducedMotion: false };
+  const target = () => ({ focus: vi.fn(), scrollIntoView: vi.fn() });
+  it('keeps the same-target reminder visible through explicit lookup until a separate exact clear', async () => {
+    const f = await fixture(); await f.prepareDocument(); await f.controller.save();
+    const ref = f.controller.getSnapshot().rows[0]!.reference;
+    expect(f.controller.hasVisibleOriginal()).toBe(true);
+    await f.controller.refresh(); expect(f.controller.getSnapshot().rows[0]).toMatchObject({ state: 'unchecked', receipt: null });
+    expect(f.controller.hasVisibleOriginal()).toBe(true);
+    const stored = [...f.values], writes = f.writeInputs.length;
+    await f.controller.lookup(ref); expect(f.controller.getSnapshot().rows[0]?.state).toBe('recorded');
+    expect(f.controller.hasVisibleOriginal()).toBe(true); expect([...f.values]).toEqual(stored);
+    await f.controller.clear(ref); const cleared = f.controller.getSnapshot();
+    expect(cleared.rows[0]?.state).toBe('cleared'); expect(f.controller.hasVisibleOriginal()).toBe(false);
+    const node = target(); focusFinancialPolicySavedRequests(f.controller, f.adapters, node, motion);
+    expect(node.focus).not.toHaveBeenCalled(); expect(node.scrollIntoView).not.toHaveBeenCalled();
+    expect(cleared.review).toBeNull(); expect(cleared.preparation.preparation).toBeNull(); expect(cleared.buffer.text).toContain('Exact full');
+    expect(f.writeInputs).toHaveLength(writes); expect(f.createKey).toHaveBeenCalledOnce(); expect(f.storage.removeItem).toHaveBeenCalledOnce();
+  });
+  it('uses the selected target regardless of command kind, and ignores other targets and an unstarted record', async () => {
+    const f = await fixture(), ref = await original(f);
+    storeFinancialPolicyReference(f.storage, { ...ref, locator: { ...ref.locator, kind: 'save_draft' } });
+    await f.controller.refresh(); expect(f.controller.getSnapshot().rows).toHaveLength(1); expect(f.controller.hasVisibleOriginal()).toBe(false);
+    f.controller.startNew('document'); expect(f.controller.hasVisibleOriginal()).toBe(true);
+    f.controller.startNew('draft'); expect(f.controller.hasVisibleOriginal()).toBe(false);
+    expect(f.controller.getSnapshot().rows).toHaveLength(1); expect(f.writeInputs).toHaveLength(0); expect(f.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it.each(['environment', 'organizationId', 'actorId', 'responsibilityId', 'apiBase'] as const)(
+    'does not expose an original from a different %s', async field => {
+      const f = await fixture(), ref = structuredClone(await original(f));
+      if (field === 'environment') ref.scope.environment = 'staging';
+      else if (field === 'apiBase') ref.scope.apiBase = 'https://alias.example.test';
+      else ref.scope[field] = 'private_other';
+      if (field === 'responsibilityId') ref.locator.responsibilityId = ref.scope.responsibilityId;
+      storeFinancialPolicyReference(f.storage, ref); await f.prepareDocument(); const before = f.controller.getSnapshot(), stored = [...f.values];
+      expect(before.storageBlocked).toBe(false); expect(before.rows).toEqual([]); expect(f.controller.hasVisibleOriginal()).toBe(false);
+      const node = target(); focusFinancialPolicySavedRequests(f.controller, f.adapters, node, motion);
+      expect(node.focus).not.toHaveBeenCalled(); expect(node.scrollIntoView).not.toHaveBeenCalled();
+      expect(f.controller.getSnapshot()).toBe(before); expect([...f.values]).toEqual(stored); expect(f.createKey).not.toHaveBeenCalled();
+    });
+  it.each(['corrupt', 'incompatible'] as const)('leaves %s saved inventory generic with no recovery jump', async mode => {
+    const f = await fixture(), ref = await original(f); storeFinancialPolicyReference(f.storage, ref); await f.prepareDocument();
+    expect(f.controller.hasVisibleOriginal()).toBe(true);
+    const [key, raw] = [...f.values][0]!;
+    f.values.set(key, mode === 'corrupt' ? raw + ' ' : JSON.stringify({ ...ref, locator: { ...ref.locator, responsibilityId: 'private_other' } }));
+    f.controller.refreshReferences(); const before = f.controller.getSnapshot(), stored = [...f.values];
+    expect(before.storageBlocked).toBe(true); expect(before.rows).toEqual([]); expect(f.controller.hasVisibleOriginal()).toBe(false);
+    const node = target(); focusFinancialPolicySavedRequests(f.controller, f.adapters, node, motion);
+    expect(node.focus).not.toHaveBeenCalled(); expect(node.scrollIntoView).not.toHaveBeenCalled();
+    expect([...f.values]).toEqual(stored); expect(f.controller.getSnapshot()).toBe(before); expect(f.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it('derives guidance only from already displayed rows without scanning storage or changing preparation', async () => {
+    const f = await fixture(); await f.prepareDocument(); const ref = await original(f); storeFinancialPolicyReference(f.storage, ref);
+    const before = f.controller.getSnapshot(), calls = f.fetcher.mock.calls.length;
+    const get = vi.spyOn(f.storage, 'getItem'); get.mockImplementation(() => { throw Error('Presentation must not scan storage'); });
+    expect(f.controller.hasVisibleOriginal()).toBe(false); expect(get).not.toHaveBeenCalled(); expect(f.controller.getSnapshot()).toBe(before);
+    get.mockRestore(); f.controller.refreshReferences(); expect(f.controller.hasVisibleOriginal()).toBe(true);
+    expect(f.fetcher.mock.calls.length).toBe(calls); expect(f.createKey).not.toHaveBeenCalled(); expect(f.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it.each([
+    { mode: 'normal', keyboard: false, prefersReducedMotion: false, behavior: 'smooth' },
+    { mode: 'normal', keyboard: true, prefersReducedMotion: false, behavior: 'instant' },
+    { mode: 'normal', keyboard: false, prefersReducedMotion: true, behavior: 'instant' },
+    { mode: 'reduced', keyboard: false, prefersReducedMotion: false, behavior: 'instant' },
+    { mode: 'off', keyboard: false, prefersReducedMotion: false, behavior: 'instant' },
+  ] as const)('only focuses and scrolls for $mode / keyboard=$keyboard / OS reduced=$prefersReducedMotion', async options => {
+    const f = await fixture(); storeFinancialPolicyReference(f.storage, await original(f)); await f.prepareDocument();
+    const before = f.controller.getSnapshot(), stored = [...f.values], calls = f.fetcher.mock.calls.length, tokens = f.token.mock.calls.length, node = target();
+    focusFinancialPolicySavedRequests(f.controller, f.adapters, node, options);
+    expect(node.focus).toHaveBeenCalledExactlyOnceWith({ preventScroll: true });
+    expect(node.scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: 'start', behavior: options.behavior });
+    expect(f.controller.getSnapshot()).toBe(before); expect(before.preparation.state).toBe('reviewable'); expect(before.review).not.toBeNull();
+    expect([...f.values]).toEqual(stored); expect(f.fetcher.mock.calls.length).toBe(calls); expect(f.token.mock.calls.length).toBe(tokens);
+    expect(f.createKey).not.toHaveBeenCalled(); expect(f.writeInputs).toHaveLength(0); expect(f.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it.each(['expired', 'hidden', 'scope', 'adapter'] as const)('rejects a previously rendered jump after %s changes', async mode => {
+    const f = await fixture(); storeFinancialPolicyReference(f.storage, await original(f)); await f.prepareDocument();
+    expect(f.controller.hasVisibleOriginal()).toBe(true);
+    if (mode === 'expired') { f.time.wall += 19000; f.time.mono += 19000; }
+    if (mode === 'hidden') f.controller.suspend();
+    if (mode === 'scope') f.current.value = null;
+    if (mode === 'adapter') {
+      f.controller.configure({ ...f.adapters, getToken: vi.fn(async () => 'replacement') });
+      await f.controller.refresh(); f.controller.startNew('document');
+    }
+    const before = f.controller.getSnapshot(), stored = [...f.values], calls = f.fetcher.mock.calls.length, node = target();
+    focusFinancialPolicySavedRequests(f.controller, f.adapters, node, motion);
+    expect(f.controller.hasVisibleOriginal()).toBe(mode === 'adapter'); expect(node.focus).not.toHaveBeenCalled(); expect(node.scrollIntoView).not.toHaveBeenCalled();
+    expect(f.controller.getSnapshot()).toBe(before); expect([...f.values]).toEqual(stored); expect(f.fetcher.mock.calls.length).toBe(calls);
+    expect(f.createKey).not.toHaveBeenCalled(); expect(f.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it('does not move focus while an explicit operation owns the action lane', async () => {
+    const f = await fixture(); storeFinancialPolicyReference(f.storage, await original(f)); await f.prepareDocument();
+    f.controller.reviewDocument(); const token = deferred<string>(); f.token.mockReturnValueOnce(token.promise);
+    const pending = f.controller.prepare(), node = target(); expect(f.controller.getSnapshot().busy).toBe(true);
+    focusFinancialPolicySavedRequests(f.controller, f.adapters, node, motion);
+    expect(node.focus).not.toHaveBeenCalled(); expect(node.scrollIntoView).not.toHaveBeenCalled();
+    token.resolve('prepared_token'); await pending; expect(f.writeInputs).toHaveLength(0); expect(f.storage.removeItem).not.toHaveBeenCalled();
   });
 });

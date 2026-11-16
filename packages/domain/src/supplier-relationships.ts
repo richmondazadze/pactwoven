@@ -17,11 +17,12 @@ const membershipSchema = z.strictObject({
   id: IdSchema, actorId: IdSchema, principalKind: z.enum(['human', 'service']), organizationId: IdSchema, environment: EnvironmentSchema,
   version, organizationEpoch: epoch, status: z.enum(['ACTIVE', 'SUSPENDED', 'REVOKED']),
   roles: z.array(RoleSchema).min(1).max(9).refine(values => new Set(values).size === values.length),
-  validFrom: InstantSchema, expiresAt: InstantSchema,
+  // Null means no configured durable end, not an unbounded observation or session.
+  validFrom: InstantSchema, expiresAt: InstantSchema.nullable(),
 });
 const organizationSchema = z.strictObject({
   id: IdSchema, environment: EnvironmentSchema, version, authorityEpoch: epoch,
-  status: z.enum(['ACTIVE', 'SUSPENDED', 'REVOKED']), validFrom: InstantSchema, expiresAt: InstantSchema,
+  status: z.enum(['ACTIVE', 'SUSPENDED', 'REVOKED']), validFrom: InstantSchema, expiresAt: InstantSchema.nullable(),
 });
 // PRIVATE RESOLVER INPUT CONTRACT, not a public authorization constructor. This schema checks
 // shape only. A future server must authenticate the session and load/fence these facts itself.
@@ -48,7 +49,8 @@ type Party = 'buyer' | 'supplier';
 const equal = (left: unknown, right: unknown) => canonicalJson(left) === canonicalJson(right);
 const ms = (value: string) => Date.parse(value);
 function fail(code: string, status: 403 | 409 | 422, message: string): never { throw new DomainError(code, status, message); }
-const currentInterval = (value: { validFrom: string; expiresAt: string }, at: number) => ms(value.validFrom) <= at && at < ms(value.expiresAt);
+const currentInterval = (value: { validFrom: string; expiresAt: string | null }, at: number) =>
+  ms(value.validFrom) <= at && (value.expiresAt === null || at < ms(value.expiresAt));
 const activeOrganization = (facts: Facts, party: Party, at: number) => facts.organizations[party].status === 'ACTIVE' && currentInterval(facts.organizations[party], at);
 const adminRole = (party: Party) => party === 'buyer' ? 'owner' : 'supplier_admin';
 const stamp = (facts: Facts) => ({ actorId: facts.actor.actorId, organizationId: facts.actor.organizationId,
@@ -217,8 +219,10 @@ export async function planSupplierRelationshipMutation(input: unknown, factsInpu
       if (current.approvals[party] !== null) fail('SUPPLIER_RELATIONSHIP_ALREADY_APPROVED', 409, 'This party already approved; revise to renew approvals.');
       const otherParty = party === 'buyer' ? 'supplier' : 'buyer';
       if (current.approvals[otherParty] !== null && !approvalCurrent(current.approvals[otherParty], facts, otherParty, at)) fail('SUPPLIER_RELATIONSHIP_APPROVAL_STALE', 409, 'The other approval is no longer current; revise and obtain both approvals again.');
-      if (ms(current.proposal.terms.expiresAt) <= at || ms(command.payload.expiresAt) <= at ||
-          ms(command.payload.expiresAt) > Math.min(ms(current.proposal.terms.expiresAt), ms(facts.membership.expiresAt), ms(facts.organizations[party].expiresAt))) {
+      const approvalExpiresAt = ms(command.payload.expiresAt);
+      const durableEnds = [current.proposal.terms.expiresAt, facts.membership.expiresAt, facts.organizations[party].expiresAt];
+      if (ms(current.proposal.terms.expiresAt) <= at || approvalExpiresAt <= at ||
+          durableEnds.some(end => end !== null && approvalExpiresAt > ms(end))) {
         fail('SUPPLIER_RELATIONSHIP_APPROVAL_EXPIRY_INVALID', 422, 'Approval must fit the current proposal and administrative validity interval.');
       }
       const approval = { ...administrator, party, proposal: reference(current), approvedAt: now, expiresAt: command.payload.expiresAt };

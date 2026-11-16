@@ -345,3 +345,137 @@ describe('idempotency, proposal digest and mutation isolation', () => {
     expect(Object.isFrozen(current)).toBe(false);
   });
 });
+
+describe('nullable durable authority lifetime without extending current access', () => {
+  const withoutDurableEnds = (state: SupplierRelationshipSnapshot | null, party: Party = 'buyer', role?: Role) => {
+    const context = facts(state, party, role);
+    return { ...context, membership: { ...context.membership, expiresAt: null as string | null },
+      organizations: { buyer: { ...context.organizations.buyer, expiresAt: null as string | null },
+        supplier: { ...context.organizations.supplier, expiresAt: null as string | null } },
+      approvalMemberships: context.approvalMemberships.map(value => ({ ...value, expiresAt: null as string | null })) };
+  };
+  async function unboundedTransition(state: SupplierRelationshipSnapshot | null, payload: SupplierRelationshipCommand['payload'], party: Party = 'buyer') {
+    const context = withoutDurableEnds(state, party);
+    // A current session/observation can end before a durable administrative approval.
+    context.session.expiresAt = '2026-11-15T10:00:10Z';
+    const result = await planSupplierRelationshipMutation(request(state, payload, party), context, state, null, now);
+    if (result.kind !== 'PROPOSED_TRANSITION') throw new Error('Fixture expected a new pure transition.');
+    return result;
+  }
+  async function unboundedActive() {
+    const created = await unboundedTransition(null, { action: 'create', terms: terms() });
+    const first = await unboundedTransition(created.next, { action: 'approve', expiresAt: approvalExpiry });
+    return unboundedTransition(first.next, { action: 'approve', expiresAt: approvalExpiry }, 'supplier');
+  }
+  it.each(['buyer', 'supplier'] as const)('retains finite bilateral approvals when %s proposes with no configured authority end', async party => {
+    const created = await unboundedTransition(null, { action: 'create', terms: terms() }, party);
+    const first = await unboundedTransition(created.next, { action: 'approve', expiresAt: approvalExpiry }, party);
+    const second = await unboundedTransition(first.next, { action: 'approve', expiresAt: approvalExpiry }, party === 'buyer' ? 'supplier' : 'buyer');
+    expect(second.next).toMatchObject({ status: 'ACTIVE', revision: 3, proposal: { version: 1, terms: { expiresAt: expiry } },
+      approvals: { buyer: { expiresAt: approvalExpiry }, supplier: { expiresAt: approvalExpiry } } });
+    expect((await projectSupplierRelationship(second.next, withoutDurableEnds(second.next, party), now)).relationshipGate).toBe('SATISFIED');
+    expect(second).toMatchObject({ authentication: 'NOT_ESTABLISHED', persistence: 'NOT_ESTABLISHED', bookingAuthority: false, contractualAcceptance: false, paymentAuthority: false });
+  });
+  it.each([
+    { name: 'member only', memberEnd: '2026-11-15T10:45:00Z', organizationEnd: null, limit: '2026-11-15T10:45:00Z' },
+    { name: 'organization only', memberEnd: null, organizationEnd: '2026-11-15T10:45:00Z', limit: '2026-11-15T10:45:00Z' },
+    { name: 'earlier member', memberEnd: '2026-11-15T10:45:00Z', organizationEnd: '2026-11-15T11:30:00Z', limit: '2026-11-15T10:45:00Z' },
+    { name: 'earlier organization', memberEnd: '2026-11-15T11:30:00Z', organizationEnd: '2026-11-15T10:45:00Z', limit: '2026-11-15T10:45:00Z' },
+    { name: 'proposal with no administrative end', memberEnd: null, organizationEnd: null, limit: expiry },
+  ])('bounds approval by $name with an inclusive end and no freshness cap', async ({ memberEnd, organizationEnd, limit }) => {
+    const state = (await unboundedTransition(null, { action: 'create', terms: terms() })).next;
+    const context = withoutDurableEnds(state);
+    context.membership.expiresAt = memberEnd;
+    context.organizations.buyer.expiresAt = organizationEnd;
+    context.approvalMemberships = context.approvalMemberships.map(value => value.id === context.membership.id ? { ...value, expiresAt: memberEnd } : value);
+    const result = await planSupplierRelationshipMutation(request(state, { action: 'approve', expiresAt: limit }), context, state, null, now);
+    expect(result.kind === 'PROPOSED_TRANSITION' && result.next.approvals.buyer?.expiresAt).toBe(limit);
+    const beyond = new Date(Date.parse(limit) + 1).toISOString();
+    await expect(planSupplierRelationshipMutation(request(state, { action: 'approve', expiresAt: beyond }), context, state, null, now))
+      .rejects.toMatchObject({ code: 'SUPPLIER_RELATIONSHIP_APPROVAL_EXPIRY_INVALID' });
+  });
+  it.each(['membership', 'buyer organization', 'supplier organization', 'approval membership'] as const)('requires explicit valid lifetime fields for %s', async subject => {
+    for (const field of ['expiresAt', 'validFrom'] as const) {
+      const invalid: unknown[] = ['missing', undefined, 'not-an-instant', 0];
+      if (field === 'validFrom') invalid.push(null);
+      for (const value of invalid) {
+        const context = withoutDurableEnds(null);
+        const target: Record<string, unknown> = subject === 'membership' ? context.membership : subject === 'buyer organization' ? context.organizations.buyer :
+          subject === 'supplier organization' ? context.organizations.supplier : context.approvalMemberships[0]!;
+        if (value === 'missing') delete target[field]; else target[field] = value;
+        await expect(planSupplierRelationshipMutation(request(null, { action: 'create', terms: terms() }), context, null, null, now))
+          .rejects.toMatchObject({ name: 'ZodError' });
+      }
+    }
+  });
+  it('retains current status, version, epoch, valid-from and fresh-authentication checks with null ends', async () => {
+    const state = (await unboundedActive()).next;
+    const base = withoutDurableEnds(state);
+    for (const changed of [
+      { ...base, membership: { ...base.membership, status: 'REVOKED' } },
+      { ...base, membership: { ...base.membership, version: 2 } },
+      { ...base, membership: { ...base.membership, validFrom: '2026-11-15T10:00:01Z' } },
+      { ...base, organizations: { ...base.organizations, buyer: { ...base.organizations.buyer, status: 'REVOKED' } } },
+      { ...base, organizations: { ...base.organizations, buyer: { ...base.organizations.buyer, version: 2 } } },
+      { ...base, organizations: { ...base.organizations, buyer: { ...base.organizations.buyer, authorityEpoch: 1 } } },
+      { ...base, organizations: { ...base.organizations, buyer: { ...base.organizations.buyer, validFrom: '2026-11-15T10:00:01Z' } } },
+    ]) await expect(planSupplierRelationshipMutation(request(state, { action: 'suspend' }), changed, state, null, now))
+      .rejects.toMatchObject({ code: 'SUPPLIER_RELATIONSHIP_ACCESS_DENIED' });
+    for (const supplier of [{ ...base.organizations.supplier, status: 'REVOKED' }, { ...base.organizations.supplier, validFrom: '2026-11-15T10:00:01Z' }]) {
+      await expect(planSupplierRelationshipMutation(request(state, { action: 'revise', terms: terms() }), { ...base, organizations: { ...base.organizations, supplier } }, state, null, now))
+        .rejects.toMatchObject({ code: 'SUPPLIER_RELATIONSHIP_ORGANIZATION_INACTIVE' });
+    }
+    const stale = { ...base, actor: { ...base.actor, authenticatedAt: '2026-11-15T09:00:00Z' }, session: { ...base.session, authenticatedAt: '2026-11-15T09:00:00Z' } };
+    await expect(planSupplierRelationshipMutation(request(state, { action: 'suspend' }), stale, state, null, now))
+      .rejects.toMatchObject({ code: 'SUPPLIER_RELATIONSHIP_FRESH_AUTH_REQUIRED' });
+  });
+  it('revalidates a prior approver with no configured end before activation and on current reads', async () => {
+    const created = (await unboundedTransition(null, { action: 'create', terms: terms() })).next;
+    const first = (await unboundedTransition(created, { action: 'approve', expiresAt: approvalExpiry })).next;
+    const activeState = (await unboundedTransition(first, { action: 'approve', expiresAt: approvalExpiry }, 'supplier')).next;
+    const base = withoutDurableEnds(first, 'supplier');
+    const buyer = base.approvalMemberships[0]!;
+    for (const invalid of [
+      { ...buyer, version: 2 }, { ...buyer, status: 'REVOKED' }, { ...buyer, roles: ['operations'] },
+      { ...buyer, organizationEpoch: 1 }, { ...buyer, validFrom: '2026-11-15T10:00:01Z' }, { ...buyer, expiresAt: now },
+    ]) {
+      const changed = { ...base, approvalMemberships: [invalid, base.approvalMemberships[1]!] };
+      await expect(planSupplierRelationshipMutation(request(first, { action: 'approve', expiresAt: approvalExpiry }, 'supplier'), changed, first, null, now))
+        .rejects.toMatchObject({ code: 'SUPPLIER_RELATIONSHIP_APPROVAL_STALE' });
+      expect(await projectSupplierRelationship(activeState, { ...changed, head: head(activeState) }, now))
+        .toMatchObject({ status: 'ACTIVE', relationshipGate: 'BLOCKED', gateReason: 'APPROVAL_NOT_CURRENT', paymentAuthority: false });
+    }
+  });
+  it.each(['proposal', 'approval'] as const)('keeps %s expiry finite and required with unbounded authority', async kind => {
+    const state = kind === 'proposal' ? null : (await unboundedTransition(null, { action: 'create', terms: terms() })).next;
+    for (const value of ['missing', null, undefined, 'not-an-instant', 0]) {
+      const input = request(state, kind === 'proposal' ? { action: 'create', terms: terms() } : { action: 'approve', expiresAt: approvalExpiry });
+      const target: Record<string, unknown> = input.command.payload.action === 'create' ? input.command.payload.terms : input.command.payload;
+      if (value === 'missing') delete target.expiresAt; else target.expiresAt = value;
+      await expect(planSupplierRelationshipMutation(input, withoutDurableEnds(state), state, null, now)).rejects.toMatchObject({ name: 'ZodError' });
+    }
+  });
+  it.each(['observation', 'session', 'participation'] as const)('keeps %s expiry finite and required with unbounded authority', async subject => {
+    const state = (await unboundedActive()).next;
+    for (const value of ['missing', null, undefined, 'not-an-instant', 0]) {
+      const context = withoutDurableEnds(state, 'buyer', 'operations');
+      const target: Record<string, unknown> = subject === 'observation' ? context : subject === 'session' ? context.session : context.participation;
+      if (value === 'missing') delete target.expiresAt; else target.expiresAt = value;
+      await expect(projectSupplierRelationship(state, context, now)).rejects.toMatchObject({ name: 'ZodError' });
+    }
+  });
+  it('still expires current observations, sessions, grants, approvals and proposals at their finite boundary', async () => {
+    const state = (await unboundedActive()).next;
+    const base = withoutDurableEnds(state, 'buyer', 'operations');
+    for (const changed of [
+      { ...base, expiresAt: now }, { ...base, session: { ...base.session, expiresAt: now } },
+      { ...base, participation: { ...base.participation, expiresAt: now } }, { ...base, participation: null },
+    ]) await expect(projectSupplierRelationship(state, changed, now)).rejects.toMatchObject({ code: 'SUPPLIER_RELATIONSHIP_ACCESS_DENIED' });
+    const approvalBoundary = { ...withoutDurableEnds(state, 'supplier'), observedAt: approvalExpiry, expiresAt: '2026-11-15T11:00:30Z' };
+    expect((await projectSupplierRelationship(state, approvalBoundary, approvalExpiry)).gateReason).toBe('APPROVAL_NOT_CURRENT');
+    const supplier = withoutDurableEnds(state, 'supplier');
+    const proposalBoundary = { ...supplier, observedAt: expiry, expiresAt: '2026-11-15T12:00:30Z',
+      session: { ...supplier.session, expiresAt: '2026-11-15T13:00:00Z' } };
+    expect((await projectSupplierRelationship(state, proposalBoundary, expiry)).gateReason).toBe('PROPOSAL_EXPIRED');
+  });
+});

@@ -5,6 +5,7 @@ const config: NextConfig = {
   // Clerk's same-origin rewrite must retain the explicit loopback development host.
   skipProxyUrlNormalize: true,
   transpilePackages: ['@pactwoven/contracts'],
+  experimental: { cpus: 2 },
   async headers() {
     return [{ source: '/:path*', headers: [
       { key: 'X-Content-Type-Options', value: 'nosniff' },

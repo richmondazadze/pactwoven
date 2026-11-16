@@ -23,11 +23,6 @@ describe.skipIf(!custodyFixtureEnabled)('custody actual-PG isolation and races',
    const pending=w.query('SELECT pactwoven.custody_setup_command($1,$2::jsonb)',[i.id,JSON.stringify(v)]).then(()=>null,e=>e);await custodyWaitForBlock(f.admin,wp,hp);await h.query("UPDATE pactwoven.organizations SET authority_epoch=authority_epoch+1 WHERE id='org_a'");await h.query('COMMIT');expect(await pending).toMatchObject({code:'CS002'});
   }finally{await h.query('ROLLBACK');h.release();w.release();}
  });
- it('rechecks membership expiry after waiting on a global asset control',async()=>{const p=await f.prepare(),i=await f.identity(),h=await f.admin.connect(),w=await f.writer.pool.connect();await f.admin.query("UPDATE pactwoven.memberships SET expires_at=clock_timestamp()+interval '250 milliseconds' WHERE actor_id='owner_a'");
-  try{await h.query('BEGIN');await h.query('SELECT * FROM pactwoven.finance_asset_controls FOR UPDATE');const hp=(await h.query('SELECT pg_backend_pid() pid')).rows[0].pid,wp=(await w.query('SELECT pg_backend_pid() pid')).rows[0].pid;
-   const v={schemaVersion:1,kind:'challenge',key:'expiry_wait_challenge_001',responsibilityId:'responsibility_a',setupId:p.result.setupId,expectedSetupVersion:1,expectedSetupHash:p.result.target.recordHash};const pending=w.query('SELECT pactwoven.custody_setup_command($1,$2::jsonb)',[i.id,JSON.stringify(v)]).then(()=>null,e=>e);await custodyWaitForBlock(f.admin,wp,hp);await new Promise(r=>setTimeout(r,300));await h.query('COMMIT');expect(await pending).toMatchObject({code:'CS001'});
-  }finally{await h.query('ROLLBACK');h.release();w.release();}
- });
  it('invalidates observations when their exact verifier binding is revoked',async()=>{const p=await f.prepare();await f.admin.query("INSERT INTO pactwoven.custody_setup_principals SELECT principal_oid,principal_name,organization_id,environment,capability,version+1,false,expires_at FROM pactwoven.custody_setup_principals WHERE capability='verifier'");await expect(f.repository.get(p.identity.id,'responsibility_a',p.result.setupId)).rejects.toMatchObject({code:'CUSTODY_ACCESS_DENIED'});});
  it.each(['custody_setup_audit','custody_setup_outbox'])('rejects missing intermediate %s even when a later cancellation is complete',async table=>{const p=await f.prepare(),i=await f.identity(),c=await f.admin.connect();
   try{await c.query('BEGIN');await c.query(`ALTER TABLE pactwoven.${table} DISABLE TRIGGER custody_no_mutation`);await c.query(`SET SESSION AUTHORIZATION "${f.writer.role}"`);const base={schemaVersion:1,responsibilityId:'responsibility_a',setupId:p.result.setupId,expectedSetupVersion:1,expectedSetupHash:p.result.target.recordHash};const first=(await c.query('SELECT pactwoven.custody_setup_command($1,$2::jsonb) response',[i.id,JSON.stringify({...base,kind:'challenge',key:'complete_challenge_key_001'})])).rows[0].response;
@@ -84,4 +79,42 @@ describe.skipIf(!custodyFixtureEnabled)('custody actual-PG isolation and races',
   }finally{await holder.query('ROLLBACK');holder.release();}
  });
 
+});
+
+describe.skipIf(!custodyFixtureEnabled)('custody preseeded membership-expiry asset-lock race',()=>{
+ let f:CustodyFixture;
+ beforeEach(async()=>{f=await custodyFixture({ownerExpiresAfterMs:2000});},60000);
+ afterEach(async()=>{await f?.close();});
+ it('rechecks membership expiry after waiting on a global asset control',async()=>{
+  const p=await f.prepare(),i=await f.identity(),h=await f.admin.connect(),w=await f.writer.pool.connect();
+  let pending:Promise<unknown>|undefined;
+  try{
+   expect(f.owner.membershipVersion).toBe(2);
+   expect(f.specification.owner.membershipVersion).toBe(f.owner.membershipVersion);
+   expect(p.identity.owner.membershipVersion).toBe(f.owner.membershipVersion);
+   expect(i.owner.membershipVersion).toBe(f.owner.membershipVersion);
+   await h.query('BEGIN');
+   await h.query('SELECT * FROM pactwoven.finance_asset_controls WHERE asset_key=$1 FOR UPDATE',[f.specification.asset.key]);
+   const hp=(await h.query('SELECT pg_backend_pid() pid')).rows[0].pid,wp=(await w.query('SELECT pg_backend_pid() pid')).rows[0].pid;
+   const v:CustodyCommand={schemaVersion:1,kind:'challenge',key:'expiry_wait_challenge_001',responsibilityId:'responsibility_a',setupId:p.result.setupId,
+    expectedSetupVersion:p.result.target.version,expectedSetupHash:p.result.target.recordHash};
+   pending=w.query('SELECT pactwoven.custody_setup_command($1,$2::jsonb)',[i.id,JSON.stringify(v)]).then(()=>null,e=>e);
+   await custodyWaitForBlock(f.admin,wp,hp);
+   const waiting=(await f.admin.query<{row_version:number;active:boolean;remaining_ms:number}>(`SELECT row_version,
+    status='active' AND 'owner'=ANY(roles) AND expires_at>clock_timestamp() AS active,
+    ceil(extract(epoch FROM(expires_at-clock_timestamp()))*1000)::int AS remaining_ms
+    FROM pactwoven.memberships WHERE environment='development' AND organization_id='org_a' AND actor_id='owner_a'`)).rows[0]!;
+   expect(waiting.row_version).toBe(f.owner.membershipVersion);
+   expect(waiting.active).toBe(true);
+   expect(waiting.remaining_ms).toBeGreaterThan(0);
+   expect(waiting.remaining_ms).toBeLessThanOrEqual(2000);
+   await new Promise(resolve=>setTimeout(resolve,waiting.remaining_ms+50));
+   const expired=(await f.admin.query<{row_version:number;expired:boolean}>(`SELECT row_version,expires_at<=clock_timestamp() AS expired
+    FROM pactwoven.memberships WHERE environment='development' AND organization_id='org_a' AND actor_id='owner_a'`)).rows[0]!;
+   expect(expired).toEqual({row_version:f.owner.membershipVersion,expired:true});
+   await custodyWaitForBlock(f.admin,wp,hp);
+   await h.query('COMMIT');
+   expect(await pending).toMatchObject({code:'CS001'});
+  }finally{await h.query('ROLLBACK');if(pending)await pending;h.release();w.release();}
+ });
 });

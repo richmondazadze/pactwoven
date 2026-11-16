@@ -22,3 +22,5 @@ export { supplierMessageDigest, prepareUntrustedSupplierMessage,
   planSupplierEffectRecovery } from './supplier-protocol.js';
 export { projectFinancialPolicyHttpRecord, projectFinancialPolicyHttpView,
   projectFinancialPolicyHttpReceipt } from './financial-policy-responses.js';
+export { supplierRelationshipProposalDigest, planSupplierRelationshipMutation,
+  projectSupplierRelationship } from './supplier-relationships.js';

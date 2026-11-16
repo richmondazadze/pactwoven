@@ -59,3 +59,12 @@ export { FINANCIAL_POLICY_PREPARATION_REQUEST_MAX_BYTES, FINANCIAL_POLICY_PREPAR
 export type { FinancialPolicyPreparationRequest, FinancialPolicyPreparationAction, FinancialPolicyPreparationReason,
   FinancialPolicyPreparationDecision, FinancialPolicyPreparationTarget, FinancialPolicyPreparationMaterial,
   FinancialPolicyPreparationResponse } from './financial-policy-preparation';
+export { SupplierRelationshipPartySchema, SupplierRelationshipStatusSchema,
+  SupplierRelationshipTermsSchema, SupplierRelationshipAdministratorSchema,
+  SupplierRelationshipProposalSchema, SupplierRelationshipApprovalSchema,
+  SupplierRelationshipSnapshotSchema, SupplierRelationshipCommandSchema,
+  SupplierRelationshipMutationSchema, SupplierRelationshipHeadSchema,
+  SupplierRelationshipReceiptSchema, SupplierRelationshipProjectionSchema } from './supplier-relationships';
+export type { SupplierRelationshipProposal, SupplierRelationshipApproval, SupplierRelationshipSnapshot,
+  SupplierRelationshipCommand, SupplierRelationshipHead, SupplierRelationshipReceipt,
+  SupplierRelationshipProjection } from './supplier-relationships';

@@ -5,6 +5,7 @@ export const pactwoven = pgSchema('pactwoven');
 export const organizations = pactwoven.table('organizations', {
   environment: text('environment').notNull(), id: text('id').notNull(), externalOrganizationId: text('external_organization_id').notNull(),
   name: text('name').notNull(), status: text('status').notNull(), authorityEpoch: integer('authority_epoch').notNull(),
+  version: integer('row_version').notNull(),
 }, table => [primaryKey({ columns: [table.environment, table.id] })]);
 export const memberships = pactwoven.table('memberships', {
   environment: text('environment').notNull(), organizationId: text('organization_id').notNull(), actorId: text('actor_id').notNull(),

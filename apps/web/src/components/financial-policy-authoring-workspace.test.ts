@@ -169,6 +169,44 @@ describe('native authoring controller with injected offline transport', () => {
     f.time.wall += 19000; f.time.mono += 19000; await vi.advanceTimersByTimeAsync(19000);
     expect(f.controller.getSnapshot()).toMatchObject({ context: null, review: null, buffer: { text } }); await f.controller.save(); expect(f.createKey).not.toHaveBeenCalled();
   });
+  it.each(['hash', 'token'] as const)('preserves the same-scope draft when context expires during predispatch %s before timers run', async gap => {
+    const f = await fixture(); await f.prepareDocument(); await f.controller.save();
+    const receipt = f.controller.getSnapshot().receipt!;
+    f.controller.startNew('draft'); f.controller.useDocumentReceipt(receipt);
+    f.controller.edit({ dates: { startsLocal: '2026-11-15T12:00', expiresLocal: '2026-11-16T12:00', timeZone: 'UTC' } });
+    f.controller.reviewDraft(); await f.controller.prepare();
+    const buffer = f.controller.getSnapshot().buffer, writes = f.writeInputs.length, calls = f.fetcher.mock.calls.length;
+    const reminders = [...f.values.entries()], entered = deferred<void>(), release = deferred<void>();
+    if (gap === 'hash') {
+      const digest = crypto.subtle.digest.bind(crypto.subtle);
+      vi.spyOn(crypto.subtle, 'digest').mockImplementationOnce(async (algorithm, bytes) => { entered.resolve(); await release.promise; return digest(algorithm, bytes); });
+    } else f.token.mockImplementationOnce(async () => { entered.resolve(); await release.promise; return 'fresh_token'; });
+    const pending = f.controller.save(); await entered.promise;
+    // Advance only the injected clocks: the display/preparation timers have not run.
+    f.time.wall += 19000; f.time.mono += 19000; release.resolve(); await pending;
+    expect(f.writeInputs).toHaveLength(writes); expect(f.fetcher).toHaveBeenCalledTimes(calls);
+    expect(f.controller.getSnapshot()).toMatchObject({ phase: 'expired', busy: false, context: null, exact: null,
+      documentRead: null, review: null, receipt: null, preparation: { preparation: null }, buffer });
+    expect(f.controller.getSnapshot().message).toContain('observation expired');
+    expect([...f.values.entries()].filter(([key]) => reminders.some(([original]) => key === original))).toEqual(reminders);
+    expect(f.values.size).toBe(gap === 'token' ? 2 : 1);
+    await f.controller.save(); expect(f.writeInputs).toHaveLength(writes); expect(f.fetcher).toHaveBeenCalledTimes(calls);
+  });
+  it.each(['hide', 'scope', 'adapter', 'close'] as const)('does not restore an expiring predispatch buffer after %s', async loss => {
+    const f = await fixture(); await f.prepareDocument();
+    const calls = f.fetcher.mock.calls.length, entered = deferred<void>(), release = deferred<void>();
+    const digest = crypto.subtle.digest.bind(crypto.subtle);
+    vi.spyOn(crypto.subtle, 'digest').mockImplementationOnce(async (algorithm, bytes) => { entered.resolve(); await release.promise; return digest(algorithm, bytes); });
+    const pending = f.controller.save(); await entered.promise;
+    if (loss === 'hide') f.controller.suspend();
+    if (loss === 'scope') f.current.value = null;
+    if (loss === 'adapter') { f.controller.configure({ ...f.adapters, getToken: vi.fn(async () => 'replacement') }); f.controller.activate(); }
+    if (loss === 'close') f.controller.close();
+    f.time.wall += 19000; f.time.mono += 19000; release.resolve(); await pending;
+    expect(f.controller.getSnapshot()).toMatchObject({ context: null, review: null, receipt: null,
+      buffer: { text: '', documentId: '', draftId: '' }, preparation: { preparation: null } });
+    expect(f.fetcher).toHaveBeenCalledTimes(calls); expect(f.writeInputs).toHaveLength(0); expect(f.values.size).toBe(0);
+  });
   it('rejects an expired preparation synchronously before its timer runs', async () => {
     const f = await fixture(); f.state.prepChange = response => ({ ...response, observation: { observedAt: iso(at - 1000), expiresAt: iso(at + 2000) } });
     await f.prepareDocument(); expect(f.controller.preparationFresh()).toBe(true); f.time.wall += 2000;
@@ -217,6 +255,28 @@ describe('native authoring controller with injected offline transport', () => {
     const reference = f.controller.getSnapshot().rows[0]!.reference; await f.controller.lookup(reference);
     expect(f.controller.getSnapshot().rows[0]?.state).toBe('recorded'); expect(f.values.size).toBe(1);
     await f.controller.clear(reference); expect(f.values.size).toBe(0); expect(f.writeInputs).toHaveLength(1);
+  });
+  it('reports the original save as unknown when a dispatched response crosses expiry without replay or rekeying', async () => {
+    const f = await fixture(); await f.prepareDocument();
+    const entered = deferred<void>(), release = deferred<void>(), implement = f.fetcher.getMockImplementation()!;
+    f.fetcher.mockImplementationOnce(async (url, init) => { const response = await implement(url, init); entered.resolve(); await release.promise; return response; });
+    const pending = f.controller.save(); await entered.promise;
+    const originals = [...f.values.entries()], reference = JSON.parse(originals[0]![1]) as FinancialPolicyReference;
+    expect(f.writeInputs).toHaveLength(1); expect(originals).toHaveLength(1);
+    expect(reference.locator).toMatchObject({ key: 'explicit_original_1', targetId: 'mandate_doc', kind: 'save_document' });
+    // The request has dispatched; expire only the injected clocks while its response is held.
+    f.time.wall += 19000; f.time.mono += 19000; release.resolve(); await pending;
+    expect(f.controller.getSnapshot()).toMatchObject({ phase: 'expired', busy: false, context: null, exact: null,
+      documentRead: null, review: null, receipt: null, preparation: { preparation: null } });
+    expect(f.controller.getSnapshot().message).toContain('original save result is unknown');
+    expect(f.controller.getSnapshot().message).toContain('exact original result');
+    expect(f.controller.getSnapshot().message).not.toMatch(/unsent|retry/i);
+    expect([...f.values.entries()]).toEqual(originals);
+    await f.controller.save();
+    expect(f.createKey).toHaveBeenCalledOnce(); expect(f.writeInputs).toHaveLength(1);
+    expect(f.fetcher.mock.calls.filter(([url, init]) => init.method === 'POST' && url.includes('/financial-policy-documents/'))).toHaveLength(1);
+    expect(f.fetcher.mock.calls.some(([url]) => url.includes('/financial-policy-operations/'))).toBe(false);
+    expect([...f.values.entries()]).toEqual(originals);
   });
   it('hides a dispatched save without deleting its stored original or publishing the late receipt', async () => {
     const f = await fixture(); await f.prepareDocument(); const entered = deferred<void>(), release = deferred<void>(), implement = f.fetcher.getMockImplementation()!;

@@ -125,7 +125,7 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
     publish({ ...view, rows: view.rows.map(row => financialSame(row.reference, reference) ? { ...row, ...update } : row) });
   }
   function suspend() { visible = false; active = null; preserveBuffer = false; lifetime.hide(); }
-  function report(error: unknown) {
+  function report(error: unknown, expiredBuffer?: Buffer) {
     if (!current()) { suspend(); return; }
     if (error instanceof FinancialPolicyAuthoringInputError) {
       publish({ ...view, error: { field: error.field, message: error.message }, message: error.message, focus: ++sequence }); return;
@@ -133,19 +133,24 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
     const code = error instanceof FinancialPolicyClientError ? error.code : 'unconfirmed';
     if (code === 'scope') { denied = true; preserveBuffer = false; lifetime.deny(); }
     else if (code === 'expired') preserving(() => lifetime.invalidate());
-    publish({ ...view, phase: code === 'scope' ? 'denied' : code === 'expired' ? 'expired' : view.context ? 'ready' : 'unavailable',
-      message: code === 'scope' ? deniedMessage : code === 'expired' ? expiredMessage : error instanceof FinancialPolicyWriteAttemptError
+    // A synchronous freshness failure inside an awaited transport may already have
+    // cleared the view. Restore only local edits for this still-current owner;
+    // denied, hidden and replaced owners never reach this expiry restoration.
+    publish({ ...view, ...(code === 'expired' && expiredBuffer && !denied && current() ? { buffer: expiredBuffer } : {}),
+      phase: code === 'scope' ? 'denied' : code === 'expired' ? 'expired' : view.context ? 'ready' : 'unavailable',
+      message: code === 'scope' ? deniedMessage : code === 'expired' ? error instanceof FinancialPolicyWriteAttemptError && error.outcome === 'unknown'
+        ? 'The observation expired. The original save result is unknown. Check that exact original result explicitly. Do not create a replacement request.' : expiredMessage : error instanceof FinancialPolicyWriteAttemptError
         ? error.outcome === 'unknown' ? 'The save result is unknown. Check the original result explicitly. Do not create a replacement request.'
           : 'No save was confirmed. Any stored original reminder is preserved and remains lookup-only after its input is lost.'
         : error instanceof FinancialPolicyClientError ? error.message : 'This action could not be confirmed. Original reminders are preserved.', focus: ++sequence });
   }
   async function run(message: string, work: (check: () => void) => Promise<void>) {
     if (active || !current() || denied) return;
-    const operation = {}, owner = transport; active = operation;
+    const operation = {}, owner = transport, buffer = view.buffer; active = operation;
     publish({ ...view, busy: true, error: null, message });
     const check = () => { if (active !== operation || transport !== owner || !current()) throw new FinancialPolicyClientError('scope'); };
     try { await work(check); check(); publish({ ...view, focus: ++sequence }); }
-    catch (error) { if (active === operation && transport === owner) report(error); }
+    catch (error) { if (active === operation && transport === owner) report(error, buffer); }
     finally { if (active === operation) { active = null; publish({ ...view, busy: false }); } }
   }
   function previous(kind: Kind): FinancialPolicyRef | null {

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { TLSSocket } from 'node:tls';
 import { Socket, createServer } from 'node:net';
 import { once } from 'node:events';
-import { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { hasLoopbackMigrationTransport, hasVerifiedMigrationTls, loadMigrations, migrateDatabase, migrationPoolConfig, migrationStatements, runMigrationsFromEnvironment } from './migrate.js';
 const authoredMigrationFiles = ['0001_foundation.sql', '0002_organization_bootstrap.sql', '0003_identity_access.sql',
@@ -159,7 +159,8 @@ dbSuite('development migrations — dedicated real PostgreSQL database', () => {
     connectionString = (await readFile(file, 'utf8')).trim();
     const config = migrationPoolConfig(connectionString, 'pactwoven_migration_test');
     if (!['127.0.0.1', 'localhost', '::1'].includes(String(config.host))) throw new Error('Tests require the dedicated loopback database.');
-    admin = new Pool(config);
+    // Two competing writers plus an independent lock observer are required.
+    admin = new Pool({ ...config, max: 3 });
     expect((await admin.query('SELECT current_database()')).rows[0].current_database).toBe('pactwoven_migration_test');
   });
   beforeEach(async () => {
@@ -358,9 +359,11 @@ dbSuite('development migrations — dedicated real PostgreSQL database', () => {
   it('serializes existing organization-first writers and rejects stale organization/member compare-and-swap after waiting', async () => {
     await migrateDatabase(connectionString, 'pactwoven_migration_test');
     await seedVersionRows();
-    const first = await admin.connect(), second = await admin.connect();
+    let first: PoolClient | undefined, second: PoolClient | undefined;
     let secondSettled = Promise.resolve();
     try {
+      first = await admin.connect();
+      second = await admin.connect();
       await first.query('BEGIN');
       await first.query("SELECT 1 FROM pactwoven.organizations WHERE id='version_a' FOR UPDATE");
       await first.query("UPDATE pactwoven.memberships SET roles=ARRAY['owner','finance'],row_version=row_version+1 WHERE organization_id='version_a' AND actor_id='shared_actor'");
@@ -388,10 +391,10 @@ dbSuite('development migrations — dedicated real PostgreSQL database', () => {
         .toEqual([{ row_version: 3 }]);
       await second.query('COMMIT');
     } finally {
-      await first.query('ROLLBACK').catch(() => undefined);
+      await first?.query('ROLLBACK').catch(() => undefined);
       await secondSettled;
-      await second.query('ROLLBACK').catch(() => undefined);
-      first.release(); second.release();
+      await second?.query('ROLLBACK').catch(() => undefined);
+      first?.release(); second?.release();
     }
   });
 });

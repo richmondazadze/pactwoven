@@ -11,10 +11,15 @@ export const financialPolicyLabel = (value: string) => value.toLowerCase().repla
 function Reference({ value }: { value: FinancialPolicyRef }) {
   return <span>{value.id} · version {value.version}<code>{value.recordHash}</code></span>;
 }
+function DocumentRevisionLink({ record, reference }: { record: Extract<FinancialPolicyHttpRecord, { kind: 'document' }>; reference: FinancialPolicyRef }) {
+  if (record.responsibilityId === null || record.purpose !== 'financial_mandate') return null;
+  return <ButtonLink href={`${financialPolicyVersionPath(record.responsibilityId, reference)}/revise?kind=document`} secondary>Check policy text revision</ButtonLink>;
+}
 export function FinancialPolicyDocumentText({ document }: { document: FinancialPolicyHttpDocumentView }) {
   return <section className="financial-policy-document" aria-label={`${financialPolicyLabel(document.record.purpose)} version ${document.reference.version}`}>
     <h3>{financialPolicyLabel(document.record.purpose)}</h3><p className="review-note">{document.reference.id} · version {document.reference.version}</p>
     <p className="financial-policy-text">{document.record.text}</p><code>{document.reference.recordHash}</code>
+    <DocumentRevisionLink record={document.record} reference={document.reference}/>
   </section>;
 }
 function RecordMaterial({ record }: { record: FinancialPolicyHttpRecord }) {
@@ -76,6 +81,7 @@ export function FinancialPolicyReview({ response }: { response: FinancialPolicyH
     <p className="review-note">This saves configuration. It does not authorize spending or make funds available.</p>
     {policy.projection.blockers.length > 0 && <section aria-label="Configuration blockers"><h3>Configuration blockers</h3><ul>{policy.projection.blockers.map(b => <li key={b}>{financialPolicyLabel(b)}</li>)}</ul></section>}
     <RecordMaterial record={record}/>
+    {record.kind === 'document' && <DocumentRevisionLink record={record} reference={policy.reference}/>}
     {documents.length > 0 && <Panel title="Complete referenced policy texts">{documents.map(document => <FinancialPolicyDocumentText key={`${document.reference.id}:${document.reference.version}`} document={document}/>)}</Panel>}
     {record.predecessor && record.kind !== 'document' && <ButtonLink href={financialPolicyVersionPath(record.responsibilityId, record.predecessor)} secondary>Read previous version {record.predecessor.version}</ButtonLink>}
   </article>;
@@ -86,7 +92,8 @@ export function FinancialPolicyReceiptReview({ receipt }: { receipt: FinancialPo
     <p className="review-note">This immutable receipt does not describe today's current configuration. No spending authority or funds are created.</p>
     <dl className="financial-policy-facts"><div><dt>Original actor</dt><dd>{receipt.actor.actorId} · membership version {receipt.actor.membershipVersion}</dd></div>
       <div><dt>Operation</dt><dd>{receipt.operationId}</dd></div><div><dt>Record reference</dt><dd><Reference value={receipt.target}/></dd></div></dl>
-    {receipt.record.kind === 'document' ? <div className="financial-policy-document"><h4>{financialPolicyLabel(receipt.record.purpose)}</h4><p className="financial-policy-text">{receipt.record.text}</p></div>
+    {receipt.record.kind === 'document' ? <div className="financial-policy-document"><h4>{financialPolicyLabel(receipt.record.purpose)}</h4><p className="financial-policy-text">{receipt.record.text}</p>
+      <DocumentRevisionLink record={receipt.record} reference={receipt.target}/></div>
       : <ButtonLink href={financialPolicyVersionPath(receipt.responsibilityId, receipt.target)} secondary>Read exact recorded version</ButtonLink>}
   </section>;
 }

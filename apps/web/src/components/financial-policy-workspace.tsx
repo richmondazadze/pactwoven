@@ -211,6 +211,9 @@ export function FinancialPolicyWorkspaceView({ target = null, ...props }: Financ
     <PageHeading title={target ? `Financial policy · version ${target.version}` : 'Financial policies'}
       description={target ? 'Read the exact version, full policy texts and a separate current-state observation.' : 'Review configuration records and the results of original saved requests.'}
       action={<ButtonLink href={target ? back : props.bootstrap.responsibilityId ? `/app/responsibilities/${props.bootstrap.responsibilityId}` : '/app/organization'} secondary>{target ? 'Back to financial policies' : props.bootstrap.responsibilityId ? 'Back to responsibility' : 'Back to organization'}</ButtonLink>}/>
+    {props.bootstrap.responsibilityId !== null && (target
+      ? <ButtonLink href={`${financialPolicyVersionPath(props.bootstrap.responsibilityId, target)}/revise`} secondary>Check revision options</ButtonLink>
+      : <ButtonLink href={`${back}/prepare`} secondary>Prepare configuration</ButtonLink>)}
     <Panel title="Current access" action={!denied && <button type="button" className="button secondary" disabled={!safe || view.busy} onClick={() => void controller.refresh()}>
       <ActionLabel label={safe && view.busy && !context ? 'Checking context…' : 'Refresh current context'} reserve={['Checking context…', 'Refresh current context']}/></button>}>
       <div className="financial-policy-feedback" ref={feedback} tabIndex={-1}><span className="financial-policy-feedback-mark" aria-hidden="true">{safe && view.busy && showPending ? <BrandLoader/> : <span className="financial-policy-feedback-dot"/>}</span>

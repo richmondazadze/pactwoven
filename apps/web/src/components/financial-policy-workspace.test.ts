@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FinancialPolicyBootstrapSchema, type FinancialPolicyBootstrap } from '../lib/financial-policy-context';
 import { createFinancialPolicyAttempt } from '../lib/financial-policy-contract';
 import { storeFinancialPolicyReference, type FinancialPolicyStorage } from '../lib/financial-policy-recovery';
-import { createFinancialPolicyWorkspaceController, type FinancialPolicyWorkspaceController } from './financial-policy-workspace';
+import { createFinancialPolicyWorkspaceController, FinancialPolicyWorkspaceView, type FinancialPolicyWorkspaceController } from './financial-policy-workspace';
+import { MotionProvider } from './motion';
 
 vi.mock('@clerk/nextjs', () => ({ useAuth: () => { throw Error('Native auth wrapper is not mounted in controller tests'); } }));
 vi.mock('@tanstack/react-query', () => ({ useQuery: () => { throw Error('Native queries are not mounted in controller tests'); } }));
@@ -47,6 +50,18 @@ const globalFetch = vi.fn(() => { throw Error('Unexpected real fetch'); });
 beforeEach(() => { vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', base); vi.stubGlobal('fetch', globalFetch); globalFetch.mockClear(); });
 afterEach(() => { for (const controller of controllers.splice(0)) controller.close(); expect(globalFetch).not.toHaveBeenCalled(); vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 describe('financial policy route controller (no DOM mount)', () => {
+  it('offers responsibility preparation and exact revision navigation without initiating a request', () => {
+    const f = fixture();
+    const bootstrap = FinancialPolicyBootstrapSchema.parse({ ...f.adapters.bootstrap, responsibilityId: 'responsibility_a', responsibility: { id: 'responsibility_a', version: 1, siteId: 'site_a' } });
+    const render = (target: { kind: 'draft'; responsibilityId: string; id: string; version: number; recordHash: null } | null) =>
+      renderToStaticMarkup(createElement(MotionProvider, null, createElement(FinancialPolicyWorkspaceView, { ...f.adapters, bootstrap, target })));
+    const collection = render(null); expect(collection).toContain('Prepare configuration'); expect(collection).toContain('/app/responsibilities/responsibility_a/financial-policies/prepare');
+    const exact = render({ kind: 'draft', responsibilityId: 'responsibility_a', id: 'draft_a', version: 3, recordHash: null });
+    expect(exact).toContain('Check revision options'); expect(exact).toContain('/app/responsibilities/responsibility_a/financial-policies/draft_a/versions/3/revise');
+    const organization = renderToStaticMarkup(createElement(MotionProvider, null, createElement(FinancialPolicyWorkspaceView, f.adapters)));
+    expect(organization).not.toContain('Prepare configuration'); expect(organization).not.toContain('Check revision options');
+    expect(f.fetcher).not.toHaveBeenCalled(); expect(f.token).not.toHaveBeenCalled();
+  });
   it('requires separate context, page and per-original checks; activation sends nothing', async () => {
     const f = fixture(), first = await f.original(), second = await f.original('original_policy_002');
     expect(f.fetcher).not.toHaveBeenCalled(); expect(f.controller.getSnapshot().context).toBeNull();

@@ -76,3 +76,24 @@ html .financial-policy[data-financial-motion=normal] .button::after,html .financ
 html .financial-policy[data-financial-motion=off] .button,html .financial-policy[data-financial-motion=off] .button::after,html .financial-policy[data-financial-motion=off] .financial-policy-feedback-dot{transition:none!important;animation:none!important}
 @media(max-width:640px){.financial-policy .financial-policy-facts{grid-template-columns:minmax(0,1fr);gap:18px}.financial-policy-record-row,.financial-policy-row-heading{align-items:stretch;flex-direction:column;gap:16px}.financial-policy .panel-heading{align-items:flex-start;flex-direction:column;gap:16px}.financial-policy-receipt{padding:16px}.financial-policy .actions{flex-wrap:wrap}.financial-policy>.panel{margin-bottom:20px}}
 .financial-policy .button:not(:disabled):active::after{opacity:.12}.financial-policy-feedback-mark{display:flex;align-items:center;justify-content:center;flex:0 0 20px;width:20px;height:20px;margin-top:2px}.financial-policy-feedback-mark .financial-policy-feedback-dot{margin:0}.financial-policy-feedback-mark .brand-loader{width:20px;height:20px}html .financial-policy[data-financial-motion=reduced] .brand-loader .face,html .financial-policy[data-financial-motion=off] .brand-loader .face{animation:none!important;opacity:1;transform:none}
+
+.financial-authoring{padding-bottom:max(24px,env(safe-area-inset-bottom));overflow-wrap:anywhere}
+.financial-authoring label{display:grid;gap:8px;font-size:13px;line-height:1.6;margin:16px 0;min-width:0}
+.financial-authoring input,.financial-authoring select,.financial-authoring textarea{box-sizing:border-box;width:100%;min-width:0;min-height:44px;background:var(--surface,#fff);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:12px;font:inherit;font-size:16px;line-height:1.7;transition:border-color var(--feedback) var(--ease),background-color var(--feedback) var(--ease)}
+.financial-authoring textarea{resize:vertical;white-space:pre-wrap;overflow-wrap:anywhere;max-height:none}
+.financial-authoring input:focus-visible,.financial-authoring select:focus-visible,.financial-authoring textarea:focus-visible{outline:2px solid var(--blue);outline-offset:3px}
+.financial-authoring [aria-invalid=true]{border-color:var(--red,#c43224)}
+.financial-authoring input:disabled,.financial-authoring textarea:disabled,.financial-authoring select:disabled{background:var(--canvas)}
+.financial-authoring-editor,.financial-authoring-preparation,.financial-authoring-local-review{min-width:0}
+.financial-authoring-editor>.button{margin:20px 0}
+.financial-authoring-local-review{padding:24px 0;border-top:1px solid var(--line);margin-top:12px}
+.financial-authoring-error{color:var(--red,#b42318);font-size:13px;line-height:1.8;margin:12px 0}
+.financial-authoring-date-grid,.financial-authoring-reference-inputs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.financial-authoring-document-options{display:grid;gap:20px;margin:20px 0}.financial-authoring-document-options article{border-top:1px solid var(--line);padding-top:16px;min-width:0}.financial-authoring-document-options article>p{margin-bottom:12px}.financial-authoring #draft-document-id>.button{margin:12px 12px 12px 0}
+.financial-authoring-preparation-shell{margin:28px 0 16px}
+.financial-authoring-preparation{margin-top:24px;padding:24px;background:var(--surface,#fff);border:1px solid var(--line);border-radius:16px}
+.financial-authoring-save-slot{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:24px;min-height:80px}
+.financial-authoring-save-slot>.button{min-width:210px;align-self:start}
+html .financial-authoring[data-financial-motion=off] input,html .financial-authoring[data-financial-motion=off] select,html .financial-authoring[data-financial-motion=off] textarea{transition:none}
+@media(prefers-reduced-motion:reduce){.financial-authoring input,.financial-authoring select,.financial-authoring textarea{transition-duration:120ms}}
+@media(max-width:760px){.financial-authoring-date-grid,.financial-authoring-reference-inputs,.financial-authoring-save-slot{grid-template-columns:minmax(0,1fr)}.financial-authoring-save-slot>.button{width:100%;min-width:0}.financial-authoring-preparation{padding:16px}.financial-authoring .panel{min-width:0}}

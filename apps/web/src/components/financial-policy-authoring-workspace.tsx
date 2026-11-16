@@ -88,8 +88,13 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
   function observePreparation() {
     return preparation.subscribe(() => {
       if (replacing || closed) return;
-      const snapshot = preparation.getSnapshot(); writer.invalidateReview();
-      publish({ ...view, preparation: snapshot });
+      // This freshness getter can synchronously expire the lifetime before the
+      // display timer runs. Preserve only this current owner's local edits.
+      const snapshot = denied ? preparation.getSnapshot() : preserving(() => preparation.getSnapshot()); writer.invalidateReview();
+      const expired = snapshot.state === 'expired' && !denied && current();
+      publish({ ...view, preparation: snapshot, ...(expired ? { review: null, phase: view.context ? view.phase : 'expired',
+        message: view.context ? 'The preparation expired. Your local edits remain here; review and check preparation again.'
+          : 'The observation expired. Your local edits remain here; check current context, review and prepare again.' } : {}) });
     });
   }
   let unlistenPreparation = observePreparation();

@@ -17,6 +17,20 @@ const at = Date.parse('2026-11-15T00:00:00.000Z'), iso = (n: number) => new Date
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'private, no-store' } });
 const controllers: FinancialPolicyAuthoringController[] = [];
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
+function preparationExpiryBeforeDisplay() {
+  vi.useFakeTimers();
+  const scheduled = vi.spyOn(globalThis, 'setTimeout'), cancelled = vi.spyOn(globalThis, 'clearTimeout');
+  return () => {
+    const live = scheduled.mock.calls.flatMap(([callback, delay], index) => {
+      const result = scheduled.mock.results[index];
+      return result?.type === 'return' && typeof callback === 'function' &&
+        !cancelled.mock.calls.some(([id]) => id === result.value) ? [{ callback: callback as () => void, delay }] : [];
+    });
+    // After successful preparation, only the display and preparation expiry timers remain.
+    expect(live).toHaveLength(2);
+    return live[1]!.callback;
+  };
+}
 async function fixture(revision: { id: string; version: number; kind?: 'document' | 'draft' } | null = null) {
   const bootstrap = FinancialPolicyBootstrapSchema.parse({ environment: 'development', organizationId: 'org_a', actorId: 'actor_a', apiBase: base,
     responsibilityId: 'responsibility_a', userId: 'user_a', externalOrganizationId: 'provider_org', sessionId: 'session_a', organizationEpoch: 2,
@@ -206,6 +220,52 @@ describe('native authoring controller with injected offline transport', () => {
     expect(f.controller.getSnapshot()).toMatchObject({ context: null, review: null, receipt: null,
       buffer: { text: '', documentId: '', draftId: '' }, preparation: { preparation: null } });
     expect(f.fetcher).toHaveBeenCalledTimes(calls); expect(f.writeInputs).toHaveLength(0); expect(f.values.size).toBe(0);
+  });
+  it('retains the exact draft when the preparation subscription encounters GET expiry before the display timer', async () => {
+    const f = await fixture(), expiry = preparationExpiryBeforeDisplay();
+    await f.prepareDocument(); await f.controller.save(); const receipt = f.controller.getSnapshot().receipt!;
+    f.controller.startNew('draft'); f.controller.useDocumentReceipt(receipt);
+    f.controller.edit({ dates: { startsLocal: '2026-11-18T15:00', expiresLocal: '2026-11-19T15:00', timeZone: 'UTC' } });
+    f.controller.reviewDraft(); await f.controller.prepare();
+    const buffer = f.controller.getSnapshot().buffer, reminders = [...f.values.entries()], calls = f.fetcher.mock.calls.length;
+    const expirePreparation = expiry();
+    f.time.wall += 19000; f.time.mono += 19000;
+    // Service preparation expiry first, without running the display timer or dispatching Save.
+    expirePreparation();
+    expect(f.controller.getSnapshot()).toMatchObject({ phase: 'expired', context: null, exact: null, index: null,
+      documentRead: null, review: null, receipt: null, rows: [], preparation: { state: 'expired', preparation: null }, buffer });
+    expect(f.controller.getSnapshot().message).toContain('observation expired');
+    expect(f.controller.getSnapshot().message).toContain('local edits');
+    expect(f.controller.getSnapshot().message).not.toContain('unsent');
+    expect(f.controller.preparationFresh()).toBe(false);
+    await f.controller.save(); expect(f.fetcher).toHaveBeenCalledTimes(calls); expect(f.writeInputs).toHaveLength(1);
+    expect(f.createKey).toHaveBeenCalledOnce(); expect([...f.values.entries()]).toEqual(reminders);
+  });
+  it('clears preparation and local review while retaining valid GET context and edits on earlier preparation-only expiry', async () => {
+    const f = await fixture(), expiry = preparationExpiryBeforeDisplay();
+    f.state.prepChange = response => ({ ...response, observation: { observedAt: iso(at - 1000), expiresAt: iso(at + 2000) } });
+    await f.prepareDocument(); const buffer = f.controller.getSnapshot().buffer, context = f.controller.getSnapshot().context;
+    const expirePreparation = expiry(); f.time.wall += 2000; f.time.mono += 2000; expirePreparation();
+    expect(f.controller.getSnapshot()).toMatchObject({ phase: 'ready', context, buffer, review: null,
+      preparation: { state: 'expired', preparation: null } });
+    expect(f.controller.getSnapshot().message).toContain('preparation expired');
+    expect(f.controller.getSnapshot().message).toContain('local edits');
+    expect(f.controller.fresh()).toBe(true); expect(f.controller.preparationFresh()).toBe(false);
+    await f.controller.save(); expect(f.createKey).not.toHaveBeenCalled(); expect(f.writeInputs).toHaveLength(0);
+  });
+  it.each(['hide', 'scope', 'adapter', 'denial'] as const)('does not preserve or restore buffers after %s when a preparation-expiry callback runs', async loss => {
+    const f = await fixture(), expiry = preparationExpiryBeforeDisplay(); await f.prepareDocument();
+    const expirePreparation = expiry();
+    if (loss === 'hide') f.controller.suspend();
+    if (loss === 'scope') f.current.value = null;
+    if (loss === 'adapter') { f.controller.configure({ ...f.adapters, getToken: vi.fn(async () => 'replacement') }); f.controller.activate(); }
+    if (loss === 'denial') { f.fetcher.mockResolvedValueOnce(json({ error: { code: 'FORBIDDEN' } }, 403)); await f.controller.prepare(); }
+    const calls = f.fetcher.mock.calls.length;
+    f.time.wall += 19000; f.time.mono += 19000; expirePreparation();
+    expect(f.controller.getSnapshot()).toMatchObject({ context: null, review: null, receipt: null,
+      buffer: { text: '', documentId: '', draftId: '' }, preparation: { preparation: null } });
+    expect(f.fetcher).toHaveBeenCalledTimes(calls); expect(f.writeInputs).toHaveLength(0); expect(f.values.size).toBe(0);
+    if (loss === 'denial') expect(f.controller.getSnapshot().phase).toBe('denied');
   });
   it('rejects an expired preparation synchronously before its timer runs', async () => {
     const f = await fixture(); f.state.prepChange = response => ({ ...response, observation: { observedAt: iso(at - 1000), expiresAt: iso(at + 2000) } });

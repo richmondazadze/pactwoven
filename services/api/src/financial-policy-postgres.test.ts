@@ -1,16 +1,19 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { FinancialPolicyHttpContextSchema, FinancialPolicyHttpRecordResponseSchema, FinancialPolicyHttpRecoveryResponseSchema,
+import { FinancialPolicyHttpContextSchema, FinancialPolicyHttpRecordResponseSchema, FinancialPolicyOriginalStatusResponseSchema,
   type FinancialPolicyCommand, type FinancialPolicyResult } from '@pactwoven/contracts';
+import { PostgresFinancialPolicyClosureRepository } from '@pactwoven/db';
 import { financialPolicyHttpRequestFromStoredCommand, financialPolicyHttpRequestHash } from '@pactwoven/domain';
 import { financialPolicyReadFixture, financialPolicyReadFixtureEnabled, type FinancialPolicyReadFixture }
   from '../../../packages/db/src/financial-policy-read.test-support.js';
 import { createFinancialPolicyApiVerifier } from './financial-policy-verifier.js';
 import { createFinancialPolicyGateway } from './financial-policy-service.js';
+import { createFinancialPolicyClosureGateway } from './financial-policy-closure-service.js';
 import { createApp } from './app.js';
 
 // Actual disposable PostgreSQL capabilities with an explicitly synthetic private
 // identity adapter. These tests do not qualify Clerk or a live user session.
+// Targeted compatibility: historical migrations 0001–0014 plus exact 0019.
 const issuer = 'https://synthetic.invalid', origin = 'http://localhost:3001';
 const responsibility = '/v1/responsibilities/responsibility_a';
 const tokens = new Map(['owner_a', 'owner_b', 'finance_a', 'operations_a'].map(actor => [`financial-postgres-${actor}`, actor]));
@@ -19,12 +22,16 @@ const counts = async (f: FinancialPolicyReadFixture) => (await f.admin.query(`SE
   (SELECT count(*) FROM pactwoven.financial_policy_records) AS records,
   (SELECT count(*) FROM pactwoven.financial_policy_audit) AS audit,
   (SELECT count(*) FROM pactwoven.financial_policy_outbox) AS outbox,
+  (SELECT count(*) FROM pactwoven.financial_policy_request_fences) AS closures,
   (SELECT count(*) FROM pactwoven.financial_governance_controls) AS controls,
   (SELECT count(*) FROM pactwoven.financial_authority_fences WHERE family<>'none') AS heads`)).rows[0];
 
 describe.skipIf(!financialPolicyReadFixtureEnabled)('financial read API with actual private PostgreSQL capabilities', () => {
   let f: FinancialPolicyReadFixture;
-  beforeEach(async () => { f = await financialPolicyReadFixture(); }, 30_000);
+  beforeEach(async () => {
+    f = await financialPolicyReadFixture({ originalClosure: true });
+    expect(f.appliedMigrationNumbers).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 19]);
+  }, 30_000);
   afterEach(async () => { await f?.close(); });
   function app() {
     const verifier = createFinancialPolicyApiVerifier({ environment: 'development', issuer,
@@ -37,9 +44,11 @@ describe.skipIf(!financialPolicyReadFixtureEnabled)('financial read API with act
           observation: { issuer, tokenHash: createHash('sha256').update(token).digest('hex'), tokenIssuedAt, observedAt,
             expiresAt: new Date(now + 240_000).toISOString() } };
       } });
-    return createApp({ allowedOrigins: [origin], financialPolicyGateway: createFinancialPolicyGateway({
-      environment: 'development', issuer, verifier, readers: f.readers, repository: f.repository, authentication: f.authentication,
-    }) });
+    const dependencies = { environment: 'development' as const, issuer, verifier, readers: f.readers,
+      repository: f.repository, authentication: f.authentication };
+    return createApp({ allowedOrigins: [origin], financialPolicyGateway: createFinancialPolicyGateway(dependencies),
+      financialPolicyClosureGateway: createFinancialPolicyClosureGateway({ ...dependencies,
+        closures: new PostgresFinancialPolicyClosureRepository(f.authorizer.pool) }) });
   }
   async function request(path: string, actor = 'owner_a') {
     const response = await app().request(path, { headers: { Origin: origin, Authorization: `Bearer financial-postgres-${actor}` } });
@@ -98,15 +107,18 @@ describe.skipIf(!financialPolicyReadFixtureEnabled)('financial read API with act
     for (const original of [document, draft, proposal]) {
       const path = await originalPath(original.command, original.result), received = await request(path, original.result.actorId);
       expect(received.response.status).toBe(200);
-      const recovered = FinancialPolicyHttpRecoveryResponseSchema.parse(received.body);
-      expect(recovered.status).toBe('recorded');
+      const recovered = FinancialPolicyOriginalStatusResponseSchema.parse(received.body);
+      expect(recovered.status).toBe('recorded'); expect(recovered.closure).toBeNull();
       expect(recovered.receipt).toMatchObject({ operationId: original.result.id, target: original.result.target,
         actor: { actorId: original.result.actorId }, effectiveAuthority: false, financialState: null });
       const wrongDigest = await request(path.replace(/requestHash=[a-f0-9]+$/, 'requestHash=' + 'f'.repeat(64)), original.result.actorId);
-      expect(wrongDigest.response.status).toBe(503); expect(wrongDigest.body.error.code).toBe('FINANCIAL_POLICY_OUTCOME_UNKNOWN');
+      const supported = original.command.kind === 'save_document' || original.command.kind === 'save_draft';
+      expect(wrongDigest.response.status).toBe(supported ? 409 : 503);
+      expect(wrongDigest.body.error.code).toBe(supported ? 'FINANCIAL_POLICY_KEY_CONFLICT' : 'FINANCIAL_POLICY_OUTCOME_UNKNOWN');
     }
     const missing = await request('/v1/financial-governance/operations/missing_original_0001?kind=save_document&targetId=missing&requestHash=' + 'a'.repeat(64));
-    expect(missing.response.status).toBe(200); expect(missing.body).toMatchObject({ status: 'not_recorded', receipt: null });
+    expect(missing.response.status).toBe(200);
+    expect(FinancialPolicyOriginalStatusResponseSchema.parse(missing.body)).toMatchObject({ status: 'not_recorded', receipt: null, closure: null });
     expect(await counts(f)).toEqual(before);
   });
   it('blocks Operations organization disclosure and preserves read-only policy state', async () => {

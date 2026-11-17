@@ -17,16 +17,17 @@ export const financialPolicyReadFixtureEnabled=Boolean(process.env[financialPoli
 const database='pactwoven_financial_policy_reads_test';
 export const financialPolicyReadFixtureEnvironment=(env:NodeJS.ProcessEnv)=>Object.fromEntries(Object.entries(env).filter(([k])=>!k.startsWith('PG')&&!k.startsWith('PACTWOVEN_')));
 type FinancialPolicyReadFixtureEnvironment={CI?:string;GITHUB_ACTIONS?:string};
-const financialPolicyReadFixturePortAllowed=(port:number|undefined,environment:FinancialPolicyReadFixtureEnvironment)=>port===55439||
- (port===55440&&environment.CI==='true'&&environment.GITHUB_ACTIONS==='true');
-export function financialPolicyReadFixtureConfig(input:string,environment:FinancialPolicyReadFixtureEnvironment=process.env):PoolConfig {const u=new URL(input),user=decodeURIComponent(u.username),password=decodeURIComponent(u.password);
-  const port=u.port==='55439'?55439:u.port==='55440'?55440:undefined;
-  if(!['postgres:','postgresql:'].includes(u.protocol)||u.hostname!=='127.0.0.1'||!financialPolicyReadFixturePortAllowed(port,environment)||u.pathname!==`/${database}`||u.search||u.hash||!user||!password||user.includes('\0')||password.includes('\0'))throw new Error('Exclusive financial policy loopback fixture required.');
+type FinancialPolicyReadFixtureOptions={originalClosure?:boolean};
+const financialPolicyReadFixturePortAllowed=(port:number|undefined,environment:FinancialPolicyReadFixtureEnvironment,options:FinancialPolicyReadFixtureOptions)=>port===55439||
+ (port===55440&&environment.CI==='true'&&environment.GITHUB_ACTIONS==='true')||(port===55444&&options.originalClosure===true);
+export function financialPolicyReadFixtureConfig(input:string,environment:FinancialPolicyReadFixtureEnvironment=process.env,options:FinancialPolicyReadFixtureOptions={}):PoolConfig {const u=new URL(input),user=decodeURIComponent(u.username),password=decodeURIComponent(u.password);
+  const port=u.port==='55439'?55439:u.port==='55440'?55440:u.port==='55444'?55444:undefined;
+  if(!['postgres:','postgresql:'].includes(u.protocol)||u.hostname!=='127.0.0.1'||!financialPolicyReadFixturePortAllowed(port,environment,options)||u.pathname!==`/${database}`||u.search||u.hash||!user||!password||user.includes('\0')||password.includes('\0'))throw new Error('Exclusive financial policy loopback fixture required.');
   return {host:'127.0.0.1',port,database,user,password,ssl:false,max:8,connectionTimeoutMillis:3000,statement_timeout:10000};}
-export async function readFinancialPolicyReadFixtureConfig(path:string){const info=await lstat(path);if(!info.isFile()||info.isSymbolicLink()||(info.mode&0o777)!==0o600||info.size<1||info.size>8192)throw new Error('Protected regular fixture URL file required.');
-  const fd=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW);try{const actual=await fd.stat();if(actual.dev!==info.dev||actual.ino!==info.ino||!actual.isFile()||(actual.mode&0o777)!==0o600)throw new Error('Fixture credential changed.');return financialPolicyReadFixtureConfig((await fd.readFile('utf8')).trim());}finally{await fd.close();}}
-export async function assertFinancialPolicyReadFixture(c:PoolClient,config:PoolConfig){const stream=(c as PoolClient&{connection?:{stream?:unknown}}).connection?.stream;
- if(config.host!=='127.0.0.1'||!financialPolicyReadFixturePortAllowed(config.port,process.env)||config.database!==database||!(stream instanceof Socket)||stream instanceof TLSSocket||stream.destroyed||stream.readyState!=='open'||stream.remotePort!==config.port||!['127.0.0.1','::ffff:127.0.0.1'].includes(stream.remoteAddress??''))throw new Error('Exact financial policy socket required.');
+export async function readFinancialPolicyReadFixtureConfig(path:string,options:FinancialPolicyReadFixtureOptions={}){const info=await lstat(path);if(!info.isFile()||info.isSymbolicLink()||(info.mode&0o777)!==0o600||info.size<1||info.size>8192)throw new Error('Protected regular fixture URL file required.');
+  const fd=await open(path,constants.O_RDONLY|constants.O_NOFOLLOW);try{const actual=await fd.stat();if(actual.dev!==info.dev||actual.ino!==info.ino||!actual.isFile()||(actual.mode&0o777)!==0o600)throw new Error('Fixture credential changed.');return financialPolicyReadFixtureConfig((await fd.readFile('utf8')).trim(),process.env,options);}finally{await fd.close();}}
+export async function assertFinancialPolicyReadFixture(c:PoolClient,config:PoolConfig,options:FinancialPolicyReadFixtureOptions={}){const stream=(c as PoolClient&{connection?:{stream?:unknown}}).connection?.stream;
+ if(config.host!=='127.0.0.1'||!financialPolicyReadFixturePortAllowed(config.port,process.env,options)||config.database!==database||!(stream instanceof Socket)||stream instanceof TLSSocket||stream.destroyed||stream.readyState!=='open'||stream.remotePort!==config.port||!['127.0.0.1','::ffff:127.0.0.1'].includes(stream.remoteAddress??''))throw new Error('Exact financial policy socket required.');
  const r=(await c.query('SELECT current_database() AS database,current_user AS current,session_user AS session')).rows[0];if(r.database!==database||r.current!==config.user||r.session!==config.user)throw new Error('Exact financial policy database and authenticated principal required.');}
 const literal=(v:string)=>`'${v.replaceAll("'","''")}'`;
 const groups = ['pactwoven_runtime','pactwoven_provisioner','pactwoven_access_provisioner','pactwoven_mandate_writer','pactwoven_finance_observer',
@@ -37,10 +38,11 @@ async function roleSnapshot(admin: Pool, names = groups) {
      FROM pg_auth_members m JOIN pg_roles p ON p.oid=m.roleid JOIN pg_roles c ON c.oid=m.member WHERE(m.roleid=r.oid OR m.member=r.oid) AND c.rolname NOT LIKE 'pactwoven_policy_reads_test_%') AS grants
     FROM pg_roles r WHERE rolname=ANY($1) ORDER BY rolname`, [names])).rows;
 }
-export async function financialPolicyReadFixture() {
+export async function financialPolicyReadFixture(options: FinancialPolicyReadFixtureOptions = {}) {
+  const profile = { originalClosure: options.originalClosure === true };
   const path = process.env[financialPolicyReadFixtureVariable];
   if (!path || Object.keys(process.env).some(k => k.startsWith('PG') || k.startsWith('PACTWOVEN_') && k !== financialPolicyReadFixtureVariable)) throw new Error('Use only the explicit policy fixture variable in a scrubbed environment.');
-  const config = await readFinancialPolicyReadFixtureConfig(path), admin = new Pool(config), pools: Pool[] = [], roles: string[] = [];
+  const config = await readFinancialPolicyReadFixtureConfig(path, profile), admin = new Pool(config), pools: Pool[] = [], roles: string[] = [];
   let lock: PoolClient | undefined, locked = false, original: Awaited<ReturnType<typeof roleSnapshot>> | undefined, closed = false;
   const close = async () => {
     if (closed) return; closed = true;
@@ -51,12 +53,20 @@ export async function financialPolicyReadFixture() {
     lock?.release(); await admin.end(); if (!preserved) throw new Error('Shared role attributes or grants changed.');
   };
   try {
-    lock = await admin.connect(); await assertFinancialPolicyReadFixture(lock, config);
+    lock = await admin.connect(); await assertFinancialPolicyReadFixture(lock, config, profile);
     original = await roleSnapshot(admin); await lock.query('SET statement_timeout=0');
     await lock.query("SELECT pg_advisory_lock(hashtextextended('financial_policy_read_fixture',0))"); locked = true;
-    // This historical fixture qualifies migrations 0001–0014; supplier migrations use isolated clusters.
-    const migrations = (await loadMigrations()).slice(0, 14);
+    // Default: historical 0001–0014. The opt-in API recovery compatibility profile
+    // adds exact 0019 only; contiguous 0001–0019 qualification uses its own fixture.
+    // Supplier migrations must stay in isolated clusters because they add shared roles.
+    const available = await loadMigrations(), migrations = available.slice(0, 14);
     if (migrations.length !== 14 || migrations[10]?.filename !== '0011_financial_policy_authority.sql' || migrations[11]?.filename !== '0012_financial_policy_private_reads.sql' || migrations[12]?.filename !== '0013_financial_policy_preparation.sql' || migrations[13]?.filename !== '0014_supplier_identity_versions.sql') throw new Error('Exactly the assigned fourteen migrations required.');
+    if (profile.originalClosure) {
+      const closure = available[18];
+      if (closure?.number !== 19 || closure.filename !== '0019_financial_policy_request_fences.sql') throw new Error('Exact original closure migration 0019 required.');
+      migrations.push(closure);
+    }
+    const appliedMigrationNumbers = migrations.map(migration => migration.number);
     await admin.query('DROP SCHEMA IF EXISTS pactwoven CASCADE');
     for (const migration of migrations) {
       const c = await admin.connect();
@@ -70,7 +80,7 @@ export async function financialPolicyReadFixture() {
       await admin.query(`CREATE ROLE "${role}" LOGIN PASSWORD ${literal(password)} NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION`); roles.push(role);
       if (group) await admin.query(`GRANT "${group}" TO "${role}"`);
       const pool = new Pool({ ...config, user: role, password }); pools.push(pool);
-      const c = await pool.connect(); try { await assertFinancialPolicyReadFixture(c, { ...config, user: role }); } finally { c.release(); }
+      const c = await pool.connect(); try { await assertFinancialPolicyReadFixture(c, { ...config, user: role }, profile); } finally { c.release(); }
       return { role, pool };
     };
     const authorizer = await login('authorizer', 'pactwoven_financial_authorizer'), verifier = await login('verifier', 'pactwoven_financial_verifier'), stranger = await login('stranger', null);
@@ -143,7 +153,7 @@ export async function financialPolicyReadFixture() {
       externalOrganizationName:'Synthetic policy fixture',externalMembershipId:e.actor.externalMembershipId,externalRole:e.externalRole,sessionId:e.actor.sessionId,
       membershipObservedAt:e.observedAt,authenticatedAt:e.tokenIssuedAt},observation:{issuer:e.issuer,tokenHash:e.tokenHash,tokenIssuedAt:e.tokenIssuedAt,observedAt:e.observedAt,expiresAt:e.expiresAt}});
     const readerIdentity = async(actorId='owner_a') => {const evidence=await identity(actorId);return {evidence,scope:await readers.resolveObserver('development',observation(evidence))};};
-    return { admin, authorizer, verifier, stranger, login, config, identity, base, saveDocument, governance, prepareConsent, consent, draft, assetPin, repository, authentication, readers, observation, readerIdentity, close };
+    return { admin, authorizer, verifier, stranger, login, config, appliedMigrationNumbers, identity, base, saveDocument, governance, prepareConsent, consent, draft, assetPin, repository, authentication, readers, observation, readerIdentity, close };
   } catch (error) { await close(); throw error; }
 }
 export type FinancialPolicyReadFixture = Awaited<ReturnType<typeof financialPolicyReadFixture>>;

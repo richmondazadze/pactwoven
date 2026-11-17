@@ -62,6 +62,8 @@ async function boundedJson(response: Response, signal: AbortSignal, guard: () =>
   if (!/^application\/json(?:\s*;\s*charset=utf-8)?\s*$/i.test(response.headers.get('content-type') ?? '') ||
     !noStore(response.headers.get('cache-control'))) throw unknown();
   const length = response.headers.get('content-length');
+  // Fetch may decode compressed bodies without changing their wire length header.
+  // Bound the declared length and the decoded stream independently.
   if (length !== null && (!/^\d+$/.test(length) || Number(length) > FINANCIAL_POLICY_HTTP_RESPONSE_MAX_BYTES)) throw unknown();
   const reader = response.body?.getReader(); if (!reader) throw unknown();
   const decoder = new TextDecoder('utf-8', { fatal: true }); let size = 0, text = '';
@@ -71,7 +73,6 @@ async function boundedJson(response: Response, signal: AbortSignal, guard: () =>
       size += chunk.value.byteLength; if (size > FINANCIAL_POLICY_HTTP_RESPONSE_MAX_BYTES) throw unknown();
       text += decoder.decode(chunk.value, { stream: true });
     }
-    if (length !== null && Number(length) !== size) throw unknown();
     text += decoder.decode(); return parseFinancialPolicyJson(text);
   } catch (error) { void reader.cancel().catch(() => {}); throw error; }
   finally { reader.releaseLock(); }

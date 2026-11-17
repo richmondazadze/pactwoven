@@ -1,19 +1,22 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { FinancialPolicyHttpContextSchema, FinancialPolicyHttpDraftSchema, FinancialPolicyHttpMutationResponseSchema,
-  FinancialPolicyHttpRecordResponseSchema, FinancialPolicyHttpRecoveryResponseSchema, FinancialPolicyHttpRequestSchema,
+  FinancialPolicyHttpRecordResponseSchema, FinancialPolicyOriginalStatusResponseSchema, FinancialPolicyHttpRequestSchema,
   type FinancialPolicyRef } from '@pactwoven/contracts';
+import { PostgresFinancialPolicyClosureRepository } from '@pactwoven/db';
 import { financialBudgetAccountId, financialBudgetPeriodId, financialPolicyHttpRequestHash, commandDigest } from '@pactwoven/domain';
 import { financialPolicyReadFixture, financialPolicyReadFixtureEnabled, type FinancialPolicyReadFixture }
   from '../../../packages/db/src/financial-policy-read.test-support.js';
 import { createFinancialPolicyApiVerifier } from './financial-policy-verifier.js';
 import { createFinancialPolicyGateway } from './financial-policy-service.js';
+import { createFinancialPolicyClosureGateway } from './financial-policy-closure-service.js';
 import { createFinancialPolicyWriteGateway, type FinancialPolicyWriteGatewayDependencies,
   type FinancialPolicyWriteRequest } from './financial-policy-write-service.js';
 import { createApp } from './app.js';
 
 // Reviewed source must be approved before enabling this fixture. It resets only
-// the exclusive loopback financial-policy-reads test schema and replays 12 migrations.
+// the exclusive loopback financial-policy-reads test schema and applies historical
+// migrations 0001–0014 plus exact 0019 as a targeted API recovery compatibility profile.
 // Identity is explicitly synthetic. No Clerk, devnet or provider qualification.
 const issuer = 'https://synthetic.invalid', origin = 'http://localhost:3001', responsibilityId = 'responsibility_a';
 const responsibility = `/v1/responsibilities/${responsibilityId}`;
@@ -36,7 +39,7 @@ const policyCounts = async (f: FinancialPolicyReadFixture) => (await f.admin.que
   (SELECT count(*)::int FROM pactwoven.financial_budget_periods) AS periods`)).rows[0] as Record<string, number>;
 // Full-row snapshots, not just counts, for accepted controls, authority, custody,
 // provenance and legacy mandate state. Proposal account/period metadata is excluded.
-const inertRelations = ['financial_governance_controls', 'financial_policy_evidence_uses',
+const inertRelations = ['financial_governance_controls', 'financial_policy_evidence_uses', 'financial_policy_request_fences',
   'financial_authority_fences', 'financial_authority_history', 'financial_site_fences', 'financial_site_history',
   'financial_asset_fences', 'financial_account_fences', 'financial_source_fences', 'financial_source_binding_fences',
   'financial_registry_history', 'mandate_heads', 'mandate_versions', 'mandate_operations',
@@ -58,7 +61,10 @@ async function expectDelta(f: FinancialPolicyReadFixture, before: Record<string,
 
 describe.skipIf(!financialPolicyReadFixtureEnabled)('financial writes through the full API and actual private PostgreSQL capabilities', () => {
   let f: FinancialPolicyReadFixture;
-  beforeEach(async () => { f = await financialPolicyReadFixture(); }, 30_000);
+  beforeEach(async () => {
+    f = await financialPolicyReadFixture({ originalClosure: true });
+    expect(f.appliedMigrationNumbers).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 19]);
+  }, 30_000);
   afterEach(async () => { await f?.close(); });
   function app(mutate: Mutate = f.repository.mutate.bind(f.repository), observation: {
     lifetimeMilliseconds?: number; observedExpiry?: (expiresAt: number) => void;
@@ -78,7 +84,9 @@ describe.skipIf(!financialPolicyReadFixtureEnabled)('financial writes through th
       listFinancialPolicyDrafts: f.repository.listFinancialPolicyDrafts.bind(f.repository) };
     const dependencies = { environment: 'development' as const, issuer, verifier, readers: f.readers, repository, authentication: f.authentication };
     return createApp({ allowedOrigins: [origin], financialPolicyGateway: createFinancialPolicyGateway(dependencies),
-      financialPolicyWriteGateway: createFinancialPolicyWriteGateway(dependencies) });
+      financialPolicyWriteGateway: createFinancialPolicyWriteGateway(dependencies),
+      financialPolicyClosureGateway: createFinancialPolicyClosureGateway({ ...dependencies,
+        closures: new PostgresFinancialPolicyClosureRepository(f.authorizer.pool) }) });
   }
   async function read(application: App, path: string, actor = 'owner_a') {
     const response = await application.request(path, { headers: { Origin: origin, Authorization: `Bearer financial-write-postgres-${actor}` } });
@@ -214,8 +222,10 @@ describe.skipIf(!financialPolicyReadFixtureEnabled)('financial writes through th
       const winner = results.findIndex(r => r.response.status === 200), loser = 1 - winner;
       expect(results[loser]!.body.error.code).toBe('FINANCIAL_POLICY_OUTCOME_UNKNOWN');
       const recovered = await recover(app(), winner === 0 ? left : right); expect(recovered.response.status).toBe(200);
-      expect(FinancialPolicyHttpRecoveryResponseSchema.parse(recovered.body).receipt).toEqual(results[winner]!.body.receipt);
-      expect((await recover(app(), loser === 0 ? left : right)).response.status).toBe(503);
+      const original = FinancialPolicyOriginalStatusResponseSchema.parse(recovered.body);
+      expect(original.receipt).toEqual(results[winner]!.body.receipt); expect(original.closure).toBeNull();
+      const conflicting = await recover(app(), loser === 0 ? left : right);
+      expect(conflicting.response.status).toBe(409); expect(conflicting.body.error.code).toBe('FINANCIAL_POLICY_KEY_CONFLICT');
     }
     await expectDelta(f, before, 1); expect(await inertState(f)).toEqual(inert);
   });
@@ -226,7 +236,8 @@ describe.skipIf(!financialPolicyReadFixtureEnabled)('financial writes through th
     const initial = await post(lost, input); expect(initial.response.status).toBe(503); expect(initial.body.error.code).toBe('FINANCIAL_POLICY_OUTCOME_UNKNOWN');
     expect(mutations).toBe(1); await expectDelta(f, before, 1);
     const rebuilt = app(), recovered = await recover(rebuilt, input); expect(recovered.response.status).toBe(200);
-    const original = FinancialPolicyHttpRecoveryResponseSchema.parse(recovered.body); expect(original.status).toBe('recorded');
+    const original = FinancialPolicyOriginalStatusResponseSchema.parse(recovered.body);
+    expect(original.status).toBe('recorded'); expect(original.closure).toBeNull();
     expect((await recorded(rebuilt, input)).receipt).toEqual(original.receipt);
     await expectDelta(f, before, 1); expect(await inertState(f)).toEqual(inert);
   });

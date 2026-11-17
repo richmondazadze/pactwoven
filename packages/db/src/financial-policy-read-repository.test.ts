@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Pool } from 'pg';
 import { financialPolicyRecordHash } from '@pactwoven/domain';
-import { financialPolicyReadFixture, financialPolicyReadFixtureEnabled, financialPolicyReadFixtureConfig, financialPolicyReadFixtureEnvironment, type FinancialPolicyReadFixture } from './financial-policy-read.test-support.js';
+import { financialPolicyReadFixture, financialPolicyReadFixtureEnabled, financialPolicyReadFixtureConfig, financialPolicyReadFixtureEnvironment,
+  readFinancialPolicyReadFixtureConfig, type FinancialPolicyReadFixture } from './financial-policy-read.test-support.js';
 import { PostgresFinancialPolicyReaders } from './financial-policy-read-repository.js';
 import { FinancialPolicyContextQuerySchema, FinancialPolicyOriginalQuerySchema, FinancialPolicyReadObservationSchema } from './financial-policy-read-schema.js';
 
@@ -37,6 +41,32 @@ describe('private financial reader schemas',()=>{
     expect(financialPolicyReadFixtureConfig(exact.replace('55439','55440'),{CI:'true',GITHUB_ACTIONS:'true'}).port).toBe(55440);
     expect(()=>financialPolicyReadFixtureConfig(exact.replace('55439','55440'),{CI:'true'})).toThrow();
     expect(financialPolicyReadFixtureEnvironment({PATH:'/synthetic',PGHOST:'other',PGPASSWORD:'excluded',PACTWOVEN_DATABASE_URL:'excluded'})).toEqual({PATH:'/synthetic'});
+  });
+  it('admits the disposable closure compatibility port only for the explicit closure profile',()=>{
+    const fixtureUrl=new URL('postgres://127.0.0.1:55444/pactwoven_financial_policy_reads_test');
+    fixtureUrl.username='synthetic_admin';fixtureUrl.password='synthetic_password';
+    const exact=fixtureUrl.href,profile={originalClosure:true};
+    expect(financialPolicyReadFixtureConfig(exact,{},profile)).toMatchObject({host:'127.0.0.1',port:55444,database:'pactwoven_financial_policy_reads_test',ssl:false});
+    expect(()=>financialPolicyReadFixtureConfig(exact,{})).toThrow('Exclusive financial policy loopback fixture required.');
+    expect(()=>financialPolicyReadFixtureConfig(exact,{}, {originalClosure:false})).toThrow();
+    for(const url of [exact.replace('127.0.0.1','localhost'),exact.replace('55444','5432'),exact.replace('55444','55440'),
+      exact.replace('55444','55445'),exact.replace('reads_test','test'),exact+'?sslmode=disable',exact+'#fragment'])
+      expect(()=>financialPolicyReadFixtureConfig(url,{},profile)).toThrow('Exclusive financial policy loopback fixture required.');
+    expect(()=>financialPolicyReadFixtureConfig(exact.replace('55444','55440'),{CI:'true'},profile)).toThrow();
+  });
+  it('propagates the explicit closure profile through the protected credential reader without relaxing file guards',async()=>{
+    const directory=await mkdtemp(join(tmpdir(),'pactwoven-closure-admission-')),file=join(directory,'synthetic-url'),link=join(directory,'link');
+    const url=new URL('postgres://127.0.0.1:55444/pactwoven_financial_policy_reads_test');
+    url.username='synthetic_admin';url.password='synthetic_password';
+    try{
+      await writeFile(file,url.href,{mode:0o600});
+      await expect(readFinancialPolicyReadFixtureConfig(file)).rejects.toThrow('Exclusive financial policy loopback fixture required.');
+      await expect(readFinancialPolicyReadFixtureConfig(file,{originalClosure:true})).resolves.toMatchObject({port:55444});
+      await symlink(file,link);
+      await expect(readFinancialPolicyReadFixtureConfig(link,{originalClosure:true})).rejects.toThrow('Protected regular fixture URL file required.');
+      await chmod(file,0o644);
+      await expect(readFinancialPolicyReadFixtureConfig(file,{originalClosure:true})).rejects.toThrow('Protected regular fixture URL file required.');
+    }finally{await rm(directory,{recursive:true,force:true});}
   });
   it('rejects malformed private responses and captures input before connection waits',async()=>{
     let release!:()=>void;const gate=new Promise<void>(resolve=>release=resolve);

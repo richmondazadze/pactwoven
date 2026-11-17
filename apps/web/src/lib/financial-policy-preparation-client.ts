@@ -46,6 +46,8 @@ async function readJson(response: Response, signal: AbortSignal, guard: () => vo
   if (!/^application\/json(?:\s*;\s*charset=utf-8)?\s*$/i.test(response.headers.get('content-type') ?? '') || !noStore(response.headers.get('cache-control')))
     throw unavailable();
   const length = response.headers.get('content-length');
+  // Fetch may decode compressed bodies without changing their wire length header.
+  // Bound the declared length and the decoded stream independently.
   if (length !== null && (!/^\d+$/.test(length) || Number(length) > FINANCIAL_POLICY_PREPARATION_RESPONSE_MAX_BYTES)) throw unavailable();
   const reader = response.body?.getReader(); if (!reader) throw unavailable();
   let size = 0, text = ''; const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -55,7 +57,6 @@ async function readJson(response: Response, signal: AbortSignal, guard: () => vo
       size += next.value.byteLength; if (size > FINANCIAL_POLICY_PREPARATION_RESPONSE_MAX_BYTES) throw unavailable();
       text += decoder.decode(next.value, { stream: true });
     }
-    if (length !== null && Number(length) !== size) throw unavailable();
     return parseFinancialPolicyJson(text + decoder.decode());
   } catch (error) { void reader.cancel().catch(() => {}); throw error; }
   finally { reader.releaseLock(); }

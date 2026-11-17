@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { gzipSync } from 'node:zlib';
 import { commandDigest } from '@pactwoven/contracts/canonical';
-import { FinancialPolicyHttpScopeSchema, type FinancialPolicyHttpReceipt } from '@pactwoven/contracts';
+import { FINANCIAL_POLICY_HTTP_RESPONSE_MAX_BYTES, FinancialPolicyHttpScopeSchema, type FinancialPolicyHttpReceipt } from '@pactwoven/contracts';
 import { createFinancialPolicyAttempt, financialSame } from './financial-policy-contract';
+import { createFinancialPolicyAttemptCoordinator } from './financial-policy-attempt-coordinator';
+import { assertFinancialPolicyReference, createFinancialPolicyMemory, type FinancialPolicyStorage } from './financial-policy-recovery';
 import { createFinancialPolicyLifetime, FinancialPolicyBootstrapSchema, financialPolicyLocalScope, qualifyFinancialContext,
   type FinancialPolicyBootstrap } from './financial-policy-context';
 import { createFinancialPolicyWriteTransport, parseFinancialPolicyWriteRequest, type FinancialPolicyWriteTransportAdapters } from './financial-policy-write-transport';
@@ -75,6 +78,42 @@ describe('financial policy write transport boundary', () => {
     expect(result.actor.membershipVersion).toBe(1); expect(f.settle).toHaveBeenCalledOnce();
     await expect(f.send()).rejects.toBeDefined(); expect(f.fetcher).toHaveBeenCalledOnce();
   });
+  it.each([true, false])('qualifies a Fetch-decoded gzip receipt with exposed encoding: %s', async encodingExposed => {
+    const f = await fixture(), bytes = new TextEncoder().encode(JSON.stringify(f.response())), wire = gzipSync(bytes);
+    expect(wire.byteLength).toBeLessThan(bytes.byteLength);
+    // Fetch exposes decoded bytes even when Content-Length still describes the compressed wire body.
+    f.fetcher.mockResolvedValueOnce(new Response(new ReadableStream({ start(controller) {
+      for (let i = 0; i < bytes.length; i += 197) controller.enqueue(bytes.slice(i, i + 197)); controller.close();
+    } }), { headers: { ...headers, 'Content-Length': String(wire.byteLength), ...(encodingExposed ? { 'Content-Encoding': 'gzip' } : {}) } }));
+    expect(await f.send()).toEqual(f.receipt); expect(f.state.dispatched).toBe(true); expect(f.settle).toHaveBeenCalledOnce();
+    expect(f.fetcher).toHaveBeenCalledOnce(); expect(f.fetcher.mock.calls[0]?.[1].body).toBe(JSON.stringify(f.attempt.request.input));
+  });
+  it.each(['decoded-overflow', 'wire-overflow', 'length', 'utf8', 'duplicate', 'truncated'])(
+    'keeps gzip %s acknowledgement unknown and retains the original locator through the coordinator', async mode => {
+      const f = await fixture(), memory = createFinancialPolicyMemory(financialPolicyLocalScope(f.bootstrap)), values = new Map<string, string>();
+      const storage: FinancialPolicyStorage = { get length() { return values.size; }, key: i => [...values.keys()][i] ?? null,
+        getItem: key => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value); }, removeItem: key => { values.delete(key); } };
+      const coordinator = createFinancialPolicyAttemptCoordinator({ lifetime: f.lifetime, currentBootstrap: f.adapters.currentBootstrap,
+        getToken: f.getToken, fetch: f.fetcher, wall: () => f.time.wall, monotonic: () => f.time.mono, memory, storage: () => storage,
+        preparation: { capture: () => ({ expiresAt: f.observation.expiresAt, assertCurrent: f.assertCurrent, now: () => at + f.time.mono - 100 }) } });
+      try {
+        const text = JSON.stringify(f.response()), encoder = new TextEncoder();
+        const bytes = mode === 'utf8' ? new Uint8Array([0xf0, 0x9f]) : encoder.encode(mode === 'duplicate' ? '{"status":"recorded","\\u0073tatus":"recorded"}'
+          : mode === 'truncated' ? text.slice(0, -1) : mode === 'decoded-overflow'
+            ? ' '.repeat(FINANCIAL_POLICY_HTTP_RESPONSE_MAX_BYTES + 1 - encoder.encode(text).byteLength) + text : text);
+        const wire = gzipSync(bytes); expect(wire.byteLength).toBeLessThan(FINANCIAL_POLICY_HTTP_RESPONSE_MAX_BYTES);
+        const length = mode === 'length' ? '+123' : String(mode === 'wire-overflow' ? FINANCIAL_POLICY_HTTP_RESPONSE_MAX_BYTES + 1 : wire.byteLength);
+        let originalAtDispatch: [string, string][] = [];
+        f.fetcher.mockImplementationOnce(async () => { originalAtDispatch = [...values];
+          return new Response(bytes, { headers: { ...headers, 'Content-Length': length, 'Content-Encoding': 'gzip' } }); });
+        const request = parseFinancialPolicyWriteRequest(f.attempt.request);
+        await expect(coordinator.send(coordinator.review(request))).rejects.toMatchObject({ outcome: 'unknown', code: 'unconfirmed' });
+        expect(coordinator.status()).toEqual({ state: 'unknown', reference: f.attempt.reference });
+        expect(values.size).toBe(1); expect([...values]).toEqual(originalAtDispatch); assertFinancialPolicyReference(storage, f.attempt.reference);
+        expect(memory.recorded(f.attempt.reference)).toBeNull(); expect(() => coordinator.continueUnsent(f.attempt.reference)).toThrow();
+        expect(() => coordinator.review(request)).toThrow(); expect(f.fetcher).toHaveBeenCalledOnce();
+      } finally { coordinator.close(); memory.close(); }
+    });
   it.each(['withdraw_draft', 'propose_governance', 'accept_governance', 'reject_governance'])(
     'has no supported %s write path', async kind => {
       const f = await fixture(); expect(() => parseFinancialPolicyWriteRequest({ ...f.attempt.request, kind })).toThrow();
@@ -134,16 +173,16 @@ describe('financial policy write transport boundary', () => {
     const error = await f.send().catch(e => e); expect(f.state.dispatched).toBe(true); expect(f.fetcher).toHaveBeenCalledOnce();
     expect(error.message).not.toContain('private provider'); expect(f.settle).not.toHaveBeenCalled();
   });
-  it.each(['duplicate', 'utf8', 'truncated-utf8', 'content-type', 'cache', 'cache-alias', 'overflow', 'length', 'short-length', 'redirect', 'foreign-url',
+  it.each(['duplicate', 'utf8', 'truncated-utf8', 'content-type', 'cache', 'cache-alias', 'overflow', 'length', 'oversized-length', 'redirect', 'foreign-url',
     'status', 'unknown', 'typed-preflight', 'body', 'hash', 'predecessor', 'text', 'membership', 'authority'])(
     'rejects %s response without settlement', async mode => {
       const f = await fixture(); let response: Response;
       if (mode === 'duplicate') response = new Response('{"status":"recorded","\\u0073tatus":"recorded"}', { headers });
       else if (mode === 'utf8' || mode === 'truncated-utf8') response = new Response(new Uint8Array(mode === 'utf8' ? [0xc3, 0x28] : [0xf0, 0x9f]), { headers });
       else if (mode === 'overflow') response = new Response(' '.repeat(2 * 1024 * 1024 + 1), { headers });
-      else if (['content-type', 'cache', 'cache-alias', 'length', 'short-length'].includes(mode)) response = new Response(JSON.stringify(f.response()), {
+      else if (['content-type', 'cache', 'cache-alias', 'length', 'oversized-length'].includes(mode)) response = new Response(JSON.stringify(f.response()), {
         headers: { ...headers, ...(mode === 'content-type' ? { 'Content-Type': 'text/plain' } : mode === 'length' ? { 'Content-Length': '+123' }
-          : mode === 'short-length' ? { 'Content-Length': '1' } : { 'Cache-Control': mode === 'cache' ? 'no-store=true' : 'x-no-store, public' }) } });
+          : mode === 'oversized-length' ? { 'Content-Length': String(FINANCIAL_POLICY_HTTP_RESPONSE_MAX_BYTES + 1) } : { 'Cache-Control': mode === 'cache' ? 'no-store=true' : 'x-no-store, public' }) } });
       else if (mode === 'status') response = json(f.response(), 302);
       else if (mode === 'unknown' || mode === 'typed-preflight') response = json({ error: { code: mode === 'unknown' ? 'FINANCIAL_POLICY_OUTCOME_UNKNOWN' : 'FINANCIAL_POLICY_INPUT_INVALID', message: 'private' } }, mode === 'unknown' ? 503 : 422);
       else {

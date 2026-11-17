@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { gzipSync } from 'node:zlib';
+import { FINANCIAL_POLICY_PREPARATION_RESPONSE_MAX_BYTES } from '@pactwoven/contracts';
 import { commandDigest } from '@pactwoven/contracts/canonical';
 import { FinancialPolicyBootstrapSchema, createFinancialPolicyLifetime, financialPolicyLocalScope, type FinancialPolicyBootstrap } from './financial-policy-context';
 import { createFinancialPolicyMemory, type FinancialPolicyStorage } from './financial-policy-recovery';
@@ -83,6 +85,34 @@ describe('explicit preparation client and stable verifier', () => {
     const f = await fixture('draft'); await f.prepare(); const assertion = f.capture(); expect(() => assertion.assertCurrent()).not.toThrow();
     expect(f.client.getSnapshot().preparation?.response).toMatchObject({ effectiveAuthority: false, financialState: null,
       material: { profile: 'incomplete', asset: null, account: null, governance: null, trust: null } });
+  });
+  it.each([true, false])('accepts Fetch-decoded preparation with gzip wire length and exposed encoding: %s', async encodingExposed => {
+    const f = await fixture('draft'), bytes = new TextEncoder().encode(JSON.stringify(f.response)), wire = gzipSync(bytes);
+    expect(wire.byteLength).toBeLessThan(bytes.byteLength);
+    const responseHeaders = { ...headers, 'Content-Length': String(wire.byteLength), ...(encodingExposed ? { 'Content-Encoding': 'gzip' } : {}) };
+    // Browsers expose decoded chunks; CORS may hide Content-Encoding while exposing Content-Length.
+    f.fetcher.mockResolvedValueOnce(new Response(new ReadableStream({ start(controller) {
+      for (let i = 0; i < bytes.length; i += 197) controller.enqueue(bytes.slice(i, i + 197)); controller.close();
+    } }), { headers: responseHeaders }));
+    const result = await f.prepare(); expect(result.response).toEqual(f.response); expect(f.capture().expiresAt).toBe(at + 19000);
+    expect(f.fetcher).toHaveBeenCalledOnce(); expect(f.readFetch).toHaveBeenCalledOnce();
+  });
+  it('rejects oversized decoded preparation even when its gzip wire length is within the bound', async () => {
+    const f = await fixture(), text = JSON.stringify(f.response);
+    const bytes = new TextEncoder().encode(' '.repeat(FINANCIAL_POLICY_PREPARATION_RESPONSE_MAX_BYTES + 1 - new TextEncoder().encode(text).byteLength) + text);
+    const wire = gzipSync(bytes), cancel = vi.fn(); expect(wire.byteLength).toBeLessThan(FINANCIAL_POLICY_PREPARATION_RESPONSE_MAX_BYTES);
+    f.fetcher.mockResolvedValueOnce(new Response(new ReadableStream({ start(controller) { controller.enqueue(bytes); }, cancel }), {
+      headers: { ...headers, 'Content-Length': String(wire.byteLength), 'Content-Encoding': 'gzip' },
+    }));
+    await expect(f.prepare()).rejects.toMatchObject({ code: 'unavailable' }); expect(cancel).toHaveBeenCalledOnce();
+    expect(f.client.getSnapshot().preparation).toBeNull(); expect(() => f.capture()).toThrow(); expect(f.fetcher).toHaveBeenCalledOnce();
+  });
+  it.each(['utf8', 'duplicate', 'truncated'])('rejects Fetch-decoded gzip %s data without installing preparation', async mode => {
+    const f = await fixture(), bytes = mode === 'utf8' ? new Uint8Array([0xf0, 0x9f])
+      : new TextEncoder().encode(mode === 'duplicate' ? '{"a":1,"\\u0061":2}' : JSON.stringify(f.response).slice(0, -1));
+    f.fetcher.mockResolvedValueOnce(new Response(bytes, { headers: { ...headers, 'Content-Length': String(gzipSync(bytes).byteLength), 'Content-Encoding': 'gzip' } }));
+    await expect(f.prepare()).rejects.toMatchObject({ code: 'unavailable' });
+    expect(f.client.getSnapshot().preparation).toBeNull(); expect(() => f.capture()).toThrow(); expect(f.fetcher).toHaveBeenCalledOnce();
   });
   it('supplies the unchanged UI2B0 port for a separate explicit synthetic document write', async () => {
     const f = await fixture('document', true); await f.prepare();
@@ -171,14 +201,14 @@ describe('explicit preparation client and stable verifier', () => {
     await expect(f.prepare()).rejects.toMatchObject({ code: 'scope' }); expect(cancel).toHaveBeenCalledOnce(); expect(() => f.lifetime.activate(f.bootstrap)).toThrow();
     const next = createFinancialPolicyPreparationClient({ ...f.adapters }); cleanup.push(() => next.close()); expect(() => next.issue(f.selection)).toThrow();
   });
-  it.each(['duplicate', 'utf8', 'overflow', 'length', 'short-length', 'media', 'cache', 'cache-alias', 'redirect', 'url', 'private', 'membership', 'selection', 'status', 'server-error'])(
+  it.each(['duplicate', 'utf8', 'overflow', 'length', 'oversized-length', 'media', 'cache', 'cache-alias', 'redirect', 'url', 'private', 'membership', 'selection', 'status', 'server-error'])(
     'rejects %s output without a usable preparation or provider diagnostic', async mode => {
       const f = await fixture(); let response: Response;
       if (mode === 'duplicate') response = new Response('{"a":1,"\\u0061":2}', { headers });
       else if (mode === 'utf8') response = new Response(new Uint8Array([0xf0, 0x9f]), { headers });
       else if (mode === 'overflow') response = new Response(' '.repeat(2 * 1024 * 1024 + 1), { headers });
-      else if (['length', 'short-length', 'media', 'cache', 'cache-alias'].includes(mode)) response = new Response(JSON.stringify(f.response), { headers: {
-        ...headers, ...(mode === 'length' ? { 'Content-Length': '+12' } : mode === 'short-length' ? { 'Content-Length': '1' } : mode === 'media' ? { 'Content-Type': 'text/html' }
+      else if (['length', 'oversized-length', 'media', 'cache', 'cache-alias'].includes(mode)) response = new Response(JSON.stringify(f.response), { headers: {
+        ...headers, ...(mode === 'length' ? { 'Content-Length': '+12' } : mode === 'oversized-length' ? { 'Content-Length': String(FINANCIAL_POLICY_PREPARATION_RESPONSE_MAX_BYTES + 1) } : mode === 'media' ? { 'Content-Type': 'text/html' }
           : { 'Cache-Control': mode === 'cache' ? 'no-store=true' : 'x-no-store' }) } });
       else if (mode === 'server-error') response = json({ error: { code: 'SETUP_REQUIRED', message: 'private provider diagnostics' } }, 503);
       else {

@@ -27,6 +27,10 @@
     {
       "binding": "MANDATE_AUTHORITY",
       "service": "pactwoven-mandate-development"
+    },
+    {
+      "binding": "FINANCIAL_AUTHORITY",
+      "service": "pactwoven-financial-development"
     }
   ],
   "hyperdrive": [

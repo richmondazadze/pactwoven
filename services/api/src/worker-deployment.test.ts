@@ -1,6 +1,10 @@
 import { readFile } from 'node:fs/promises';
-import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertDevelopmentWorkerDeployment } from './worker-deployment.js';
+import { readSupplierWorkerConfig, supplierWorkerDatabaseBindings } from './supplier-worker-config.js';
+import { rehashWorkerSupplierBinding, workerSupplierBindings, workerSupplierLanes, workerSupplierNow } from './supplier-worker.test-fixtures.js';
 
 const apiSource = JSON.parse(await readFile(new URL('../wrangler.api.json', import.meta.url), 'utf8'));
 const provisionerSource = JSON.parse(await readFile(new URL('../wrangler.provisioner.json', import.meta.url), 'utf8'));
@@ -9,17 +13,20 @@ function fixture() {
   const apiId = 'a'.repeat(32), provisionerId = 'b'.repeat(32), accessId = 'c'.repeat(32), mandateId = 'd'.repeat(32);
   return {
     workerSecrets: { api: ['CLERK_ISSUER', 'CLERK_PUBLISHABLE_KEY'], provisioner: ['CLERK_ISSUER', 'CLERK_PUBLISHABLE_KEY', 'CLERK_SECRET_KEY'], mandate: ['CLERK_ISSUER', 'CLERK_PUBLISHABLE_KEY', 'CLERK_SECRET_KEY'] },
-    api: { ...structuredClone(apiSource), hyperdrive: [{ binding: 'DATABASE', id: apiId }] },
+    api: { ...structuredClone(apiSource), services: [
+      { binding: 'IDENTITY_PROVISIONER', service: 'pactwoven-provisioner-development' },
+      { binding: 'MANDATE_AUTHORITY', service: 'pactwoven-mandate-development' },
+    ], hyperdrive: [{ binding: 'DATABASE', id: apiId }] },
     provisioner: { ...structuredClone(provisionerSource), hyperdrive: [{ binding: 'DATABASE', id: provisionerId }, { binding: 'ACCESS_DATABASE', id: accessId }] },
     mandate: { ...structuredClone(mandateSource), hyperdrive: [{ binding: 'MANDATE_DATABASE', id: mandateId }] },
     hyperdrives: [
       { id: apiId, caching: { disabled: true }, mtls: { sslmode: 'verify-full' }, origin_connection_limit: 5,
         origin: { database: 'pactwoven_dev', user: 'pactwoven_dev_app', scheme: 'postgresql', host: 'ep-fixture.us-east-2.aws.neon.tech', port: 5432 } },
-      { id: provisionerId, caching: { disabled: true }, mtls: { sslmode: 'verify-full' }, origin_connection_limit: 3,
+      { id: provisionerId, caching: { disabled: true }, mtls: { sslmode: 'verify-full' }, origin_connection_limit: 5,
         origin: { database: 'pactwoven_dev', user: 'pactwoven_dev_identity', scheme: 'postgresql', host: 'ep-fixture.us-east-2.aws.neon.tech', port: 5432 } },
-      { id: accessId, caching: { disabled: true }, mtls: { sslmode: 'verify-full' }, origin_connection_limit: 3,
+      { id: accessId, caching: { disabled: true }, mtls: { sslmode: 'verify-full' }, origin_connection_limit: 5,
         origin: { database: 'pactwoven_dev', user: 'pactwoven_dev_access', scheme: 'postgresql', host: 'ep-fixture.us-east-2.aws.neon.tech', port: 5432 } },
-      { id: mandateId, caching: { disabled: true }, mtls: { sslmode: 'verify-full' }, origin_connection_limit: 3,
+      { id: mandateId, caching: { disabled: true }, mtls: { sslmode: 'verify-full' }, origin_connection_limit: 5,
         origin: { database: 'pactwoven_dev', user: 'pactwoven_dev_mandate', scheme: 'postgresql', host: 'ep-fixture.us-east-2.aws.neon.tech', port: 5432 } },
     ],
   };
@@ -61,12 +68,13 @@ describe('development Worker deployment guard', () => {
     ]) { const data = fixture(); change(data); expect(() => assertDevelopmentWorkerDeployment(data)).toThrow(); }
   });
 
-  it('rejects caching, weaker TLS, nondevelopment databases and unbounded origin connection budgets', () => {
+  it('rejects caching, weaker TLS, nondevelopment databases and invalid origin connection budgets', () => {
     for (const change of [
       (data: ReturnType<typeof fixture>) => { data.hyperdrives[0]!.caching.disabled = false; },
       (data: ReturnType<typeof fixture>) => { data.hyperdrives[0]!.mtls.sslmode = 'require'; },
       (data: ReturnType<typeof fixture>) => { data.hyperdrives[0]!.origin.database = 'production'; },
       (data: ReturnType<typeof fixture>) => { data.hyperdrives[0]!.origin.host = 'not-neon.example'; },
+      (data: ReturnType<typeof fixture>) => { data.hyperdrives[0]!.origin_connection_limit = 4; },
       (data: ReturnType<typeof fixture>) => { data.hyperdrives[0]!.origin_connection_limit = 100; },
     ]) { const data = fixture(); change(data); expect(() => assertDevelopmentWorkerDeployment(data)).toThrow(); }
   });
@@ -176,6 +184,19 @@ describe('optional financial Worker deployment', () => {
   it('accepts four private capabilities with independently observed TLS origins', () => {
     expect(() => assertDevelopmentWorkerDeployment(financialFixture())).not.toThrow();
   });
+  it('accepts the tracked financial topology with synthetic verified origin observations', async () => {
+    const financial = JSON.parse(await readFile(new URL('../wrangler.financial.json', import.meta.url), 'utf8'));
+    const configs = { api: structuredClone(apiSource), provisioner: structuredClone(provisionerSource),
+      mandate: structuredClone(mandateSource), financial };
+    const secrets = fixture().workerSecrets;
+    const hyperdrives = Object.values(configs).flatMap(config => config.hyperdrive.map(({ binding, id }: { binding: string; id: string }) => ({
+      id, caching: { disabled: true }, mtls: { sslmode: 'verify-full' }, origin_connection_limit: 5,
+      origin: { database: 'pactwoven_dev', user: config.vars[`EXPECTED_${binding}_USER`], scheme: 'postgresql',
+        host: 'ep-fixture.us-east-2.aws.neon.tech', port: 5432 },
+    })));
+    expect(() => assertDevelopmentWorkerDeployment({ ...configs, hyperdrives,
+      workerSecrets: { ...secrets, financial: [...secrets.mandate] } })).not.toThrow();
+  });
   it('rejects public exposure, unrelated services, credential placement, role aliases and weaker database transport', () => {
     const changes = [
       (v: ReturnType<typeof financialFixture>) => { v.financial.workers_dev = true; },
@@ -203,5 +224,155 @@ describe('optional financial Worker deployment', () => {
     expect(() => assertDevelopmentWorkerDeployment({ ...data, financial: undefined })).toThrow();
     expect(() => assertDevelopmentWorkerDeployment({ ...data, workerSecrets: { ...data.workerSecrets, financial: undefined } })).toThrow();
     expect(() => assertDevelopmentWorkerDeployment({ ...data, api: { ...data.api, services: data.api.services.slice(0, 2) } })).toThrow();
+  });
+});
+
+function supplierFixture() {
+  const base = financialFixture(), lanes = workerSupplierLanes();
+  const names = Object.values(supplierWorkerDatabaseBindings).flatMap(lane => Object.values(lane));
+  const users = [lanes.buyer.binding.verifier.name, lanes.buyer.binding.authorizer.name,
+    lanes.supplier.binding.verifier.name, lanes.supplier.binding.authorizer.name];
+  const ids = ['3', '4', '5', '6'].map(value => value.repeat(32));
+  const supplier = { ...structuredClone(mandateSource), name: 'pactwoven-supplier-development', main: 'src/supplier-worker.ts',
+    vars: { APP_ENVIRONMENT: 'development', WORKER_ROLE: 'supplier', ALLOWED_ORIGINS: base.api.vars.ALLOWED_ORIGINS,
+      SUPPLIER_RELATIONSHIP_LANES: JSON.stringify(lanes) }, hyperdrive: names.map((binding, index) => ({ binding, id: ids[index]! })) };
+  base.api.services.push({ binding: 'SUPPLIER_AUTHORITY', service: supplier.name });
+  return { ...base, supplier, workerSecrets: { ...base.workerSecrets,
+    supplier: base.workerSecrets.mandate.map(name => ({ name, type: 'secret_text' })) },
+    hyperdrives: [...base.hyperdrives, ...users.map((user, index) => ({ ...structuredClone(base.hyperdrives[0]!), id: ids[index]!,
+      origin: { ...base.hyperdrives[0]!.origin, user } }))] };
+}
+type SupplierFixture = ReturnType<typeof supplierFixture>;
+function changeSupplierLanes(data: SupplierFixture, change: (lanes: ReturnType<typeof workerSupplierLanes>) => void) {
+  const lanes = workerSupplierLanes(); change(lanes);
+  lanes.buyer.binding = rehashWorkerSupplierBinding(lanes.buyer.binding);
+  lanes.supplier.binding = rehashWorkerSupplierBinding(lanes.supplier.binding);
+  data.supplier.vars.SUPPLIER_RELATIONSHIP_LANES = JSON.stringify(lanes);
+}
+
+describe('optional supplier Worker deployment', () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(workerSupplierNow); });
+  afterEach(() => vi.useRealTimers());
+
+  it('accepts supplier alone or alongside financial with the exact runtime lane JSON and encrypted Clerk inventory', () => {
+    const combined = supplierFixture();
+    expect(() => assertDevelopmentWorkerDeployment(combined)).not.toThrow();
+    const runtime = readSupplierWorkerConfig({ ...workerSupplierBindings(), ...combined.supplier.vars });
+    expect(runtime.lanes).toEqual(JSON.parse(combined.supplier.vars.SUPPLIER_RELATIONSHIP_LANES));
+    const { financial, ...supplierOnly } = combined;
+    const { financial: _financialSecrets, ...secrets } = supplierOnly.workerSecrets;
+    const financialIds = new Set(financial.hyperdrive.map((binding: { id: string }) => binding.id));
+    expect(() => assertDevelopmentWorkerDeployment({ ...supplierOnly, workerSecrets: secrets,
+      api: { ...supplierOnly.api, services: supplierOnly.api.services.filter((service: { binding: string }) => service.binding !== 'FINANCIAL_AUTHORITY') },
+      hyperdrives: supplierOnly.hyperdrives.filter(resource => !financialIds.has(resource.id)) })).not.toThrow();
+  });
+
+  it.each([
+    ['public endpoint', (v: SupplierFixture) => { v.supplier.workers_dev = true; }],
+    ['preview endpoint', (v: SupplierFixture) => { v.supplier.preview_urls = true; }],
+    ['custom route', (v: SupplierFixture) => { v.supplier.routes = ['supplier.example/*']; }],
+    ['wrong name', (v: SupplierFixture) => { v.supplier.name = 'other-supplier'; }],
+    ['wrong entrypoint', (v: SupplierFixture) => { v.supplier.main = 'src/worker.ts'; }],
+    ['wrong role', (v: SupplierFixture) => { v.supplier.vars.WORKER_ROLE = 'financial'; }],
+    ['production scope', (v: SupplierFixture) => { v.supplier.vars.APP_ENVIRONMENT = 'production'; }],
+    ['outbound service', (v: SupplierFixture) => { v.supplier.services = [{ binding: 'IDENTITY_PROVISIONER', service: v.provisioner.name }]; }],
+    ['wrong API service', (v: SupplierFixture) => { v.api.services.at(-1).service = v.financial.name; }],
+    ['wrong API binding', (v: SupplierFixture) => { v.api.services.at(-1).binding = 'OTHER_AUTHORITY'; }],
+    ['duplicate API binding', (v: SupplierFixture) => { v.api.services[2] = v.api.services[3]; }],
+    ['extra API binding', (v: SupplierFixture) => { v.api.services.push(v.api.services[3]); }],
+    ['different origins', (v: SupplierFixture) => { v.supplier.vars.ALLOWED_ORIGINS = 'https://other.example'; }],
+    ['private lane on API', (v: SupplierFixture) => { v.api.vars.SUPPLIER_RELATIONSHIP_LANES = v.supplier.vars.SUPPLIER_RELATIONSHIP_LANES; }],
+    ['private resource on API', (v: SupplierFixture) => { v.api.hyperdrive.push(v.supplier.hyperdrive[0]); }],
+    ['private resource on identity', (v: SupplierFixture) => { v.provisioner.hyperdrive[0] = v.supplier.hyperdrive[0]; }],
+    ['private resource on mandate', (v: SupplierFixture) => { v.mandate.hyperdrive[0] = v.supplier.hyperdrive[0]; }],
+    ['private resource on financial', (v: SupplierFixture) => { v.financial.hyperdrive[0] = v.supplier.hyperdrive[0]!; }],
+    ['duplicate resource', (v: SupplierFixture) => { v.supplier.hyperdrive[1]!.id = v.supplier.hyperdrive[0]!.id; }],
+    ['duplicate binding', (v: SupplierFixture) => { v.supplier.hyperdrive[1]!.binding = v.supplier.hyperdrive[0]!.binding; }],
+    ['shared base resource', (v: SupplierFixture) => { v.supplier.hyperdrive[0]!.id = v.api.hyperdrive[0].id; }],
+    ['shared financial resource', (v: SupplierFixture) => { v.supplier.hyperdrive[0]!.id = v.financial.hyperdrive[0]!.id; }],
+    ['missing observation', (v: SupplierFixture) => { v.hyperdrives.pop(); }],
+    ['duplicate observation', (v: SupplierFixture) => { v.hyperdrives.push(v.hyperdrives[8]!); }],
+    ['wrong observed role', (v: SupplierFixture) => { v.hyperdrives[8]!.origin.user = 'database_owner'; }],
+    ['swapped verifier role', (v: SupplierFixture) => { v.hyperdrives[8]!.origin.user = v.hyperdrives[9]!.origin.user; }],
+    ['different database', (v: SupplierFixture) => { v.hyperdrives[8]!.origin.database = 'other'; }],
+    ['different host', (v: SupplierFixture) => { v.hyperdrives[8]!.origin.host = 'ep-other.neon.tech'; }],
+    ['non-Neon host', (v: SupplierFixture) => { v.hyperdrives[8]!.origin.host = 'neon.tech.attacker.example'; }],
+    ['wrong port', (v: SupplierFixture) => { v.hyperdrives[8]!.origin.port = 6432; }],
+    ['cached reads', (v: SupplierFixture) => { v.hyperdrives[8]!.caching.disabled = false; }],
+    ['unverified TLS', (v: SupplierFixture) => { v.hyperdrives[8]!.mtls.sslmode = 'require'; }],
+    ['excessive connections', (v: SupplierFixture) => { v.hyperdrives[8]!.origin_connection_limit = 11; }],
+    ['missing Clerk inventory', (v: SupplierFixture) => { v.workerSecrets.supplier.pop(); }],
+    ['duplicate Clerk inventory', (v: SupplierFixture) => { v.workerSecrets.supplier[1] = v.workerSecrets.supplier[0]!; }],
+    ['unencrypted Clerk value', (v: SupplierFixture) => { v.workerSecrets.supplier[0]!.type = 'plain_text'; }],
+    ['direct database secret', (v: SupplierFixture) => { v.workerSecrets.supplier.push({ name: 'DATABASE_URL', type: 'secret_text' }); }],
+    ['malformed lanes', (v: SupplierFixture) => { v.supplier.vars.SUPPLIER_RELATIONSHIP_LANES = '{'; }],
+    ['missing lanes', (v: SupplierFixture) => { v.supplier.vars.SUPPLIER_RELATIONSHIP_LANES = '{}'; }],
+    ['wrong binding hash', (v: SupplierFixture) => { const lanes = workerSupplierLanes(); lanes.buyer.binding.reference.hash = 'f'.repeat(64); v.supplier.vars.SUPPLIER_RELATIONSHIP_LANES = JSON.stringify(lanes); }],
+    ['shared external organization', (v: SupplierFixture) => changeSupplierLanes(v, lanes => { lanes.supplier.externalOrganizationId = lanes.buyer.externalOrganizationId; })],
+    ['shared effective organization', (v: SupplierFixture) => changeSupplierLanes(v, lanes => { lanes.supplier.binding.effectiveOrganizationId = lanes.buyer.binding.effectiveOrganizationId; })],
+    ['shared binding identity', (v: SupplierFixture) => changeSupplierLanes(v, lanes => { lanes.supplier.binding.reference.id = lanes.buyer.binding.reference.id; })],
+    ['shared role name', (v: SupplierFixture) => changeSupplierLanes(v, lanes => { lanes.supplier.binding.verifier.name = lanes.buyer.binding.verifier.name; })],
+    ['shared role OID', (v: SupplierFixture) => changeSupplierLanes(v, lanes => { lanes.supplier.binding.verifier.oid = lanes.buyer.binding.verifier.oid; })],
+    ['future binding', (v: SupplierFixture) => changeSupplierLanes(v, lanes => { lanes.buyer.binding.validFrom = new Date(workerSupplierNow + 1).toISOString(); })],
+    ['expired binding', (v: SupplierFixture) => changeSupplierLanes(v, lanes => { lanes.buyer.binding.expiresAt = new Date(workerSupplierNow).toISOString(); })],
+    ['revoked binding', (v: SupplierFixture) => changeSupplierLanes(v, lanes => { lanes.buyer.binding.status = 'REVOKED'; })],
+    ['nondevelopment binding', (v: SupplierFixture) => changeSupplierLanes(v, lanes => { lanes.buyer.binding.environment = 'production'; })],
+  ] as const)('rejects supplier %s', (_name, change) => {
+    const data = supplierFixture(); change(data);
+    expect(() => assertDevelopmentWorkerDeployment(data)).toThrow();
+  });
+
+  it('refuses aliases to each existing profile even when lane hashes and origin observations agree', () => {
+    const original = supplierFixture();
+    for (const resource of original.hyperdrives.slice(0, 8)) {
+      const data = supplierFixture();
+      changeSupplierLanes(data, lanes => { lanes.buyer.binding.verifier.name = resource.origin.user; });
+      data.hyperdrives[8]!.origin.user = resource.origin.user;
+      expect(() => assertDevelopmentWorkerDeployment(data)).toThrow();
+    }
+  });
+
+  it('requires all four bindings and couples service, profile and encrypted inventory presence', () => {
+    for (let index = 0; index < 4; index++) {
+      const data = supplierFixture(); data.supplier.hyperdrive.splice(index, 1);
+      expect(() => assertDevelopmentWorkerDeployment(data)).toThrow();
+    }
+    const data = supplierFixture();
+    expect(() => assertDevelopmentWorkerDeployment({ ...data, supplier: undefined })).toThrow();
+    expect(() => assertDevelopmentWorkerDeployment({ ...data, workerSecrets: { ...data.workerSecrets, supplier: undefined } })).toThrow();
+    expect(() => assertDevelopmentWorkerDeployment({ ...data, workerSecrets: { ...data.workerSecrets, supplier: data.workerSecrets.supplier.map(secret => secret.name) } })).toThrow();
+    expect(() => assertDevelopmentWorkerDeployment({ ...data, api: { ...data.api, services: data.api.services.slice(0, -1) } })).toThrow();
+    expect(() => assertDevelopmentWorkerDeployment({ ...fixture(), workerSecrets: { ...fixture().workerSecrets, supplier: data.workerSecrets.supplier } })).toThrow();
+  });
+
+  it('rejects extra identity or raw-secret fields without disclosing private values', () => {
+    const marker = 'PRIVATE_SUPPLIER_DEPLOYMENT_SENTINEL';
+    const data = supplierFixture(), lanes = workerSupplierLanes();
+    Object.assign(lanes.buyer, { verifierDatabaseUrl: marker });
+    data.supplier.vars.SUPPLIER_RELATIONSHIP_LANES = JSON.stringify(lanes);
+    const candidates = [data, { ...supplierFixture(), supplier: { ...data.supplier, vars: { ...data.supplier.vars, CLERK_SECRET_KEY: marker } } },
+      { ...supplierFixture(), workerSecrets: { ...data.workerSecrets, supplier: [{ name: 'CLERK_SECRET_KEY', type: 'secret_text', value: marker }] } }];
+    for (const candidate of candidates) {
+      try { assertDevelopmentWorkerDeployment(candidate); expect.fail('Unsafe deployment accepted'); }
+      catch (error) { expect(error).toBeInstanceOf(Error); expect(String(error)).not.toContain(marker); expect(JSON.stringify(error, Object.getOwnPropertyNames(error))).not.toContain(marker); }
+    }
+  });
+
+  it('keeps CLI success and rejection output generic, including malformed private lane values', () => {
+    vi.useRealTimers();
+    const data = supplierFixture(), now = Date.now(), lanes = workerSupplierLanes();
+    for (const lane of Object.values(lanes)) {
+      lane.binding.validFrom = new Date(now - 60_000).toISOString(); lane.binding.expiresAt = new Date(now + 60_000).toISOString();
+      lane.binding = rehashWorkerSupplierBinding(lane.binding);
+    }
+    data.supplier.vars.SUPPLIER_RELATIONSHIP_LANES = JSON.stringify(lanes);
+    const invoke = (input: string) => spawnSync(process.execPath, ['--import', 'tsx', fileURLToPath(new URL('./check-worker-deployment.ts', import.meta.url))],
+      { input, encoding: 'utf8', timeout: 10_000, maxBuffer: 65_536, env: { PATH: process.env.PATH } });
+    const accepted = invoke(JSON.stringify(data));
+    expect(accepted.status).toBe(0); expect(accepted.stdout.trim()).toBe('Development Worker deployment configuration passed.'); expect(accepted.stderr).toBe('');
+    data.supplier.vars.SUPPLIER_RELATIONSHIP_LANES = 'PRIVATE_SUPPLIER_DEPLOYMENT_SENTINEL';
+    const rejected = invoke(JSON.stringify(data));
+    expect(rejected.status).toBe(1); expect(rejected.stdout).toBe(''); expect(rejected.stderr).not.toContain(data.supplier.vars.SUPPLIER_RELATIONSHIP_LANES);
+    expect(rejected.stderr.trim()).toBe('Development Worker deployment configuration rejected; verify bindings, isolation, caching, TLS and development scope.');
   });
 });

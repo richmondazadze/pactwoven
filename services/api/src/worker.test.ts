@@ -293,6 +293,21 @@ describe('Worker environment and lifecycle validation', () => {
     expect(mocks.runtimePool).not.toHaveBeenCalled();
   });
 
+  it('accepts workflow service capabilities only on the public API and rejects private workflow configuration', () => {
+    for (const name of ['FINANCIAL_AUTHORITY', 'SUPPLIER_AUTHORITY']) {
+      const service = { fetch: vi.fn(async () => new Response()) };
+      expect(readWorkerConfig({ ...bindings('api'), [name]: service }, 'api').environment).toBe('development');
+      expect(() => readWorkerConfig({ ...bindings('api'), [name]: {} }, 'api')).toThrow();
+      expect(() => readWorkerConfig({ ...bindings('provisioner'), [name]: service }, 'provisioner')).toThrow();
+    }
+    for (const name of ['FINANCIAL_POLICY_AUTHORIZER_DATABASE', 'FINANCIAL_POLICY_VERIFIER_DATABASE_URL',
+      'EXPECTED_FINANCIAL_POLICY_AUTHORIZER_DATABASE_USER', 'CUSTODY_SETUP_WRITER_DATABASE',
+      'CUSTODY_SETUP_VERIFIER_DATABASE_URL', 'SUPPLIER_BUYER_VERIFIER_DATABASE', 'SUPPLIER_LANES']) {
+      expect(() => readWorkerConfig({ ...bindings('api'), [name]: 'private' }, 'api')).toThrow();
+      expect(() => readWorkerConfig({ ...bindings('provisioner'), [name]: 'private' }, 'provisioner')).toThrow();
+    }
+  });
+
   it('rejects all public access bindings and direct access DSNs, and requires a distinct valid private access binding', () => {
     const privateBindings = bindings('provisioner');
     for (const patch of [{ ACCESS_DATABASE: privateBindings.ACCESS_DATABASE! },

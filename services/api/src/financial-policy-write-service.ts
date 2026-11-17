@@ -1,14 +1,15 @@
 import { z } from 'zod';
+import { snapshotFinancialPolicyWriteRequest, validateFinancialPolicyWriteResponse } from './financial-worker-result.js';
+export { snapshotFinancialPolicyWriteRequest, validateFinancialPolicyWriteResponse } from './financial-worker-result.js';
 import { EnvironmentSchema, FinancialPolicyCommandSchema, FinancialPolicyResultSchema, FinancialPolicyRefSchema,
-  FinancialPolicyHttpMutationResponseSchema, FinancialPolicyHttpScopeSchema,
+  FinancialPolicyHttpScopeSchema,
   type Environment, type FinancialPolicyCommand, type FinancialPolicyHttpRequest, type FinancialPolicyHttpMutationResponse } from '@pactwoven/contracts';
 import { FinancialIdentityEvidenceSchema, FinancialPolicyReaderScopeSchema, FinancialPolicyOriginalSchema,
   type FinancialPolicyReadObservation, type FinancialPolicyReaderScope, type FinancialPolicyOriginalQuery } from '@pactwoven/db';
-import { DomainError, canonicalJson, commandDigest, snapshotFinancialPolicyHttpRequest, financialPolicyHttpRequestHash,
+import { DomainError, canonicalJson, commandDigest, financialPolicyHttpRequestHash,
   financialPolicyHttpRequestFromStoredCommand, projectFinancialPolicyHttpReceipt } from '@pactwoven/domain';
 import { assertFinancialPolicyObservationFresh, validateFinancialPolicyObservation,
   type FinancialPolicyApiVerifier, type FinancialPolicyApiIdentityEvidence } from './financial-policy-verifier.js';
-import { validateFinancialPolicyWire } from './financial-policy-service.js';
 
 export type FinancialPolicyWriteKind = 'save_document' | 'save_draft' | 'withdraw_draft' | 'propose_governance';
 export type FinancialPolicyWriteRequest = Extract<FinancialPolicyHttpRequest, { kind: FinancialPolicyWriteKind }>;
@@ -50,26 +51,6 @@ const clone = <T>(input: T): T => structuredClone(input);
 const allowed = (kind: string): kind is FinancialPolicyWriteKind => ['save_document', 'save_draft', 'withdraw_draft', 'propose_governance'].includes(kind);
 function checked<T>(schema: z.ZodType<T>, input: unknown): T {
   const parsed = schema.safeParse(input); if (!parsed.success) throw financialPolicyWriteOutcomeUnknown(); return parsed.data;
-}
-export function snapshotFinancialPolicyWriteRequest(input: unknown): FinancialPolicyWriteRequest {
-  try { const request = snapshotFinancialPolicyHttpRequest(input); if (!allowed(request.kind)) throw invalid(); return request as FinancialPolicyWriteRequest; }
-  catch { throw invalid(); }
-}
-
-/** Validate the public wire response against the caller's exact snapshot, without private evidence. */
-export async function validateFinancialPolicyWriteResponse(requestInput: unknown, raw: unknown): Promise<FinancialPolicyHttpMutationResponse> {
-  const request = snapshotFinancialPolicyWriteRequest(requestInput), response = validateFinancialPolicyWire(FinancialPolicyHttpMutationResponseSchema, raw);
-  const receipt = response.receipt, r = receipt.record, previous = request.input.previous;
-  if (receipt.kind !== request.kind || receipt.key !== request.key || receipt.responsibilityId !== request.responsibilityId || receipt.target.id !== request.id ||
-    r.organizationEpoch !== request.input.organizationEpoch || !equal(r.predecessor, previous) || r.version !== (previous?.version ?? 0) + 1 ||
-    request.kind === 'save_document' && (r.kind !== 'document' || r.purpose !== request.input.purpose || r.text !== request.input.text) ||
-    request.kind === 'save_draft' && (r.kind !== 'draft' || !equal(r.draft, request.input.draft)) ||
-    request.kind === 'propose_governance' && (r.kind !== 'governance' || !equal(r.bundle, request.input.bundle) ||
-      !equal(r.expectedControl, request.input.expectedControl) || r.expiresAt !== request.input.expiresAt)) throw financialPolicyWriteOutcomeUnknown();
-  const publicRequestHash = await financialPolicyHttpRequestHash({ environment: response.scope.environment,
-    organizationId: response.scope.organizationId, actorId: response.scope.actor.actorId }, request);
-  if (receipt.publicRequestHash !== publicRequestHash) throw financialPolicyWriteOutcomeUnknown();
-  return response;
 }
 
 type Session = { observation: FinancialPolicyReadObservation; scope: FinancialPolicyReaderScope; evidenceId: string };

@@ -1,9 +1,10 @@
 import { z } from 'zod';
-import { readDatabaseBinding, WorkerConfigurationError, type WorkerBindings } from './worker-config.js';
+import { hasPrivateWorkflowConfiguration, readDatabaseBinding, WorkerConfigurationError, type WorkerBindings } from './worker-config.js';
 
 export function readMandateWorkerConfig(bindings: WorkerBindings) {
   try {
     if (bindings.APP_ENVIRONMENT !== 'development' || bindings.WORKER_ROLE !== 'mandate' ||
+        hasPrivateWorkflowConfiguration(bindings) || bindings.FINANCIAL_AUTHORITY !== undefined || bindings.SUPPLIER_AUTHORITY !== undefined ||
         bindings.DATABASE !== undefined || bindings.ACCESS_DATABASE !== undefined || bindings.IDENTITY_PROVISIONER !== undefined ||
         bindings.MANDATE_AUTHORITY !== undefined || bindings.EXPECTED_DATABASE_USER !== undefined || bindings.EXPECTED_ACCESS_DATABASE_USER !== undefined ||
         bindings.DATABASE_URL !== undefined || bindings.PROVISIONER_DATABASE_URL !== undefined || bindings.ACCESS_DATABASE_URL !== undefined || bindings.MANDATE_DATABASE_URL !== undefined) throw new WorkerConfigurationError();

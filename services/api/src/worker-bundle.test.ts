@@ -46,5 +46,13 @@ it('keeps administrative Clerk, MFA issuance and privileged SQL out of the compi
     }
     expect(publicBundle).toContain('internal/mandates/dispatch');
     expect(publicBundle).toContain('serviceMandateGateway');
+    for (const marker of ['createClerkFinancialPolicyVerifier', 'createClerkCustodySetupVerifier',
+      'createSupplierRelationshipService', 'PostgresFinancialPolicyRepository', 'PostgresCustodySetupRepository',
+      'PostgresSupplierRelationshipRepository', 'SELECT pactwoven.financial_policy_attest(', 'SELECT pactwoven.supplier_record_evidence(']) {
+      expect(publicBundle, `Public bundle contains ${marker}`).not.toContain(marker);
+    }
+    expect(publicBundle).toContain('internal/financial/dispatch');
+    expect(publicBundle).toContain('serviceFinancialGateways');
+    expect(publicBundle).toContain('serviceSupplierRelationshipGateway');
   } finally { await rm(directory, { recursive: true, force: true }); }
 }, 45_000);

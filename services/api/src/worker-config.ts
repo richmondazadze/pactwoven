@@ -28,6 +28,8 @@ export type WorkerBindings = {
   MANDATE_DATABASE?: HyperdriveBinding;
   EXPECTED_MANDATE_DATABASE_USER?: string;
   MANDATE_AUTHORITY?: ServiceBinding;
+  FINANCIAL_AUTHORITY?: ServiceBinding;
+  SUPPLIER_AUTHORITY?: ServiceBinding;
 };
 
 export class WorkerConfigurationError extends Error {
@@ -35,6 +37,13 @@ export class WorkerConfigurationError extends Error {
 }
 export type WorkerRuntimeConfig = { environment: 'development'; allowedOrigins: string[]; issuer: string; connectionString: string; expectedDatabaseUser: string };
 export type PrivateWorkerConfig = WorkerRuntimeConfig & { secretKey: string; accessConnectionString: string; expectedAccessDatabaseUser: string };
+
+/** Workflow database capabilities belong only to their private service entrypoints. */
+export function hasPrivateWorkflowConfiguration(bindings: object): boolean {
+  return Object.entries(bindings).some(([name, value]) => value !== undefined &&
+    /^(?:EXPECTED_)?(?:FINANCIAL_|CUSTODY_|SUPPLIER_)/.test(name) &&
+    name !== 'FINANCIAL_AUTHORITY' && name !== 'SUPPLIER_AUTHORITY');
+}
 
 export function readDatabaseBinding(database: HyperdriveBinding | undefined): string {
   if (!database || !database.database || !database.user ||
@@ -59,6 +68,7 @@ export function readWorkerConfig(bindings: WorkerBindings, role: 'provisioner'):
 export function readWorkerConfig(bindings: WorkerBindings, role: 'api' | 'provisioner'): WorkerRuntimeConfig | PrivateWorkerConfig {
   try {
     if (bindings.APP_ENVIRONMENT !== 'development' || bindings.WORKER_ROLE !== role ||
+        hasPrivateWorkflowConfiguration(bindings) ||
         bindings.DATABASE_URL !== undefined || bindings.PROVISIONER_DATABASE_URL !== undefined || bindings.ACCESS_DATABASE_URL !== undefined ||
         bindings.MANDATE_DATABASE_URL !== undefined || bindings.MANDATE_DATABASE !== undefined || bindings.EXPECTED_MANDATE_DATABASE_USER !== undefined) throw new WorkerConfigurationError();
     const allowedOrigins = z.string().min(1).parse(bindings.ALLOWED_ORIGINS).split(',');
@@ -89,9 +99,11 @@ export function readWorkerConfig(bindings: WorkerBindings, role: 'api' | 'provis
       if (accessConnectionString === connectionString) throw new WorkerConfigurationError();
     }
     if (role === 'api' && typeof bindings.IDENTITY_PROVISIONER?.fetch !== 'function') throw new WorkerConfigurationError();
-    if (role === 'api' && bindings.MANDATE_AUTHORITY !== undefined && typeof bindings.MANDATE_AUTHORITY.fetch !== 'function') throw new WorkerConfigurationError();
+    for (const binding of [bindings.MANDATE_AUTHORITY, bindings.FINANCIAL_AUTHORITY, bindings.SUPPLIER_AUTHORITY]) {
+      if (role === 'api' && binding !== undefined && typeof binding.fetch !== 'function') throw new WorkerConfigurationError();
+      if (role === 'provisioner' && binding !== undefined) throw new WorkerConfigurationError();
+    }
     if (role === 'provisioner' && bindings.IDENTITY_PROVISIONER !== undefined) throw new WorkerConfigurationError();
-    if (role === 'provisioner' && bindings.MANDATE_AUTHORITY !== undefined) throw new WorkerConfigurationError();
     return { environment: 'development' as const, allowedOrigins, issuer, connectionString, expectedDatabaseUser: expectedUser,
       ...(secretKey && accessConnectionString && accessUser ? { secretKey, accessConnectionString, expectedAccessDatabaseUser: accessUser } : {}) };
   } catch { throw new WorkerConfigurationError(); }

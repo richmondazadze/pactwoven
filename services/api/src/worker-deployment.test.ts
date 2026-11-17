@@ -154,3 +154,54 @@ describe('development Worker deployment guard', () => {
     }
   });
 });
+
+function financialFixture() {
+  const base = fixture();
+  const names = ['FINANCIAL_POLICY_AUTHORIZER_DATABASE', 'FINANCIAL_POLICY_VERIFIER_DATABASE',
+    'CUSTODY_SETUP_WRITER_DATABASE', 'CUSTODY_SETUP_VERIFIER_DATABASE'];
+  const users = ['pactwoven_dev_financial_authorizer', 'pactwoven_dev_financial_verifier',
+    'pactwoven_dev_custody_setup_writer', 'pactwoven_dev_custody_setup_verifier'];
+  const ids = ['e', 'f', '1', '2'].map(value => value.repeat(32));
+  const financial = { ...structuredClone(mandateSource), name: 'pactwoven-financial-development', main: 'src/financial-worker.ts',
+    vars: { APP_ENVIRONMENT: 'development', WORKER_ROLE: 'financial', ALLOWED_ORIGINS: base.api.vars.ALLOWED_ORIGINS,
+      ...Object.fromEntries(names.map((name, index) => [`EXPECTED_${name}_USER`, users[index]])) },
+    hyperdrive: names.map((binding, index) => ({ binding, id: ids[index]! })) };
+  base.api.services.push({ binding: 'FINANCIAL_AUTHORITY', service: financial.name });
+  return { ...base, financial, workerSecrets: { ...base.workerSecrets, financial: [...base.workerSecrets.mandate] },
+    hyperdrives: [...base.hyperdrives, ...users.map((user, index) => ({ ...structuredClone(base.hyperdrives[0]!), id: ids[index]!,
+      origin: { ...base.hyperdrives[0]!.origin, user } }))] };
+}
+
+describe('optional financial Worker deployment', () => {
+  it('accepts four private capabilities with independently observed TLS origins', () => {
+    expect(() => assertDevelopmentWorkerDeployment(financialFixture())).not.toThrow();
+  });
+  it('rejects public exposure, unrelated services, credential placement, role aliases and weaker database transport', () => {
+    const changes = [
+      (v: ReturnType<typeof financialFixture>) => { v.financial.workers_dev = true; },
+      (v: ReturnType<typeof financialFixture>) => { v.financial.preview_urls = true; },
+      (v: ReturnType<typeof financialFixture>) => { v.financial.services = [{ binding: 'OTHER', service: 'other' }]; },
+      (v: ReturnType<typeof financialFixture>) => { v.api.services.at(-1).service = 'other'; },
+      (v: ReturnType<typeof financialFixture>) => { v.financial.vars.EXPECTED_FINANCIAL_POLICY_VERIFIER_DATABASE_USER = 'pactwoven_dev_app'; },
+      (v: ReturnType<typeof financialFixture>) => { v.financial.hyperdrive[1]!.id = v.financial.hyperdrive[0]!.id; },
+      (v: ReturnType<typeof financialFixture>) => { v.financial.hyperdrive[1]!.binding = v.financial.hyperdrive[0]!.binding; },
+      (v: ReturnType<typeof financialFixture>) => { v.financial.hyperdrive[1]!.id = v.api.hyperdrive[0].id; },
+      (v: ReturnType<typeof financialFixture>) => { v.financial.vars.CLERK_SECRET_KEY = 'private-binding'; },
+      (v: ReturnType<typeof financialFixture>) => { v.workerSecrets.financial.pop(); },
+      (v: ReturnType<typeof financialFixture>) => { v.workerSecrets.financial.push('DATABASE_URL'); },
+      (v: ReturnType<typeof financialFixture>) => { v.financial.vars.ALLOWED_ORIGINS = 'https://other.example'; },
+      (v: ReturnType<typeof financialFixture>) => { v.hyperdrives[4]!.origin.user = 'owner'; },
+      (v: ReturnType<typeof financialFixture>) => { v.hyperdrives[4]!.caching.disabled = false; },
+      (v: ReturnType<typeof financialFixture>) => { v.hyperdrives[4]!.mtls.sslmode = 'require'; },
+      (v: ReturnType<typeof financialFixture>) => { v.hyperdrives[4]!.origin.host = 'ep-other.neon.tech'; },
+      (v: ReturnType<typeof financialFixture>) => { v.hyperdrives.push(v.hyperdrives[4]!); },
+    ];
+    for (const change of changes) { const data = financialFixture(); change(data); expect(() => assertDevelopmentWorkerDeployment(data)).toThrow(); }
+  });
+  it('requires configuration and secret inventory whenever the API binds the financial service', () => {
+    const data = financialFixture();
+    expect(() => assertDevelopmentWorkerDeployment({ ...data, financial: undefined })).toThrow();
+    expect(() => assertDevelopmentWorkerDeployment({ ...data, workerSecrets: { ...data.workerSecrets, financial: undefined } })).toThrow();
+    expect(() => assertDevelopmentWorkerDeployment({ ...data, api: { ...data.api, services: data.api.services.slice(0, 2) } })).toThrow();
+  });
+});

@@ -1,14 +1,14 @@
 import { z } from 'zod';
+import { snapshotFinancialPolicyPreparationSelection, validateFinancialPolicyPreparationResponse } from './financial-worker-result.js';
+export { snapshotFinancialPolicyPreparationSelection, validateFinancialPolicyPreparationResponse } from './financial-worker-result.js';
 import { EnvironmentSchema, FinancialPolicyRefSchema, FinancialPolicyPreparationRequestSchema, FinancialPolicyHttpAssetContextSchema,
-  FinancialPolicyPreparationResponseSchema, FINANCE_DEVNET_ASSET, encodeSolanaBase58,
+  encodeSolanaBase58,
   type Environment, type FinancialPolicyPreparationRequest, type FinancialPolicyPreparationResponse,
   type FinancialPolicyPreparationMaterial, type FinancialPolicyPreparationTarget, type FinancialPolicyRead,
   type FinancialPolicyHttpBudgetObservation, type FinancialPolicyHttpDocumentView } from '@pactwoven/contracts';
-import { FinancialIdentityEvidenceSchema, FinancialPolicyReaderScopeSchema, FinancialPolicyPreparationQuerySchema,
-  FinancialPolicyPreparationSchema, type FinancialPolicyReadObservation, type FinancialPolicyReaderScope,
+import { FinancialIdentityEvidenceSchema, FinancialPolicyReaderScopeSchema, FinancialPolicyPreparationSchema, type FinancialPolicyReadObservation, type FinancialPolicyReaderScope,
   type FinancialPolicyPreparationQuery } from '@pactwoven/db';
-import { DomainError, canonicalJson, commandDigest, projectFinancialPolicyHttpView, financialPolicyTextHash,
-  physicalAssetKey, financialBudgetAccountId, financialBudgetPeriodId, validateFinancialGovernanceBundle, provenanceBytes } from '@pactwoven/domain';
+import { DomainError, canonicalJson, commandDigest, projectFinancialPolicyHttpView, provenanceBytes } from '@pactwoven/domain';
 import { validateFinancialPolicyObservation, assertFinancialPolicyObservationFresh,
   type FinancialPolicyApiVerifier, type FinancialPolicyApiIdentityEvidence } from './financial-policy-verifier.js';
 
@@ -48,60 +48,7 @@ const clone = <T>(value: T): T => structuredClone(value);
 function checked<T>(schema: z.ZodType<T>, value: unknown): T {
   const parsed = schema.safeParse(value); if (!parsed.success) throw financialPolicyPreparationUnverified(); return parsed.data;
 }
-export function snapshotFinancialPolicyPreparationSelection(responsibilityId: unknown, selection: unknown): FinancialPolicyPreparationQuery {
-  const parsed = FinancialPolicyPreparationQuerySchema.safeParse({ responsibilityId, selection });
-  if (!parsed.success) throw invalid(); return parsed.data;
-}
 
-/** Public consistency checks are not authentication. The private gateway supplies the evaluated decision. */
-export async function validateFinancialPolicyPreparationResponse(responsibilityId: string | null,
-  selection: FinancialPolicyPreparationRequest, input: unknown, now: () => number = Date.now): Promise<FinancialPolicyPreparationResponse> {
-  const q = snapshotFinancialPolicyPreparationSelection(responsibilityId, selection), v = checked(FinancialPolicyPreparationResponseSchema, input);
-  const fresh = () => {
-    const at = now();
-    if (!Number.isFinite(at) || Date.parse(v.observation.observedAt) > at || Date.parse(v.observation.expiresAt) <= at)
-      throw financialPolicyPreparationUnverified();
-  };
-  fresh();
-  if (v.responsibilityId !== q.responsibilityId || !equal(v.selection, q.selection)) throw financialPolicyPreparationUnverified();
-  const documents: FinancialPolicyHttpDocumentView[] = [...v.target.historicalDocuments];
-  if (v.target.state === 'exact' && v.target.record.record.kind === 'document') documents.push(v.target.record as FinancialPolicyHttpDocumentView);
-  const m = v.material;
-  if (m.action === 'save_draft' && m.document) documents.push(m.document);
-  if (m.action === 'propose_governance') {
-    if (m.budgetDocument) documents.push(m.budgetDocument);
-    if (m.approvalDocument) documents.push(m.approvalDocument);
-    if (m.asset) {
-      const a = m.asset;
-      if (a.genesis !== FINANCE_DEVNET_ASSET.genesis || a.tokenProgram !== FINANCE_DEVNET_ASSET.tokenProgram ||
-        a.mint !== FINANCE_DEVNET_ASSET.mint || a.decimals !== 6 || a.policy !== 'solana-original-devnet-usdc-v1' ||
-        a.pin.key !== await physicalAssetKey({ genesis: a.genesis, tokenProgram: a.tokenProgram, mint: a.mint }) ||
-        m.budgetAccountId !== await financialBudgetAccountId(v.scope.environment, v.scope.organizationId, a.pin.key))
-        throw financialPolicyPreparationUnverified();
-      fresh();
-      for (const p of m.periods) {
-        if (p.id !== await financialBudgetPeriodId(m.budgetAccountId!, p.startsAt, p.endsAt)) throw financialPolicyPreparationUnverified(); fresh();
-      }
-    }
-  }
-  for (const d of documents) { if (d.record.contentHash !== await financialPolicyTextHash(d.record.text)) throw financialPolicyPreparationUnverified(); fresh(); }
-  const scopes = [];
-  if ((m.action === 'save_document' || m.action === 'save_draft') && m.draftScope) scopes.push(m.draftScope);
-  if (v.target.state === 'exact' && v.target.record.record.kind === 'draft') scopes.push(v.target.record.record.draft.scope);
-  for (const d of scopes) {
-    if (d.authorityHash !== await commandDigest({ namespace: 'pactwoven:financial-authority-fence:v1',
-      record: { ...d.authority, environment: v.scope.environment, organizationId: v.scope.organizationId } })) throw financialPolicyPreparationUnverified(); fresh();
-  }
-  const bundles = [];
-  if (v.target.state === 'exact' && v.target.record.record.kind === 'governance') bundles.push(v.target.record.record.bundle);
-  if (m.action === 'propose_governance' && m.acceptedConfiguration) bundles.push(m.acceptedConfiguration.record.bundle);
-  for (const bundle of bundles) {
-    try { await validateFinancialGovernanceBundle(v.scope.environment, v.scope.organizationId, bundle); }
-    catch { throw financialPolicyPreparationUnverified(); }
-    fresh();
-  }
-  fresh(); return v;
-}
 type Session = { observation: FinancialPolicyReadObservation; scope: FinancialPolicyReaderScope; evidenceId: string; observedAt: number; expiresAt: number };
 
 /** Identity observation plus one coherent preparation read. No command, factor, pool or financial capability is accepted. */

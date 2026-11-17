@@ -1,13 +1,15 @@
-import {createHash} from 'node:crypto';
+import { custodyPrivateCommand as privateCommand, custodyMessageHash, validateCustodyApiOperation, validateCustodyApiMutationResponse,
+ type CustodyPublicRequest as Request } from './financial-worker-result.js';
+export { validateCustodyApiOperation, validateCustodyApiMutationResponse } from './financial-worker-result.js';
 import {z} from 'zod';
 import {CustodyPrepareHttpSchema,CustodyChallengeHttpSchema,CustodyConfirmationHttpSchema,CustodyConfirmHttpSchema,CustodyCancelHttpSchema,
- CustodyCommandSchema,CustodyResultSchema,CustodyReadSchema,CustodyRefSchema,CustodySetupSpecificationSchema,
+ CustodyReadSchema,CustodyRefSchema,CustodySetupSpecificationSchema,
  CustodyUuidSchema,IdSchema,CustodyApiRecoveryQuerySchema,CustodyApiMutationResponseSchema,CustodyApiReadResponseSchema,CustodyApiRecoveryResponseSchema,
  CustodyApiRecoveryContextSchema,type CustodyApiRecoveryContext,
  type CustodyApiMutationResponse,type CustodyApiReadResponse,type CustodyApiRecoveryResponse,type CustodyCommand,type CustodyResult,type CustodyRecord,type CustodySetupSpecification} from '@pactwoven/contracts';
 import {CustodyAuthEvidenceSchema,CustodyPrivateRecordSchema,CustodyOriginalOperationSchema,
  type CustodySetupReaders,type CustodySetupRepository,type CustodyAuthEvidence} from '@pactwoven/db';
-import {canonicalJson,commandDigest,custodyCommandHash,custodyRecordHash,custodySpecificationHash,custodyWalletChallengeBytes,DomainError,type ErrorStatus} from '@pactwoven/domain';
+import {canonicalJson,commandDigest,custodyRecordHash,custodySpecificationHash,custodyWalletChallengeBytes,DomainError,type ErrorStatus} from '@pactwoven/domain';
 import {CustodyApiOwnerScopeSchema,custodyApiSignatureHash,type CustodyApiOwnerScope,type CustodyApiObservation,type CustodyApiVerifier} from './custody-setup-verifier.js';
 
 type Ref=z.infer<typeof CustodyRefSchema>;
@@ -32,11 +34,7 @@ export interface CustodySetupGateway {
  get(token:string,responsibilityId:string,setupId:string,trace:string):Promise<CustodyApiReadResponse>;
  recover(token:string,responsibilityId:string,input:unknown,trace:string):Promise<CustodyApiRecoveryResponse>;
 }
-type Request={kind:'prepare';responsibilityId:string;body:z.infer<typeof CustodyPrepareHttpSchema>}|
- {kind:'challenge';responsibilityId:string;setupId:string;body:z.infer<typeof CustodyChallengeHttpSchema>}|
- {kind:'confirmation';responsibilityId:string;setupId:string;body:z.infer<typeof CustodyConfirmationHttpSchema>}|
- {kind:'confirm';responsibilityId:string;setupId:string;body:z.infer<typeof CustodyConfirmHttpSchema>}|
- {kind:'cancel';responsibilityId:string;setupId:string;body:z.infer<typeof CustodyCancelHttpSchema>};
+
 type Context={observation:CustodyApiObservation;scope:CustodyApiOwnerScope;identityEvidenceId:string;identityEvidence:Ref};
 const unknown=()=>new DomainError('CUSTODY_OUTCOME_UNKNOWN',503,'The original setup result could not be confirmed. Check the same request key.');
 const conflict=()=>new DomainError('CUSTODY_KEY_CONFLICT',409,'This key belongs to a different setup request. Preserve its original result.');
@@ -56,84 +54,11 @@ export function safeCustodyApiError(error:unknown):DomainError {
  if(error instanceof DomainError&&safeErrors[error.code]){const [status,message]=safeErrors[error.code]!;return new DomainError(error.code,status,message);}
  return unknown();
 }
-function privateCommand(request:Request,proofId?:string):CustodyCommand {
- const common={schemaVersion:1,key:request.body.key,responsibilityId:request.responsibilityId,kind:request.kind};
- if(request.kind==='prepare')return CustodyCommandSchema.parse({...request.body,...common});
- const expected={...common,setupId:request.setupId,expectedSetupVersion:request.body.expectedSetupVersion,expectedSetupHash:request.body.expectedSetupHash};
- switch(request.kind){case 'challenge':return CustodyCommandSchema.parse(expected);
-  case 'confirmation':return CustodyCommandSchema.parse({...expected,confirmationKey:request.body.confirmationKey,challengeId:request.body.challengeId,challengeHash:request.body.challengeHash,walletEvidenceId:proofId});
-  case 'confirm':return CustodyCommandSchema.parse({...expected,confirmationId:request.body.confirmationId,confirmationNonce:request.body.confirmationNonce,mfaEvidenceId:proofId});
-  case 'cancel':return CustodyCommandSchema.parse({...expected,expectedSetupControlGeneration:request.body.expectedSetupControlGeneration});}
-}
-/** A self-consistent record hash is insufficient: bind all references present in the private command. */
-export async function validateCustodyApiOperation(input:unknown,command?:CustodyCommand):Promise<CustodyResult>{
- const parsed=CustodyResultSchema.safeParse(input);if(!parsed.success)throw unknown();const r=parsed.data,b=r.body;
- if(b.organizationId!==r.organizationId||b.actorId!==r.actorId||b.responsibilityId!==r.responsibilityId||b.setupId!==r.setupId||
-  r.target.id!==b.id||r.target.version!==b.version||r.target.recordHash!==await custodyRecordHash(b)||
-  b.kind!==({prepare:'draft',challenge:'wallet_challenge',confirmation:'confirmation',confirm:'owner_binding',cancel:'cancellation'} as const)[r.kind])throw unknown();
- if(b.kind==='draft'&&(b.prepareOperationId!==r.id||b.version!==(b.predecessor?b.predecessor.version+1:1)))throw unknown();
- if(b.kind==='confirmation'){
-  const i=b.intent;
-  if(i.organizationId!==r.organizationId||i.responsibilityId!==r.responsibilityId||i.setupId!==r.setupId||i.owner.actorId!==r.actorId||b.walletEvidence.version!==1||
-   b.intentHash!==await commandDigest(i)||b.requestHash!==await commandDigest({schemaVersion:1,purpose:'custody_setup_owner_binding',request:{nonce:i.nonce,key:i.key,intent:i}}))throw unknown();
- }
- if(b.kind==='owner_binding'){
-  if(canonicalJson(b.confirmOperation)!==canonicalJson({id:r.id,key:r.key,commandHash:r.commandHash})||
-   b.specification.organization.id!==r.organizationId||b.specification.responsibility.id!==r.responsibilityId||b.specification.owner.actorId!==r.actorId||
-   canonicalJson(b.specificationRef)!==canonicalJson({id:b.specification.id,version:b.specification.version,recordHash:await custodySpecificationHash(b.specification)})||
-   b.identityEvidence.version!==1||b.walletEvidence.version!==1||b.mfaEvidence.version!==1)throw unknown();
- }
- if(b.kind==='cancellation'&&b.controlGeneration!==b.previousControlGeneration+1)throw unknown();
- if(!command)return r;
- if(r.kind!==command.kind||r.key!==command.key||r.responsibilityId!==command.responsibilityId||r.commandHash!==await custodyCommandHash(r.organizationId,r.actorId,command)||
-  (command.kind!=='prepare'&&r.setupId!==command.setupId))throw unknown();
- if(command.kind==='prepare'){
-  if(b.kind!=='draft'||canonicalJson(b.specification)!==canonicalJson(command.reviewedSpecificationRef)||canonicalJson(b.predecessor)!==canonicalJson(command.previousDraft))throw unknown();
- }else if(b.kind==='draft'||b.draft.version!==command.expectedSetupVersion||b.draft.recordHash!==command.expectedSetupHash)throw unknown();
- if(command.kind==='confirmation'&&(b.kind!=='confirmation'||b.walletEvidence.id!==command.walletEvidenceId||b.intent.challenge.id!==command.challengeId||
-  b.intent.challenge.recordHash!==command.challengeHash||b.intent.key!==command.confirmationKey))throw unknown();
- if(command.kind==='confirm'&&(b.kind!=='owner_binding'||b.confirmation.id!==command.confirmationId||b.mfaEvidence.id!==command.mfaEvidenceId))throw unknown();
- if(command.kind==='cancel'&&(b.kind!=='cancellation'||b.previousControlGeneration!==command.expectedSetupControlGeneration||b.controlGeneration!==command.expectedSetupControlGeneration+1))throw unknown();
- return r;
-}
+
 async function result(input:unknown,scope:CustodyApiOwnerScope,command:CustodyCommand):Promise<CustodyResult>{
  const r=await validateCustodyApiOperation(input,command);
  if(r.organizationId!==scope.organizationId||r.actorId!==scope.owner.actorId||r.responsibilityId!==scope.responsibilityId)throw unknown();return r;
 }
-function publicRequest(kind:Request['kind'],responsibilityId:string,setupId:string|undefined,input:unknown):Request {
- if(kind==='prepare')return{kind,responsibilityId,body:CustodyPrepareHttpSchema.parse(input)};
- const common={responsibilityId,setupId:CustodyUuidSchema.parse(setupId)};
- switch(kind){case 'challenge':return{...common,kind,body:CustodyChallengeHttpSchema.parse(input)};
-  case 'confirmation':return{...common,kind,body:CustodyConfirmationHttpSchema.parse(input)};
-  case 'confirm':return{...common,kind,body:CustodyConfirmHttpSchema.parse(input)};
-  case 'cancel':return{...common,kind,body:CustodyCancelHttpSchema.parse(input)};}
-}
-function publicProofMatches(request:Request,r:CustodyResult):boolean {
- if(request.kind==='confirmation')return r.body.kind==='confirmation'&&r.body.intent.signatureHash===custodyApiSignatureHash(request.body.walletSignature);
- if(request.kind==='confirm')return r.body.kind==='owner_binding'&&r.body.signatureHash===custodyApiSignatureHash(request.body.walletSignature)&&
-  r.body.challenge.id===request.body.challengeId&&r.body.challenge.recordHash===request.body.challengeHash&&r.body.confirmation.id===request.body.confirmationId;
- return true;
-}
-/** The route must provide its preserved public request, not just a response's own key and hash. */
-export async function validateCustodyApiMutationResponse(input:unknown,kind:Request['kind'],responsibilityId:string,key:string,setupId:string|undefined,publicInput:unknown):Promise<CustodyApiMutationResponse>{
- const parsed=CustodyApiMutationResponseSchema.safeParse(input);if(!parsed.success)throw unknown();const v=parsed.data;
- let request:Request;try{request=publicRequest(kind,responsibilityId,setupId,publicInput);}catch{throw unknown();}
- if(request.body.key!==key)throw unknown();
- const proofId=v.operation.body.kind==='confirmation'?v.operation.body.walletEvidence.id:v.operation.body.kind==='owner_binding'?v.operation.body.mfaEvidence.id:undefined;
- const r=await validateCustodyApiOperation(v.operation,privateCommand(request,proofId));
- if(!publicProofMatches(request,r))throw unknown();
- if(kind==='prepare'||kind==='challenge'){
-  if(!v.review||v.review.organization.id!==r.organizationId||v.review.responsibility.id!==responsibilityId||v.review.owner.actorId!==r.actorId||(r.body.kind!=='draft'&&r.body.kind!=='wallet_challenge')||canonicalJson(r.body.specification)!==canonicalJson({id:v.review.id,version:v.review.version,recordHash:await custodySpecificationHash(v.review)}))throw unknown();
-  if(request.kind==='prepare'&&(v.review.ownerWalletPublicKey!==request.body.ownerWalletPublicKey||canonicalJson(request.body.expectedScope)!==canonicalJson({responsibilityVersion:v.review.responsibility.version,responsibilityHash:v.review.responsibility.hash,siteGeneration:v.review.site.generation,siteRecordHash:v.review.site.recordHash,canonicalGeneration:v.review.authority.snapshot.generation,canonicalHash:v.review.authority.recordHash})))throw unknown();
-  if(r.body.kind==='wallet_challenge'&&(canonicalJson(r.body.owner)!==canonicalJson(v.review.owner)||r.body.wallet!==v.review.ownerWalletPublicKey||r.body.organizationRegistrationUuid!==v.review.organization.registrationUuid||r.body.responsibilityRegistrationUuid!==v.review.responsibility.registrationUuid||r.body.setupOperationKey!==v.review.setupOperationKey))throw unknown();
- }else if(v.review!==null)throw unknown();
- if(kind==='challenge'){
-  if(r.body.kind!=='wallet_challenge'||!v.message)throw unknown();const bytes=Buffer.from(custodyWalletChallengeBytes(r.body));
-  if(v.message.bytes!==bytes.toString('base64')||v.message.messageHash!==custodyMessageHash(bytes))throw unknown();
- }else if(v.message!==null)throw unknown();return v;
-}
-function custodyMessageHash(bytes:Uint8Array):string {return cryptoHash(bytes);}
-const cryptoHash=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 
 export function createCustodySetupService(dependencies:CustodyApiDependencies):CustodySetupGateway {
  const verifier:CustodyApiVerifier={observe:dependencies.verifier.observe.bind(dependencies.verifier),assertFresh:dependencies.verifier.assertFresh.bind(dependencies.verifier),

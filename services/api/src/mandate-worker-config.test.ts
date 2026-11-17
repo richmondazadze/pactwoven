@@ -27,6 +27,8 @@ describe('isolated development mandate Worker configuration',()=>{
     for(const changed of [{DATABASE:bindings().MANDATE_DATABASE!},{ACCESS_DATABASE:bindings().MANDATE_DATABASE!},
       {EXPECTED_DATABASE_USER:'runtime'},{EXPECTED_ACCESS_DATABASE_USER:'access'},
       {IDENTITY_PROVISIONER:{fetch:async()=>new Response()}},{MANDATE_AUTHORITY:{fetch:async()=>new Response()}},
+      {FINANCIAL_AUTHORITY:{fetch:async()=>new Response()}},{SUPPLIER_AUTHORITY:{fetch:async()=>new Response()}},
+      {FINANCIAL_POLICY_AUTHORIZER_DATABASE:bindings().MANDATE_DATABASE!},{SUPPLIER_RELATIONSHIP_LANES:'private'},
       ...['DATABASE_URL','PROVISIONER_DATABASE_URL','ACCESS_DATABASE_URL','MANDATE_DATABASE_URL'].map(name=>({[name]:''}))]){
       expect(()=>readMandateWorkerConfig({...bindings(),...changed})).toThrow(WorkerConfigurationError);
     }

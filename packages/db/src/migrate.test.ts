@@ -11,7 +11,7 @@ const authoredMigrationFiles = ['0001_foundation.sql', '0002_organization_bootst
   '0004_mandate_authority.sql', '0005_access_acceptance.sql', '0006_access_recovery_fences.sql', '0007_finance_provenance.sql',
   '0008_financial_authority_fences.sql', '0009_custody_setup_owner_bindings.sql', '0010_custody_setup_private_reads.sql',
   '0011_financial_policy_authority.sql', '0012_financial_policy_private_reads.sql', '0013_financial_policy_preparation.sql',
-  '0014_supplier_identity_versions.sql'];
+  '0014_supplier_identity_versions.sql', '0015_supplier_relationship_authority.sql', '0016_supplier_observer_resolution.sql'];
 function fixtureDatabaseUrl(source: string): string {
   const url = new URL(source);
   url.password = 'fixture';
@@ -138,10 +138,10 @@ describe('development migration validation', () => {
     await expect(loadMigrations(gap)).rejects.toMatchObject({ code: 'MIGRATION_ORDER_INVALID' });
     await expect(loadMigrations(duplicate)).rejects.toMatchObject({ code: 'MIGRATION_ORDER_INVALID' });
   });
-  it('loads the exact fourteen authored migrations including supplier identity versions without a database connection', async () => {
+  it('loads the exact sixteen authored migrations including supplier observer resolution without a database connection', async () => {
     const migrations = await loadMigrations();
     expect(migrations.map(migration => migration.filename)).toEqual(authoredMigrationFiles);
-    expect(migrations.map(migration => migration.number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    expect(migrations.map(migration => migration.number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
     for (const migration of migrations) {
       expect(migration.checksum).toMatch(/^[a-f0-9]{64}$/);
       expect(migration.statements.length).toBeGreaterThan(0);
@@ -264,7 +264,8 @@ dbSuite('development migrations — dedicated real PostgreSQL database', () => {
   });
 
   it('adds organization version one without reconstructing history or changing identities, legacy grants or triggers', async () => {
-    const priorNames = authoredMigrationFiles.slice(0, -1);
+    const priorNames = authoredMigrationFiles.slice(0, 13);
+    const targetNames = authoredMigrationFiles.slice(0, 14);
     const priorDirectory = await fixture(Object.fromEntries(await Promise.all(priorNames.map(async name =>
       [name, await readFile(new URL(`../migrations/${name}`, import.meta.url), 'utf8')] as const))));
     await migrateDatabase(connectionString, 'pactwoven_migration_test', priorDirectory);
@@ -275,7 +276,9 @@ dbSuite('development migrations — dedicated real PostgreSQL database', () => {
     const legacyBefore = (await admin.query(`SELECT c.relname,c.relacl,c.relrowsecurity,c.relforcerowsecurity FROM pg_class c
       JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pactwoven' AND c.relname IN ('organizations','memberships') ORDER BY c.relname`)).rows;
     const rebindingBefore = (await admin.query("SELECT pg_get_functiondef('pactwoven.prevent_member_rebinding()'::regprocedure) AS definition")).rows[0];
-    const upgraded = await migrateDatabase(connectionString, 'pactwoven_migration_test');
+    const targetDirectory = await fixture(Object.fromEntries(await Promise.all(targetNames.map(async name =>
+      [name, await readFile(new URL(`../migrations/${name}`, import.meta.url), 'utf8')] as const))));
+    const upgraded = await migrateDatabase(connectionString, 'pactwoven_migration_test', targetDirectory);
     expect(upgraded).toEqual({ database: 'pactwoven_migration_test', applied: ['0014_supplier_identity_versions.sql'], skipped: priorNames });
     expect((await admin.query("SELECT to_jsonb(o)-'row_version' AS body FROM pactwoven.organizations o ORDER BY environment,id")).rows).toEqual(organizationsBefore);
     expect((await admin.query('SELECT to_jsonb(m) AS body FROM pactwoven.memberships m ORDER BY environment,organization_id,actor_id')).rows).toEqual(membershipsBefore);

@@ -1,6 +1,6 @@
 import {readFile} from 'node:fs/promises';
 import {afterEach,beforeEach,describe,expect,it} from 'vitest';
-import {custodyPostgresVersion,custodySystemPrivilegePredicate} from './custody-setup-system-privileges.js';
+import {custodyPostgresVersions,custodySystemPrivilegePredicate} from './custody-setup-system-privileges.js';
 import {assertCustodySetupConnection} from './custody-setup-pool.js';
 import {custodyReadFixture,custodyReadFixtureEnabled,type CustodyReadFixture} from './custody-setup-read.test-support.js';
 
@@ -15,9 +15,11 @@ const initialRestricted=`SELECT p.oid::regprocedure::text AS signature,p.proname
  ORDER BY p.oid`;
 
 it('keeps the SQL and connection predicates identical and preserves every original 0009 principal/evidence condition',async()=>{
- const [old,sql]=await Promise.all([readFile(new URL('../migrations/0009_custody_setup_owner_bindings.sql',import.meta.url),'utf8'),readFile(new URL('../migrations/0010_custody_setup_private_reads.sql',import.meta.url),'utf8')]);
+ const [old,sql,current]=await Promise.all([readFile(new URL('../migrations/0009_custody_setup_owner_bindings.sql',import.meta.url),'utf8'),readFile(new URL('../migrations/0010_custody_setup_private_reads.sql',import.meta.url),'utf8'),readFile(new URL('../migrations/0017_managed_postgres_qualification.sql',import.meta.url),'utf8')]);
  const helper=sql.slice(sql.indexOf('CREATE FUNCTION pactwoven.custody_system_privileges_safe('),sql.indexOf('-- Preserve the published 0009 conditions'));
- expect(helper).toContain(`SELECT (${custodySystemPrivilegePredicate}\n )`);
+ expect(helper).toContain(`SELECT (${custodySystemPrivilegePredicate.replace(' IN(170011,170012)','=170011')}\n )`);
+ expect(current).toContain(`SELECT (${custodySystemPrivilegePredicate}\n )`);
+ expect(custodyPostgresVersions).toEqual([170011,170012]);
  for(const [name,next] of [['custody_principal','custody_evidence_current'],['custody_evidence_current','custody_context']]){
   const original=old.slice(old.indexOf(`CREATE FUNCTION pactwoven.${name}(`),old.indexOf(`CREATE FUNCTION pactwoven.${next}(`)).trim();
   const start=sql.indexOf(`CREATE OR REPLACE FUNCTION pactwoven.${name}(`),end=sql.indexOf('END $$;',start);
@@ -49,7 +51,7 @@ describe.skipIf(!custodyReadFixtureEnabled)('custody restricted PostgreSQL autho
  };
 
  it('matches the PG17.11 initdb restriction inventory and preserves ordinary approved built-ins',async()=>{
-  expect(Number((await f.admin.query("SELECT current_setting('server_version_num') AS version")).rows[0].version)).toBe(custodyPostgresVersion);
+  expect(custodyPostgresVersions).toContain(Number((await f.admin.query("SELECT current_setting('server_version_num') AS version")).rows[0].version));
   const rows=(await f.admin.query(initialRestricted,[f.writer.role])).rows;
   expect(rows).toHaveLength(62);expect(rows.every(r=>r.forbidden)).toBe(true);
   for(const capability of ['writer','verifier'] as const){

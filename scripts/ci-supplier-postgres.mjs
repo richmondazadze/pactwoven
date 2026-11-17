@@ -24,6 +24,12 @@ const fixtures = Object.freeze({
     urlVariable: 'PACTWOVEN_SUPPLIER_OBSERVER_TEST_ADMIN_URL_FILE',
     consentVariable: 'PACTWOVEN_SUPPLIER_OBSERVER_DISPOSABLE',
   },
+  'managed-postgres': {
+    port: 55442, user: 'supplier_observer_fixture_admin', database: 'pactwoven_supplier_observer_sql_test',
+    file: 'packages/db/src/managed-postgres-qualification-sql.test.ts',
+    urlVariable: 'PACTWOVEN_SUPPLIER_OBSERVER_TEST_ADMIN_URL_FILE',
+    consentVariable: 'PACTWOVEN_SUPPLIER_OBSERVER_DISPOSABLE',
+  },
 });
 const selected = process.env.SUPPLIER_CI_FIXTURE;
 if (process.env.CI !== 'true' || process.env.GITHUB_ACTIONS !== 'true' ||

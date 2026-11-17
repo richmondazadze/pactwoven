@@ -1,3 +1,4 @@
+import { supplierRuntimeMembershipPredicate } from './supplier-runtime-membership.js';
 import type { Pool, PoolClient } from 'pg';
 import { DomainError, immutable } from '@pactwoven/domain';
 import {
@@ -57,7 +58,7 @@ export class PostgresSupplierObserverRepository {
           AND r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolbypassrls
           AND NOT r.rolcreatedb AND NOT r.rolcreaterole AND NOT r.rolreplication
           AND NOT r.rolinherit AND r.rolconfig IS NULL
-          AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member=r.oid OR m.roleid=r.oid)
+          AND (${supplierRuntimeMembershipPredicate})
         ) AS safe FROM pg_catalog.pg_roles r WHERE r.rolname=SESSION_USER`, [verifier.name, verifier.oid]);
       if (principal.rows.length !== 1 || principal.rows[0]?.safe !== true) throw unsafe();
       current();

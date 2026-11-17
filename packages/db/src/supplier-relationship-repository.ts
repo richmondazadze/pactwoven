@@ -1,3 +1,4 @@
+import { supplierRuntimeMembershipPredicate } from './supplier-runtime-membership.js';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import { InstantSchema, VersionReferenceSchema } from '@pactwoven/contracts';
@@ -65,7 +66,7 @@ async function assertPrincipal(client: Client, binding: Binding, capability: Cap
         AND r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolbypassrls
         AND NOT r.rolcreatedb AND NOT r.rolcreaterole AND NOT r.rolreplication
         AND NOT r.rolinherit AND r.rolconfig IS NULL
-        AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member=r.oid OR m.roleid=r.oid)
+        AND (${supplierRuntimeMembershipPredicate})
       ) AS safe FROM pg_catalog.pg_roles r WHERE r.rolname=SESSION_USER`, [principal.name, principal.oid]);
     if (result.rows.length !== 1 || result.rows[0]?.safe !== true) throw unsafe();
   } catch { throw unsafe(); }

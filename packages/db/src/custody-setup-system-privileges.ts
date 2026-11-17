@@ -1,12 +1,12 @@
-/** PostgreSQL REL_17_11 system_functions.sql and system_views.sql restrict these 62 signatures at initdb.
+/** PostgreSQL REL_17_11 and REL_17_12 restrict these 62 signatures at initdb.
  * The cohort is explicit and fails closed on another server version. Checking every
  * overload of each family and initially restricted catalog routine also prevents a
  * later PUBLIC/role ACL from turning the observed ACL into the approval baseline.
  * Reserved predefined roles, including SET-only ancestors, are outside custody.
  * Ordinary public built-ins remain available. No restricted routine is invoked.
- * Keep this predicate byte-equivalent to 0010's private system helper; tests enforce it.
+ * Keep this predicate byte-equivalent to 0017's private system helper; tests enforce it.
  */
-export const custodyPostgresVersion=170011;
+export const custodyPostgresVersions=Object.freeze([170011,170012] as const);
 export const custodySystemPrivilegePredicate=`WITH required(signature) AS (SELECT pg_catalog.unnest(ARRAY[
     'pg_catalog.pg_backup_start(text,boolean)',
     'pg_catalog.pg_backup_stop(boolean)',
@@ -82,7 +82,7 @@ export const custodySystemPrivilegePredicate=`WITH required(signature) AS (SELEC
         AND NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(i.initprivs) a WHERE a.grantee=0 AND a.privilege_type='EXECUTE'))
     )
   )
-  SELECT pg_catalog.current_setting('server_version_num')::integer=170011
+  SELECT pg_catalog.current_setting('server_version_num')::integer IN(170011,170012)
     AND EXISTS(SELECT 1 FROM reachable)
     AND NOT EXISTS(SELECT 1 FROM baseline b LEFT JOIN pg_catalog.pg_proc p ON p.oid=b.oid
       LEFT JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE p.oid IS NULL OR n.nspname<>'pg_catalog')

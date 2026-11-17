@@ -86,7 +86,8 @@ export async function assertObserverSocket(client: PoolClient, config: PoolConfi
 }
 
 export async function loadObserverFixtureMigrations() {
-  const migrations = await loadMigrations();
+  // This fixture proves the immutable 0016 boundary even after later migrations.
+  const migrations = (await loadMigrations()).slice(0, observerMigrationPins.length);
   if (migrations.length !== observerMigrationPins.length || migrations.some((migration, index) =>
     migration.number !== index + 1 || migration.filename !== observerMigrationPins[index]?.[0] ||
     migration.checksum !== observerMigrationPins[index]?.[1])) throw new Error('Exact pinned sixteen migrations required.');

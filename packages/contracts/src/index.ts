@@ -78,3 +78,9 @@ export { SUPPLIER_SCOPE_POLICY_MAX_VALIDITY_MS, SupplierScopePolicyPairSchema,
 export type { SupplierScopePolicyPair, SupplierScopePolicyReference, SupplierScopeCategory,
   SupplierScopePolicyCommand, SupplierScopePolicyCommandIdentity, SupplierScopePolicyVersion,
   SupplierScopePolicySnapshot, SupplierScopePolicyReceipt, SupplierRelationshipPolicyBinding } from './supplier-scope-policy';
+export { SupplierRelationshipHttpKindSchema, supplierRelationshipHttpRoutes, supplierRelationshipHttpBodyLimits,
+  SupplierRelationshipStatusHttpSchema, SupplierRelationshipCommandHttpSchema, SupplierScopePolicyCommandHttpSchema,
+  SupplierScopePolicyReadHttpSchema, SupplierRelationshipRecoveryHttpSchema, SupplierRelationshipHttpRequestSchema,
+  SupplierScopePolicyHttpProjectionSchema, SupplierScopePolicyHttpReceiptSchema, SupplierRelationshipHttpResponseSchema } from './supplier-relationship-http';
+export type { SupplierRelationshipHttpKind, SupplierRelationshipHttpRequest, SupplierScopePolicyHttpProjection,
+  SupplierRelationshipHttpResponse, SupplierRelationshipHttpGateway } from './supplier-relationship-http';

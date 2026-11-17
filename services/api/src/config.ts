@@ -45,7 +45,8 @@ export function readDevelopmentConfig(values: EnvironmentValues) {
     const bindings = [values.DATABASE_URL, values.CLERK_SECRET_KEY, values.CLERK_ISSUER, values.CLERK_PUBLISHABLE_KEY];
     const custodyConfigured = values.CUSTODY_SETUP_WRITER_DATABASE_URL !== undefined || values.CUSTODY_SETUP_VERIFIER_DATABASE_URL !== undefined;
     const financialConfigured = values.FINANCIAL_POLICY_AUTHORIZER_DATABASE_URL !== undefined || values.FINANCIAL_POLICY_VERIFIER_DATABASE_URL !== undefined;
-    if (bindings.every(value => !value) && !values.PROVISIONER_DATABASE_URL && !values.ACCESS_DATABASE_URL && !values.MANDATE_DATABASE_URL && !custodyConfigured && !financialConfigured) {
+    const supplierConfigured = values.SUPPLIER_RELATIONSHIP_LANES !== undefined;
+    if (bindings.every(value => !value) && !values.PROVISIONER_DATABASE_URL && !values.ACCESS_DATABASE_URL && !values.MANDATE_DATABASE_URL && !custodyConfigured && !financialConfigured && !supplierConfigured) {
       return { environment, port, allowedOrigins, credentials: null };
     }
     const databaseUrl = z.string().min(1).parse(values.DATABASE_URL);

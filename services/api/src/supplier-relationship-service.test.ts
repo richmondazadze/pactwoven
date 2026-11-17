@@ -260,7 +260,7 @@ describe('private supplier API composition', () => {
     expect(f.evidence).toHaveLength(1); expect(f.requests).toHaveLength(1);
   });
 
-  it('returns only policy references and original receipt identity, never a private policy issuer', async () => {
+  it('returns allowlisted policy terms and original receipt references, never a private policy issuer', async () => {
     const category = { id: 'delivery', label: 'Delivery', definition: 'Transport sealed goods.' };
     const mutation = { idempotencyKey: 'original_policy_issue_key', command: { pair, expectedVersion: 0, predecessor: null, buyerOrganizationVersion: 1,
       authorityEpoch: 0, payload: { action: 'issue', terms: { buyerSiteIds: ['site'], categories: [category], requestedValidityMs: 60_000 } } } };
@@ -279,7 +279,10 @@ describe('private supplier API composition', () => {
       receipt: { identity: policy.commandIdentity, commandDigest: descriptor.mutationDigest!, recordedAt: iso(NOW), result: record }, current: record } });
     const written = await f.service.submit(token(), { kind: 'policy-command', mutation });
     expect(written).toMatchObject({ receipt: { result: reference }, current: reference });
-    expect(await f.service.submit(token(), { kind: 'policy-read', query: { policy: reference } })).toEqual({ kind: 'policy-read', policy: reference });
+    const read = await f.service.submit(token(), { kind: 'policy-read', query: { policy: reference } });
+    expect(read).toEqual({ kind: 'policy-read', policy: { reference, predecessor: null, status: 'ACTIVE', buyerSiteIds: policy.buyerSiteIds,
+      categories: policy.categories, issuedAt: policy.issuedAt, validFrom: policy.validFrom, expiresAt: policy.expiresAt } });
+    for (const privateField of ['issuer', 'factorEvidence', 'externalOrganizationId', 'private_factor', 'sessionId', 'commandIdentity']) expect(JSON.stringify(read)).not.toContain(privateField);
     for (const privateField of ['issuer', 'factorEvidence', 'externalOrganizationId', 'private_factor', 'categories']) expect(JSON.stringify(written)).not.toContain(privateField);
   });
 });

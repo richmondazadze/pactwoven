@@ -1,11 +1,8 @@
 import type { Pool } from 'pg';
 import { z } from 'zod';
-import {
-  HashSchema, InstantSchema, SupplierRelationshipMutationSchema, SupplierRelationshipReceiptSchema,
-  SupplierRelationshipHeadSchema, SupplierRelationshipProjectionSchema, SupplierScopePolicyMutationSchema,
-  SupplierScopePolicyReferenceSchema, SupplierScopePolicyCommandIdentitySchema,
-} from '@pactwoven/contracts';
+import { SupplierRelationshipMutationSchema, SupplierScopePolicyMutationSchema } from '@pactwoven/contracts';
 import { DomainError, canonicalJson, immutable } from '@pactwoven/domain';
+import { SupplierRelationshipHttpResponseSchema } from '../../../packages/contracts/src/supplier-relationship-http.js';
 import { PostgresSupplierObserverRepository } from '../../../packages/db/src/supplier-observer-repository.js';
 import {
   SupplierObserverConfigurationSchema, SupplierObserverActorSchema, assertSupplierObserverCurrent,
@@ -32,21 +29,9 @@ const requestSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('relationship-recover'), query: SupplierRelationshipRecoveryQuerySchema }),
 ]);
 export type SupplierRelationshipServiceRequest = z.infer<typeof requestSchema>;
-// Private bounded results, not an approved HTTP contract. In particular, a
-// policy reference is deliberately not a full policy view: that projection
-// requires separate review before routes are wired.
-const responseSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('relationship-status'), projection: SupplierRelationshipProjectionSchema }),
-  z.strictObject({ kind: z.literal('policy-read'), policy: SupplierScopePolicyReferenceSchema }),
-  z.strictObject({ kind: z.literal('policy-command'), outcome: z.enum(['APPENDED', 'EXACT_REPLAY']),
-    receipt: z.strictObject({ identity: SupplierScopePolicyCommandIdentitySchema, commandDigest: HashSchema,
-      result: SupplierScopePolicyReferenceSchema, recordedAt: InstantSchema }), current: SupplierScopePolicyReferenceSchema }),
-  z.strictObject({ kind: z.literal('relationship-command'), outcome: z.enum(['APPENDED', 'EXACT_REPLAY']),
-    receipt: SupplierRelationshipReceiptSchema, currentHead: SupplierRelationshipHeadSchema }),
-  z.strictObject({ kind: z.literal('relationship-recover'), original: z.strictObject({
-    mutation: SupplierRelationshipMutationSchema, receipt: SupplierRelationshipReceiptSchema, currentHead: SupplierRelationshipHeadSchema,
-  }).nullable() }),
-]);
+// Return only the shared allowlist; raw SQL records, plans and private evidence
+// never become HTTP responses. Routes separately correlate the original request.
+const responseSchema = SupplierRelationshipHttpResponseSchema;
 export type SupplierRelationshipServiceResponse = z.infer<typeof responseSchema>;
 export type SupplierRelationshipServiceConfiguration = {
   clerk: ClerkIdentityConfig; observer: SupplierObserverConfiguration;
@@ -197,7 +182,10 @@ export function createSupplierRelationshipService(input: SupplierRelationshipSer
         switch (result.kind) {
           case 'relationship-status': response = { kind: result.kind, projection: result.projection }; break;
           case 'policy-read': response = { kind: result.kind, policy: {
-            pair: result.record.policy.pair, version: result.record.policy.version, hash: result.record.policyHash,
+            reference: { pair: result.record.policy.pair, version: result.record.policy.version, hash: result.record.policyHash },
+            predecessor: result.record.policy.predecessor, status: result.record.policy.status,
+            buyerSiteIds: result.record.policy.buyerSiteIds, categories: result.record.policy.categories,
+            issuedAt: result.record.policy.issuedAt, validFrom: result.record.policy.validFrom, expiresAt: result.record.policy.expiresAt,
           } }; break;
           case 'policy-command': response = { kind: result.kind, outcome: result.outcome, receipt: {
             identity: result.receipt.identity, commandDigest: result.receipt.commandDigest, recordedAt: result.receipt.recordedAt,

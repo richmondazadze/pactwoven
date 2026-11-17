@@ -16,6 +16,8 @@ import { registerFinancialPolicyWriteRoutes } from './financial-policy-write-rou
 import type { FinancialPolicyWriteGateway } from './financial-policy-write-service.js';
 import { registerFinancialPolicyPreparationRoutes } from './financial-policy-preparation-routes.js';
 import type { FinancialPolicyPreparationGateway } from './financial-policy-preparation-service.js';
+import { registerSupplierRelationshipRoutes } from './supplier-relationship-routes.js';
+import type { SupplierRelationshipHttpGateway } from '@pactwoven/contracts';
 
 export type AppDependencies = {
   repository?: FoundationRepository;
@@ -28,6 +30,7 @@ export type AppDependencies = {
   financialPolicyGateway?: FinancialPolicyGateway;
   financialPolicyWriteGateway?: FinancialPolicyWriteGateway;
   financialPolicyPreparationGateway?: FinancialPolicyPreparationGateway;
+  supplierRelationshipGateway?: SupplierRelationshipHttpGateway;
   allowedOrigins: readonly string[];
 };
 export type ApiEnv = { Variables: { session: Session; identity: VerifiedIdentity; correlationId: string; requestBody: unknown } };
@@ -113,6 +116,7 @@ export function createApp(dependencies: AppDependencies) {
   registerFinancialPolicyPreparationRoutes(app, dependencies.financialPolicyPreparationGateway);
   registerFinancialPolicyWriteRoutes(app, dependencies.financialPolicyWriteGateway);
   registerFinancialPolicyRoutes(app, dependencies.financialPolicyGateway);
+  registerSupplierRelationshipRoutes(app, dependencies.supplierRelationshipGateway);
 
   app.use('/v1/*', async (c, next) => {
     if (!dependencies.verifyIdentity) {

@@ -33,6 +33,11 @@ export type FinancialPolicyWriteTransportAdapters = {
   wall?: () => number; monotonic?: () => number;
 };
 const unknown = () => new FinancialPolicyClientError('unconfirmed');
+/** Only the failed pre-dispatch stage is retained, never the provider exception. */
+export class FinancialPolicyWriteTokenError extends FinancialPolicyClientError {
+  readonly reason = 'token-unavailable' as const;
+  constructor() { super('unconfirmed'); }
+}
 function interrupted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) { void work.catch(() => {}); return Promise.reject(unknown()); }
   return new Promise((resolve, reject) => {
@@ -115,7 +120,10 @@ export function createFinancialPolicyWriteTransport(adapters: FinancialPolicyWri
       try {
         guard(); const attempt = await interrupted(verifyFinancialPolicyAttempt(pending), signal); guard();
         if (!financialSame(attempt.request, request)) throw new FinancialPolicyClientError('input');
-        const token = await interrupted(getToken({ organizationId: capturedBootstrap.externalOrganizationId, skipCache: true }), signal); guard();
+        let token: string | null;
+        try { token = await interrupted(getToken({ organizationId: capturedBootstrap.externalOrganizationId, skipCache: true }), signal); }
+        catch { throw new FinancialPolicyWriteTokenError(); }
+        guard();
         if (!token || !/^[A-Za-z0-9._~-]{1,8192}$/.test(token)) { lifetime.deny(); throw new FinancialPolicyClientError('scope'); }
         const url = capturedBootstrap.apiBase + request.route;
         const init: RequestInit = { method: 'POST', body: JSON.stringify(request.input), cache: 'no-store', credentials: 'omit',

@@ -46,6 +46,7 @@ async function fixture(revision: { id: string; version: number; kind?: 'document
   const time = { wall: at, mono: 100 }, current = { value: bootstrap as FinancialPolicyBootstrap | null }, values = new Map<string, string>();
   const storage: FinancialPolicyStorage = { get length() { return values.size; }, key: i => [...values.keys()][i] ?? null, getItem: k => values.get(k) ?? null,
     setItem: vi.fn((k, v) => { values.set(k, v); }), removeItem: vi.fn(k => { values.delete(k); }) };
+  const storageOwner = { value: storage as FinancialPolicyStorage | null };
   const receipts: FinancialPolicyHttpReceipt[] = [], selections: unknown[] = [], writeInputs: unknown[] = [];
   const state = { writeUnknown: false, lookupMissing: false, prepChange: (response: any) => response, readResponse: null as unknown, indexResponse: null as unknown };
   const token = vi.fn(async () => 'test_token'), createKey = vi.fn(() => `explicit_original_${receipts.length + 1}`);
@@ -91,11 +92,11 @@ async function fixture(revision: { id: string; version: number; kind?: 'document
     receipts.push(exactReceipt); if (state.writeUnknown) throw Error('Injected acknowledgement loss');
     return json({ ...envelope, status: 'recorded', receipt: exactReceipt });
   });
-  const adapters = { bootstrap, revision, currentBootstrap: () => current.value, getToken: token, fetch: fetcher, storage: () => storage, wall: () => time.wall, monotonic: () => time.mono, createKey, createTargetId };
+  const adapters = { bootstrap, revision, currentBootstrap: () => current.value, getToken: token, fetch: fetcher, storage: () => storageOwner.value, wall: () => time.wall, monotonic: () => time.mono, createKey, createTargetId };
   const controller = createFinancialPolicyAuthoringController(adapters); controllers.push(controller); controller.activate();
   function editDocument(text = 'Exact full financial mandate. Café 🧵') { if (!revision) controller.startNew('document'); controller.edit({ kind: 'document', text }); }
   async function prepareDocument() { if (!controller.getSnapshot().context) await controller.refresh(); editDocument(); controller.reviewDocument(); await controller.prepare(); }
-  return { bootstrap, envelope, context, basis, time, current, values, storage, receipts, selections, writeInputs, state, token, createKey, createTargetId, fetcher, adapters, controller, editDocument, prepareDocument };
+  return { bootstrap, envelope, context, basis, time, current, values, storage, storageOwner, receipts, selections, writeInputs, state, token, createKey, createTargetId, fetcher, adapters, controller, editDocument, prepareDocument };
 }
 async function setDocumentRevisionResponse(f: Awaited<ReturnType<typeof fixture>>) {
   const id = f.adapters.revision?.id ?? 'mandate_doc', version = f.adapters.revision?.version ?? 1, text = 'Exact historical mandate text';
@@ -360,6 +361,110 @@ describe('native authoring controller with injected offline transport', () => {
   it('fails closed on storage failure before write-side token or dispatch', async () => {
     const f = await fixture(); await f.prepareDocument(); vi.mocked(f.storage.setItem).mockImplementation(() => { throw Error('Quota'); });
     const before = f.token.mock.calls.length; await f.controller.save(); expect(f.token.mock.calls.length).toBe(before); expect(f.writeInputs).toHaveLength(0); expect(f.controller.getSnapshot().review).toBeNull();
+  });
+  it('retains a token-rejected original only for one explicit same-request continuation', async () => {
+    const f = await fixture(); await f.prepareDocument();
+    const review = f.controller.getSnapshot().review, preparation = f.controller.getSnapshot().preparation;
+    f.token.mockRejectedValueOnce(Error('secret provider detail Bearer private-token'));
+    await f.controller.save();
+    const view = f.controller.getSnapshot(), original = view.unsent!, stored = [...f.values.entries()];
+    expect(original.locator).toMatchObject({ kind: 'save_document', targetId: 'mandate_doc', key: 'explicit_original_1' });
+    expect(view.review).toBe(review); expect(view.preparation).toBe(preparation);
+    expect(view.message).toContain('original save was not sent'); expect(view.message).toContain('sign-in could not be refreshed');
+    expect(view.message).not.toMatch(/secret provider|private-token|Bearer/);
+    expect(f.writeInputs).toHaveLength(0); expect(f.values.size).toBe(1);
+    expect(stored[0]![1]).not.toContain('Exact full financial mandate');
+    const token = deferred<string>(); f.token.mockReturnValueOnce(token.promise);
+    const first = f.controller.continueOriginalSave(), second = f.controller.continueOriginalSave();
+    await f.controller.save();
+    await vi.waitFor(() => expect(f.token).toHaveBeenCalledTimes(4));
+    expect(f.writeInputs).toHaveLength(0); token.resolve('fresh_token'); await Promise.all([first, second]);
+    expect(f.writeInputs).toHaveLength(1); expect(f.createKey).toHaveBeenCalledOnce(); expect(f.createTargetId).toHaveBeenCalledOnce();
+    const actual = await createFinancialPolicyAttempt(financialPolicyLocalScope(f.bootstrap), f.writeInputs[0]);
+    expect(actual.reference).toEqual(original); expect(actual.request.input).toEqual(review!.input);
+    expect([...f.values.entries()]).toEqual(stored); expect(f.controller.getSnapshot().unsent).toBeNull();
+    expect(f.controller.getSnapshot().receipt?.publicRequestHash).toBe(original.locator.publicRequestHash);
+    await f.controller.continueOriginalSave(); expect(f.writeInputs).toHaveLength(1);
+  });
+  it('classifies a token-acquisition timeout without dispatch and allows a fresh explicit continuation within the same preparation', async () => {
+    vi.useFakeTimers(); const f = await fixture(); await f.prepareDocument();
+    const token = deferred<string>(); f.token.mockReturnValueOnce(token.promise);
+    const save = f.controller.save();
+    await vi.waitFor(() => expect(f.token).toHaveBeenCalledTimes(3));
+    f.time.wall += 10000; f.time.mono += 10000; await vi.advanceTimersByTimeAsync(10000); await save;
+    const original = f.controller.getSnapshot().unsent!;
+    expect(original).not.toBeNull(); expect(f.writeInputs).toHaveLength(0);
+    expect(f.controller.getSnapshot().message).toContain('sign-in could not be refreshed');
+    token.resolve('late_token'); await Promise.resolve(); expect(f.writeInputs).toHaveLength(0);
+    await f.controller.continueOriginalSave();
+    expect(f.writeInputs).toHaveLength(1); expect(f.createKey).toHaveBeenCalledOnce();
+    expect(f.controller.getSnapshot().receipt?.publicRequestHash).toBe(original.locator.publicRequestHash);
+  });
+  it('never enables continuation after dispatch acknowledgement loss or a negative lookup', async () => {
+    const f = await fixture(); await f.prepareDocument(); f.state.writeUnknown = true; await f.controller.save();
+    const original = f.controller.getSnapshot().rows[0]!.reference, calls = f.fetcher.mock.calls.length;
+    expect(f.controller.getSnapshot().unsent).toBeNull(); expect(f.controller.getSnapshot().message).toContain('save result is unknown');
+    await f.controller.continueOriginalSave(); expect(f.fetcher).toHaveBeenCalledTimes(calls);
+    f.state.lookupMissing = true; await f.controller.lookup(original);
+    expect(f.controller.getSnapshot().unsent).toBeNull(); await f.controller.continueOriginalSave();
+    expect(f.writeInputs).toHaveLength(1); expect(f.createKey).toHaveBeenCalledOnce(); expect(f.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it('discards continuation proof as soon as continuing the original reaches an unknown dispatch outcome', async () => {
+    const f = await fixture(); await f.prepareDocument(); f.token.mockRejectedValueOnce(Error('token unavailable')); await f.controller.save();
+    const original = f.controller.getSnapshot().unsent!, stored = [...f.values.entries()]; expect(original).not.toBeNull();
+    f.state.writeUnknown = true; await f.controller.continueOriginalSave();
+    expect(f.writeInputs).toHaveLength(1); expect(f.createKey).toHaveBeenCalledOnce();
+    expect(f.controller.getSnapshot()).toMatchObject({ unsent: null, review: null, receipt: null });
+    expect(f.controller.getSnapshot().message).toContain('save result is unknown');
+    const actual = await createFinancialPolicyAttempt(financialPolicyLocalScope(f.bootstrap), f.writeInputs[0]);
+    expect(actual.reference).toEqual(original); expect([...f.values.entries()]).toEqual(stored);
+    const calls = f.fetcher.mock.calls.length; await f.controller.continueOriginalSave();
+    expect(f.fetcher).toHaveBeenCalledTimes(calls); expect(f.writeInputs).toHaveLength(1);
+  });
+  it('retains the same live original after another token rejection without creating a second request', async () => {
+    const f = await fixture(); await f.prepareDocument(); f.token.mockRejectedValueOnce(Error('first rejection')); await f.controller.save();
+    const original = f.controller.getSnapshot().unsent!, stored = [...f.values.entries()];
+    f.token.mockRejectedValueOnce(Error('second rejection')); await f.controller.continueOriginalSave();
+    expect(f.controller.getSnapshot().unsent).toEqual(original); expect([...f.values.entries()]).toEqual(stored);
+    expect(f.writeInputs).toHaveLength(0); expect(f.createKey).toHaveBeenCalledOnce();
+    expect(f.controller.getSnapshot().message).toContain('sign-in could not be refreshed');
+    await f.controller.continueOriginalSave(); expect(f.writeInputs).toHaveLength(1); expect(f.createKey).toHaveBeenCalledOnce();
+  });
+  it.each(['edit', 'material-read', 'lookup', 'refresh', 'prepare', 'expiry', 'preparation-expiry', 'hide', 'owner', 'storage', 'reload'] as const)(
+    'invalidates the known-unsent continuation after %s without changing its reminder or sending', async loss => {
+      const f = await fixture();
+      if (loss === 'preparation-expiry') f.state.prepChange = response => ({ ...response, observation: { observedAt: iso(at - 1000), expiresAt: iso(at + 2000) } });
+      await f.prepareDocument(); f.token.mockRejectedValueOnce(Error('token unavailable')); await f.controller.save();
+      const original = f.controller.getSnapshot().unsent!, stored = [...f.values.entries()]; expect(original).not.toBeNull();
+      let current = f.controller;
+      if (loss === 'edit') current.edit({ text: 'Changed unsent input' });
+      if (loss === 'material-read') await current.readDocument({ id: 'other_doc', version: 1, recordHash: hash });
+      if (loss === 'lookup') { f.state.lookupMissing = true; await current.lookup(original); }
+      if (loss === 'refresh') await current.refresh();
+      if (loss === 'prepare') await current.prepare();
+      if (loss === 'expiry') { f.time.wall += 19000; f.time.mono += 19000; }
+      if (loss === 'preparation-expiry') { f.time.wall += 2000; f.time.mono += 2000; }
+      if (loss === 'hide') { current.suspend(); current.activate(); }
+      if (loss === 'owner') {
+        f.current.value = { ...f.bootstrap, actorId: 'replacement_actor' };
+        current.configure({ ...f.adapters, bootstrap: f.current.value }); current.activate();
+      }
+      if (loss === 'storage') f.storageOwner.value = { ...f.storage };
+      if (loss === 'reload') {
+        current.close(); current = createFinancialPolicyAuthoringController(f.adapters); controllers.push(current); current.activate(); await current.refresh();
+      }
+      await current.continueOriginalSave();
+      expect(current.getSnapshot().unsent).toBeNull(); expect(f.writeInputs).toHaveLength(0);
+      expect(f.createKey).toHaveBeenCalledOnce(); expect([...f.values.entries()]).toEqual(stored); expect(f.storage.removeItem).not.toHaveBeenCalled();
+      await current.continueOriginalSave(); expect(f.writeInputs).toHaveLength(0);
+    });
+  it('identifies reminder storage failure without leaking the thrown error', async () => {
+    const f = await fixture(); await f.prepareDocument();
+    vi.mocked(f.storage.setItem).mockImplementation(() => { throw Error('private storage details'); });
+    await f.controller.save();
+    expect(f.controller.getSnapshot().message).toContain('could not verify its saved request reminder');
+    expect(f.controller.getSnapshot().message).not.toContain('private storage details');
+    expect(f.controller.getSnapshot().unsent).toBeNull(); expect(f.writeInputs).toHaveLength(0);
   });
   it.each(['target', 'key'])('honors the same-tab %s collision barrier across responsibility scopes', async collision => {
     const f = await fixture(); await f.prepareDocument();

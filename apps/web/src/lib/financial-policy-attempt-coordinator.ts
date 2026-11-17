@@ -7,7 +7,7 @@ import { createFinancialPolicyClock, financialPolicyLocalScope, type FinancialPo
 import { FINANCIAL_POLICY_REFERENCE_LIMIT, FINANCIAL_POLICY_REFERENCE_MAX_BYTES, FINANCIAL_POLICY_REFERENCE_PREFIX,
   assertFinancialPolicyReference, financialPolicyReferenceKey, storeFinancialPolicyReference,
   type FinancialPolicyMemory, type FinancialPolicyStorage } from './financial-policy-recovery';
-import { createFinancialPolicyWriteTransport, parseFinancialPolicyWriteRequest, type FinancialPolicyWritePermit,
+import { createFinancialPolicyWriteTransport, parseFinancialPolicyWriteRequest, FinancialPolicyWriteTokenError, type FinancialPolicyWritePermit,
   type FinancialPolicyWriteRequest, type FinancialPolicyWriteTransportAdapters } from './financial-policy-write-transport';
 import { getApiBase } from './config';
 import { FINANCIAL_POLICY_TRANSPORT_DEADLINE_MS } from './financial-policy-transport';
@@ -24,7 +24,8 @@ export type FinancialPolicyAttemptCoordinatorAdapters = Omit<FinancialPolicyWrit
 declare const gestureBrand: unique symbol;
 export type FinancialPolicyWriteGesture = Readonly<{ [gestureBrand]: true }>;
 export class FinancialPolicyWriteAttemptError extends FinancialPolicyClientError {
-  constructor(code: FinancialPolicyClientError['code'], readonly outcome: 'not-dispatched' | 'unknown') { super(code); }
+  constructor(code: FinancialPolicyClientError['code'], readonly outcome: 'not-dispatched' | 'unknown',
+    readonly reason: 'token-unavailable' | null = null) { super(code); }
 }
 export type FinancialPolicyAttemptStatus = Readonly<{
   state: 'idle' | 'unavailable' | 'preparing' | 'unsent' | 'unknown' | 'recorded'; reference: FinancialPolicyReference | null;
@@ -234,7 +235,7 @@ export function createFinancialPolicyAttemptCoordinator(adapters: FinancialPolic
           else { try { check(entry); } catch { invalidate(); } }
         }
         throw new FinancialPolicyWriteAttemptError(error instanceof FinancialPolicyClientError ? error.code : 'unconfirmed',
-          entry.dispatched ? 'unknown' : 'not-dispatched');
+          entry.dispatched ? 'unknown' : 'not-dispatched', error instanceof FinancialPolicyWriteTokenError ? error.reason : null);
       } finally {
         clearTimeout(timer); entry.controller.signal.removeEventListener('abort', abort); controller.abort(); entry.operation = null;
         if (active === entry) active = null;

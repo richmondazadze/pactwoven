@@ -48,14 +48,21 @@ type View = Readonly<{ visible: boolean; phase: 'idle' | 'ready' | 'expired' | '
   context: FinancialPolicyHttpContext | null; exact: FinancialPolicyHttpRecordResponse | null; preparation: FinancialPolicyPreparationSnapshot;
   index: FinancialPolicyHttpDraftIndexResponse | FinancialPolicyHttpGovernanceIndexResponse | null; documentRead: FinancialPolicyHttpRecordResponse | null;
   buffer: Buffer; review: Review | null; receipt: FinancialPolicyQualifiedReceipt | null;
+  unsent: FinancialPolicyReference | null;
   rows: readonly FinancialPolicyRecoveryRow[]; storageBlocked: boolean; message: string; focus: number; error: { field: string; message: string } | null }>;
 const emptyBuffer = (revision: CapturedRevision): Buffer => ({ kind: revision?.kind ?? 'document', documentId: revision?.id ?? '', draftId: revision?.id ?? '', text: '',
   dates: emptyFinancialPolicyDraftDates(), document: { id: '', version: '', recordHash: '' } });
 const idlePreparation = (): FinancialPolicyPreparationSnapshot => ({ state: 'idle', preparation: null });
 const initial = (revision: CapturedRevision): View => ({ visible: false, phase: 'idle', busy: false, editorOpened: false, context: null, exact: null, index: null, documentRead: null, preparation: idlePreparation(),
-  buffer: emptyBuffer(revision), review: null, receipt: null, rows: [], storageBlocked: false, message: 'Check current context explicitly to begin. Nothing has been saved.', focus: 0, error: null });
+  buffer: emptyBuffer(revision), review: null, receipt: null, unsent: null, rows: [], storageBlocked: false, message: 'Check current context explicitly to begin. Nothing has been saved.', focus: 0, error: null });
 const expiredMessage = 'The observation expired. Your unsent edits remain here; check current context, review and prepare again.';
 const deniedMessage = 'Current access is unavailable. Private text and review material have been cleared. Original reminders remain in this tab.';
+const saveFailureReasons = {
+  storage: 'This tab could not verify its saved request reminder.',
+  unavailable: 'The current save check is unavailable.',
+  unconfirmed: 'The pre-send check did not complete.',
+  input: 'The exact reviewed request could not be validated.',
+} as const;
 
 /** One explicit lane and one stable verifier/coordinator composition per route ownership. No constructor I/O. */
 export function createFinancialPolicyAuthoringController(first: FinancialPolicyAuthoringAdapters, isCurrent: () => boolean = () => true) {
@@ -93,7 +100,7 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
       // display timer runs. Preserve only this current owner's local edits.
       const snapshot = denied ? preparation.getSnapshot() : preserving(() => preparation.getSnapshot()); writer.invalidateReview();
       const expired = snapshot.state === 'expired' && !denied && current();
-      publish({ ...view, preparation: snapshot, ...(expired ? { review: null, phase: view.context ? view.phase : 'expired',
+      publish({ ...view, unsent: null, preparation: snapshot, ...(expired ? { review: null, phase: view.context ? view.phase : 'expired',
         message: view.context ? 'The preparation expired. Your local edits remain here; review and check preparation again.'
           : 'The observation expired. Your local edits remain here; check current context, review and prepare again.' } : {}) });
     });
@@ -107,7 +114,7 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
   function fresh() { try { return !view.context || Boolean(displayNow && displayNow() < displayDeadline); } catch { return false; } }
   function invalidateReview(clear = true) {
     writer.invalidateReview(); preparation.invalidate();
-    publish({ ...view, review: clear ? null : view.review, error: null });
+    publish({ ...view, unsent: null, review: clear ? null : view.review, error: null });
   }
   function expireDisplay() {
     active = null; preserving(() => lifetime.invalidate());
@@ -144,6 +151,9 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
       publish({ ...view, error: { field: error.field, message: error.message }, message: error.message, focus: ++sequence }); return;
     }
     const code = error instanceof FinancialPolicyClientError ? error.code : 'unconfirmed';
+    const saveReason = error instanceof FinancialPolicyWriteAttemptError && error.reason === 'token-unavailable'
+      ? 'Your sign-in could not be refreshed before sending.'
+      : Object.hasOwn(saveFailureReasons, code) ? saveFailureReasons[code as keyof typeof saveFailureReasons] : 'The pre-send check did not complete.';
     if (code === 'scope') { denied = true; preserveBuffer = false; lifetime.deny(); }
     else if (code === 'expired') preserving(() => lifetime.invalidate());
     // A synchronous freshness failure inside an awaited transport may already have
@@ -154,7 +164,8 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
       message: code === 'scope' ? deniedMessage : code === 'expired' ? error instanceof FinancialPolicyWriteAttemptError && error.outcome === 'unknown'
         ? 'The observation expired. The original save result is unknown. Check that exact original result explicitly. Do not create a replacement request.' : expiredMessage : error instanceof FinancialPolicyWriteAttemptError
         ? error.outcome === 'unknown' ? 'The save result is unknown. Check the original result explicitly. Do not create a replacement request.'
-          : 'No save was confirmed. Any stored original reminder is preserved and remains lookup-only after its input is lost.'
+          : view.unsent ? `The original save was not sent. ${saveReason} You can explicitly continue this exact original while its context and preparation remain current.`
+            : `No save was sent. ${saveReason} Any stored original reminder is preserved and remains lookup-only after its input is lost.`
         : error instanceof FinancialPolicyClientError ? error.message : 'This action could not be confirmed. Original reminders are preserved.', focus: ++sequence });
   }
   async function run(message: string, work: (check: () => void) => Promise<void>) {
@@ -193,6 +204,36 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
     if (active || !current() || denied) return;
     invalidateReview();
     try { ready(); work(); publish({ ...view, focus: ++sequence }); } catch (error) { report(error); }
+  }
+  async function sendReviewed(check: () => void, original: FinancialPolicyReference | null) {
+    ready(); const review = view.review;
+    if (!review || preparation.getSnapshot().state !== 'reviewable') throw new FinancialPolicyClientError('unavailable');
+    let retainUnsent = false;
+    try {
+      const gesture = original ? writer.continueUnsent(original)
+        : writer.review(requestFor(review, (adapters.createKey ?? (() => crypto.randomUUID()))()));
+      const result = await writer.send(gesture); check(); ready(); rows();
+      updateRow(result.reference, { state: 'recorded', receipt: result.receipt, message: 'The exact immutable original result was recorded. Clearing the local reminder is separate.' });
+      publish({ ...view, receipt: result.receipt, unsent: null, review: null, message: review.kind === 'save_document'
+        ? 'Policy text saved. Preparing and saving a draft are separate actions.' : 'Incomplete draft saved. No spending authority or available funds were created.' });
+    } catch (error) {
+      check(); try { rows(); } catch { /* Preserve the writer error and its original locator. */ }
+      if (error instanceof FinancialPolicyWriteAttemptError && error.outcome === 'not-dispatched' &&
+        error.code !== 'scope' && error.code !== 'expired' && view.review === review && !view.storageBlocked) {
+        const status = preserving(() => writer.status());
+        retainUnsent = status.state === 'unsent' && status.reference !== null &&
+          view.rows.some(row => financialSame(row.reference, status.reference)) && preparation.getSnapshot().state === 'reviewable';
+        if (retainUnsent) publish({ ...view, unsent: status.reference });
+      }
+      throw error;
+    } finally {
+      try {
+        check();
+        // A current live coordinator alone can prove that this exact original never
+        // reached dispatch. Keep its existing review for a separate deliberate action.
+        if (!retainUnsent) { publish({ ...view, unsent: null, review: null }); preparation.invalidate(); }
+      } catch { /* A departed owner cannot change its replacement's review. */ }
+    }
   }
   return {
     getSnapshot: () => view, getServerSnapshot: () => serverView,
@@ -281,7 +322,7 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
       publish({ ...view, review, message: 'Exact draft boundaries reviewed locally. Check the selected current policy text and preparation before saving.' });
     }); },
     prepare() { return run('Checking exact action preparation…', async check => {
-      writer.invalidateReview(); ready(); const review = view.review;
+      writer.invalidateReview(); publish({ ...view, unsent: null }); ready(); const review = view.review;
       if (!review) throw new FinancialPolicyAuthoringInputError(view.buffer.kind === 'document' ? 'policy-text' : 'draft-start', 'Review the exact local input before checking preparation.');
       const request = requestFor(review, 'local_review_placeholder');
       const selection = request.kind === 'save_document' ? { schemaVersion: 1, action: request.kind, targetId: request.id, previous: request.input.previous, purpose: request.input.purpose }
@@ -291,22 +332,11 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
       publish({ ...view, preparation: preparation.getSnapshot(), message: result.response.decision.state === 'reviewable'
         ? 'Preparation checked. Read the exact text, terms and dates; saving remains a separate action.' : 'This action is not ready to save. Read its preparation reasons.' });
     }); },
-    save() { return run('Saving the exact reviewed configuration…', async check => {
-      ready(); const review = view.review;
-      if (!review || preparation.getSnapshot().state !== 'reviewable') throw new FinancialPolicyClientError('unavailable');
-      try {
-        const request = requestFor(review, (adapters.createKey ?? (() => crypto.randomUUID()))());
-        const gesture = writer.review(request);
-        const result = await writer.send(gesture); check(); ready(); rows();
-        updateRow(result.reference, { state: 'recorded', receipt: result.receipt, message: 'The exact immutable original result was recorded. Clearing the local reminder is separate.' });
-        publish({ ...view, receipt: result.receipt, review: null, message: request.kind === 'save_document'
-          ? 'Policy text saved. Preparing and saving a draft are separate actions.' : 'Incomplete draft saved. No spending authority or available funds were created.' });
-      } catch (error) { check(); try { rows(); } catch { /* Preserve the writer error and its original locator. */ } throw error; }
-      finally {
-        try { check(); publish({ ...view, review: null }); preparation.invalidate(); }
-        catch { /* A departed owner cannot change its replacement's review. */ }
-      }
-    }); },
+    save() { return view.unsent ? Promise.resolve() : run('Saving the exact reviewed configuration…', check => sendReviewed(check, null)); },
+    continueOriginalSave() {
+      const original = view.unsent;
+      return original ? run('Continuing the exact original save…', check => sendReviewed(check, original)) : Promise.resolve();
+    },
     useDocumentReceipt(receipt: FinancialPolicyQualifiedReceipt) {
       local(() => {
         if (receipt.record.kind !== 'document' || receipt.record.purpose !== 'financial_mandate' || receipt.responsibilityId !== bootstrap.responsibilityId ||
@@ -393,6 +423,8 @@ export function FinancialPolicyAuthoringWorkspaceView(props: FinancialPolicyAuth
   const draftReview: DraftReview | null = review?.kind === 'save_draft' ? { draft: review.input.draft, dates: review.dates } : null;
   const visibleOriginal = Boolean(context && controller.hasVisibleOriginal());
   const saveReady = Boolean(context && review && prepared && view.preparation.state === 'reviewable' && !visibleOriginal);
+  const continueReady = Boolean(context && review && prepared && view.preparation.state === 'reviewable' && view.unsent && visibleOriginal);
+  const continuing = Boolean(safe && view.unsent);
   return <div className="financial-policy financial-authoring" data-financial-motion={motion.mode} data-financial-pending={safe && view.busy ? 'true' : 'false'}>
     <PageHeading title={props.revision ? 'Review a configuration revision' : 'Prepare financial configuration'} description="Save full policy text, then prepare and save an incomplete draft separately."
       action={<ButtonLink href={financialPolicyCollectionPath(props.bootstrap.responsibilityId)} secondary>Back to financial policies</ButtonLink>}/>
@@ -446,10 +478,15 @@ export function FinancialPolicyAuthoringWorkspaceView(props: FinancialPolicyAuth
         <p className="review-note">Preparation details appear below the save controls. These controls keep their position when the result arrives.</p>
       </Panel>
       <Panel title="Final save"><div className="financial-authoring-save-slot"><p>Save only after reviewing your exact input and the checked preparation below.</p>
-        <button type="button" className="button" disabled={disabled || !saveReady} aria-describedby={visibleOriginal ? 'financial-authoring-original-notice' : undefined} onClick={() => void controller.save()}>
-          <ActionLabel label={view.busy && saveReady ? 'Saving configuration…' : buffer.kind === 'document' ? 'Save policy text' : 'Save draft'} reserve={['Saving configuration…', 'Save policy text', 'Save draft']}/></button>
+        <button type="button" className="button" disabled={disabled || !(continuing ? continueReady : saveReady)} aria-describedby={visibleOriginal ? 'financial-authoring-original-notice' : undefined}
+          onClick={() => void (continuing ? controller.continueOriginalSave() : controller.save())}>
+          <ActionLabel label={continuing ? view.busy ? 'Continuing original…' : 'Continue original save'
+            : view.busy && saveReady ? 'Saving configuration…' : buffer.kind === 'document' ? 'Save policy text' : 'Save draft'}
+            reserve={['Saving configuration…', 'Save policy text', 'Save draft', 'Continuing original…', 'Continue original save']}/></button>
       </div>{visibleOriginal && <div>
-        <p id="financial-authoring-original-notice" className="review-note" role="status">An earlier request for this record needs review before another save. In Saved financial requests, check the original result and review its matching receipt. Then clear this tab’s reminder separately, review your edits and check fresh preparation before saving.</p>
+        <p id="financial-authoring-original-notice" className="review-note" role="status">{view.unsent
+          ? 'This tab retained the exact original and confirmed it was not sent. Continue original save reuses its record, request key and reviewed input. Editing, checking other material, expiry or leaving this context removes that continuation.'
+          : 'An earlier request for this record needs review before another save. In Saved financial requests, check the original result and review its matching receipt. Then clear this tab’s reminder separately, review your edits and check fresh preparation before saving.'}</p>
         <button type="button" className="button secondary" disabled={disabled} aria-controls="financial-authoring-saved-requests"
           onClick={() => focusFinancialPolicySavedRequests(controller, props, savedRequests.current, { mode: motion.mode, keyboard: motion.keyboard.current,
             prefersReducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches })}>Go to saved financial requests</button>

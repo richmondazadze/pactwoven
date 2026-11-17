@@ -19,3 +19,9 @@ export const financialPolicyRoutines = Object.freeze({
     'pactwoven.financial_policy_prepare(uuid,jsonb,jsonb)'],
   verifier: ['pactwoven.financial_policy_attest(jsonb)', 'pactwoven.financial_policy_resolve_observer(text,jsonb)'],
 } as const);
+/** A coherent extension: historical policy APIs permit all absent, never a partial installation. */
+export const financialPolicyClosureTable = 'financial_policy_request_fences';
+export const financialPolicyClosureRoutines = Object.freeze([
+  'pactwoven.financial_policy_close_original(uuid,jsonb,jsonb)',
+  'pactwoven.financial_policy_original_status(uuid,jsonb,jsonb)',
+] as const);

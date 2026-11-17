@@ -2,9 +2,10 @@ import { createElement, StrictMode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { commandDigest } from '@pactwoven/contracts/canonical';
-import { financialPolicyHttpRoute, type FinancialPolicyHttpReceipt } from '@pactwoven/contracts';
+import { financialPolicyHttpRoute, FinancialPolicyOriginalClosureRequestSchema, type FinancialPolicyHttpReceipt } from '@pactwoven/contracts';
 import { FinancialPolicyBootstrapSchema, financialPolicyLocalScope, type FinancialPolicyBootstrap } from '../lib/financial-policy-context';
-import { createFinancialPolicyAttempt, type FinancialPolicyReference } from '../lib/financial-policy-contract';
+import { createFinancialPolicyAttempt, type FinancialPolicyReference, type FinancialPolicyQualifiedClosure } from '../lib/financial-policy-contract';
+import { financialClosureFixture } from '../lib/financial-policy-closure-test-support';
 import { storeFinancialPolicyReference, type FinancialPolicyStorage } from '../lib/financial-policy-recovery';
 import { parseFinancialPolicyWriteRequest } from '../lib/financial-policy-write-transport';
 import { createFinancialPolicyAuthoringController, FinancialPolicyAuthoringEditorGate, FinancialPolicyAuthoringWorkspaceView, focusFinancialPolicySavedRequests, type FinancialPolicyAuthoringController } from './financial-policy-authoring-workspace';
@@ -50,8 +51,9 @@ async function fixture(revision: { id: string; version: number; kind?: 'document
   const storage: FinancialPolicyStorage = { get length() { return values.size; }, key: i => [...values.keys()][i] ?? null, getItem: k => values.get(k) ?? null,
     setItem: vi.fn((k, v) => { values.set(k, v); }), removeItem: vi.fn(k => { values.delete(k); }) };
   const storageOwner = { value: storage as FinancialPolicyStorage | null };
-  const receipts: FinancialPolicyHttpReceipt[] = [], selections: unknown[] = [], writeInputs: unknown[] = [];
-  const state = { writeUnknown: false, lookupMissing: false, prepChange: (response: any) => response, readResponse: null as unknown, indexResponse: null as unknown };
+  const receipts: FinancialPolicyHttpReceipt[] = [], selections: unknown[] = [], writeInputs: unknown[] = [], closureInputs: unknown[] = [];
+  const state = { writeUnknown: false, lookupMissing: false, closureUnknown: false, closure: null as FinancialPolicyQualifiedClosure | null,
+    prepChange: (response: any) => response, readResponse: null as unknown, indexResponse: null as unknown };
   const token = vi.fn(async () => 'test_token'), createKey = vi.fn(() => `explicit_original_${receipts.length + 1}`);
   const createTargetId = vi.fn((kind: 'document' | 'draft') => kind === 'document' ? 'mandate_doc' : 'draft_a');
   const fetcher = vi.fn<(url: string, init: RequestInit) => Promise<Response>>(async (url, init) => {
@@ -60,8 +62,14 @@ async function fixture(revision: { id: string; version: number; kind?: 'document
     if (url.includes('/financial-policies?')) return json(state.indexResponse);
     if (url.includes('/financial-policy-operations/')) {
       const reference = JSON.parse([...values.values()][0]!) as FinancialPolicyReference, l = reference.locator;
+      if (url.endsWith('/close')) {
+        const request = FinancialPolicyOriginalClosureRequestSchema.parse(JSON.parse(String(init.body))); closureInputs.push(request);
+        state.closure = await financialClosureFixture(reference, request.expected);
+        if (state.closureUnknown) throw Error('Injected closure acknowledgement loss');
+      }
       return json({ ...envelope, responsibilityId: bootstrap.responsibilityId, kind: l.kind, key: l.key, targetId: l.targetId, publicRequestHash: l.publicRequestHash,
-        status: state.lookupMissing ? 'not_recorded' : 'recorded', receipt: state.lookupMissing ? null : receipts.find(r => r.key === l.key) });
+        status: state.closure ? 'closed' : state.lookupMissing ? 'not_recorded' : 'recorded',
+        receipt: state.closure || state.lookupMissing ? null : receipts.find(r => r.key === l.key), closure: state.closure });
     }
     if (url.endsWith('/financial-policy-preparation')) {
       const selection = JSON.parse(String(init.body)); selections.push(selection);
@@ -99,7 +107,7 @@ async function fixture(revision: { id: string; version: number; kind?: 'document
   const controller = createFinancialPolicyAuthoringController(adapters); controllers.push(controller); controller.activate();
   function editDocument(text = 'Exact full financial mandate. Café 🧵') { if (!revision) controller.startNew('document'); controller.edit({ kind: 'document', text }); }
   async function prepareDocument() { if (!controller.getSnapshot().context) await controller.refresh(); editDocument(); controller.reviewDocument(); await controller.prepare(); }
-  return { bootstrap, envelope, context, basis, time, current, values, storage, storageOwner, receipts, selections, writeInputs, state, token, createKey, createTargetId, fetcher, adapters, controller, editDocument, prepareDocument };
+  return { bootstrap, envelope, context, basis, time, current, values, storage, storageOwner, receipts, selections, writeInputs, closureInputs, state, token, createKey, createTargetId, fetcher, adapters, controller, editDocument, prepareDocument };
 }
 async function setDocumentRevisionResponse(f: Awaited<ReturnType<typeof fixture>>) {
   const id = f.adapters.revision?.id ?? 'mandate_doc', version = f.adapters.revision?.version ?? 1, text = 'Exact historical mandate text';
@@ -113,6 +121,83 @@ async function setDocumentRevisionResponse(f: Awaited<ReturnType<typeof fixture>
 const noNetwork = vi.fn(() => { throw Error('Unexpected actual network'); });
 beforeEach(() => { vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', base); noNetwork.mockClear(); vi.stubGlobal('fetch', noNetwork); });
 afterEach(() => { for (const controller of controllers.splice(0)) controller.close(); expect(noNetwork).not.toHaveBeenCalled(); vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+describe('native authoring original-key closure', () => {
+  async function unresolved(f: Awaited<ReturnType<typeof fixture>>) {
+    await f.prepareDocument(); f.token.mockRejectedValueOnce(Error('token unavailable')); await f.controller.save();
+    const reference = f.controller.getSnapshot().unsent!; f.state.lookupMissing = true;
+    await f.controller.lookup(reference); expect(f.controller.getSnapshot().unsent).toBeNull();
+    expect(f.controller.getSnapshot().rows[0]?.state).toBe('not-recorded'); return reference;
+  }
+  it('keeps lookup, review, close, receipt inspection, exact clear and fresh new save separate', async () => {
+    const f = await fixture(), reference = await unresolved(f), originals = [...f.values], buffer = f.controller.getSnapshot().buffer;
+    const calls = f.fetcher.mock.calls.length, tokens = f.token.mock.calls.length;
+    f.controller.reviewClosure(reference); const review = f.controller.getSnapshot().rows[0]!.closureReview!;
+    expect(review.request.locator).toEqual(reference.locator); expect(review.request.expected.draftScope).toEqual(f.basis);
+    expect(f.controller.closureReviewCurrent(review)).toBe(true); expect(f.fetcher).toHaveBeenCalledTimes(calls); expect(f.token).toHaveBeenCalledTimes(tokens);
+    await f.controller.closeOriginal(reference);
+    expect(f.closureInputs).toEqual([review.request]); expect(f.writeInputs).toHaveLength(0); expect(f.createKey).toHaveBeenCalledOnce();
+    expect([...f.values]).toEqual(originals); expect(f.storage.removeItem).not.toHaveBeenCalled();
+    const closed = f.controller.getSnapshot().rows[0]!;
+    expect(closed).toMatchObject({ state: 'closed', receipt: null, closureReview: null, closure: { locator: reference.locator, effectiveAuthority: false, financialState: null } });
+    f.controller.useDocumentReceipt(closed.closure as never);
+    expect(f.controller.getSnapshot().buffer.document).toEqual(buffer.document); expect(f.controller.getSnapshot().receipt).toBeNull();
+    await f.controller.clear(reference); expect(f.values.size).toBe(0); expect(f.controller.getSnapshot().context).toBeNull();
+    expect(f.controller.getSnapshot().buffer).toEqual(buffer); await f.controller.save(); expect(f.createKey).toHaveBeenCalledOnce();
+    await f.controller.refresh(); f.controller.reviewDocument(); await f.controller.save(); expect(f.writeInputs).toHaveLength(0);
+    await f.controller.prepare(); f.createKey.mockReturnValueOnce('separate_original_after_closure'); await f.controller.save();
+    expect(f.writeInputs).toHaveLength(1); expect(f.closureInputs).toHaveLength(1); expect(f.createTargetId).toHaveBeenCalledOnce();
+    expect(f.controller.getSnapshot().receipt?.key).toBe('separate_original_after_closure');
+  });
+  it('preserves the exact reminder after unknown closure and recovers only by explicit lookup', async () => {
+    const f = await fixture(), reference = await unresolved(f), originals = [...f.values]; f.controller.reviewClosure(reference); f.state.closureUnknown = true;
+    await f.controller.closeOriginal(reference);
+    expect(f.controller.getSnapshot().message).toContain('closure result is unknown');
+    expect(f.controller.getSnapshot().rows[0]).toMatchObject({ state: 'unconfirmed', closure: null, receipt: null, closureReview: null });
+    expect([...f.values]).toEqual(originals); const calls = f.fetcher.mock.calls.length;
+    await f.controller.closeOriginal(reference); await f.controller.save(); expect(f.fetcher).toHaveBeenCalledTimes(calls);
+    await f.controller.lookup(reference); expect(f.controller.getSnapshot().rows[0]).toMatchObject({ state: 'closed', closure: f.state.closure, receipt: null });
+    expect([...f.values]).toEqual(originals); expect(f.closureInputs).toHaveLength(1); expect(f.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it.each(['edit', 'read', 'refresh', 'expiry', 'hide', 'owner', 'reload'] as const)('invalidates closure review after %s without sending or removing the original', async loss => {
+    const f = await fixture(), reference = await unresolved(f), originals = [...f.values]; f.controller.reviewClosure(reference);
+    let current = f.controller;
+    if (loss === 'edit') current.edit({ text: 'New local input' });
+    if (loss === 'read') await current.readDocument({ id: 'other_doc', version: 1, recordHash: hash });
+    if (loss === 'refresh') await current.refresh();
+    if (loss === 'expiry') f.time.mono += 19000;
+    if (loss === 'hide') { current.suspend(); current.activate(); }
+    if (loss === 'owner') f.current.value = null;
+    if (loss === 'reload') { current.close(); current = createFinancialPolicyAuthoringController(f.adapters); controllers.push(current); current.activate(); await current.refresh(); }
+    await current.closeOriginal(reference);
+    expect(f.closureInputs).toHaveLength(0); expect(f.writeInputs).toHaveLength(0); expect([...f.values]).toEqual(originals);
+    expect(f.storage.removeItem).not.toHaveBeenCalled(); expect(current.getSnapshot().rows.every(row => !row.closureReview)).toBe(true);
+  });
+  it('requires a fresh context and exact lookup after accepting replay with changed current pins', async () => {
+    const f = await fixture(), reference = await unresolved(f); f.controller.reviewClosure(reference);
+    const review = f.controller.getSnapshot().rows[0]!.closureReview!, closure = await financialClosureFixture(reference, review.request.expected);
+    const originals = [...f.values], buffer = f.controller.getSnapshot().buffer;
+    f.fetcher.mockResolvedValueOnce(json({ ...f.envelope, scope: { ...f.envelope.scope, organizationEpoch: 3, actor: { actorId: 'actor_a', membershipVersion: 10 } },
+      ...reference.locator, status: 'closed', receipt: null, closure }));
+    await f.controller.closeOriginal(reference);
+    expect(f.controller.getSnapshot()).toMatchObject({ context: null, rows: [], buffer });
+    expect(f.controller.getSnapshot().message).toContain('current access pins changed'); expect([...f.values]).toEqual(originals);
+    await f.controller.clear(reference); expect(f.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it('recovers unchanged historical closure pins after current membership, epoch and responsibility basis advance', async () => {
+    const f = await fixture(), reference = await unresolved(f); f.controller.reviewClosure(reference); await f.controller.closeOriginal(reference);
+    const historical = structuredClone(f.state.closure!);
+    const authority = { ...f.basis.authority, generation: 1 }, basis = { ...f.basis, authority,
+      authorityHash: await commandDigest({ namespace: 'pactwoven:financial-authority-fence:v1', record: { ...authority, environment: 'development', organizationId: 'org_a' } }) };
+    f.context.scope.organizationEpoch = 3; f.context.scope.actor.membershipVersion = 10; f.context.draftScope = basis;
+    f.adapters.bootstrap = { ...f.bootstrap, organizationEpoch: 3 }; f.current.value = f.adapters.bootstrap;
+    f.controller.configure(f.adapters); f.controller.activate(); await f.controller.refresh(); await f.controller.lookup(reference);
+    expect(f.controller.getSnapshot().context?.scope.organizationEpoch).toBe(3);
+    expect(f.controller.getSnapshot().rows[0]).toMatchObject({ state: 'closed', closure: historical, receipt: null });
+    expect(f.controller.getSnapshot().rows[0]?.closure?.expected.organizationEpoch).toBe(2);
+    expect(f.controller.getSnapshot().rows[0]?.closure?.expected.draftScope?.authority.generation).toBe(0);
+    expect(f.values.size).toBe(1); expect(f.storage.removeItem).not.toHaveBeenCalled();
+  });
+});
 describe('native authoring controller with injected offline transport', () => {
   it('performs no constructor/activation/configuration or typing I/O', async () => {
     const f = await fixture(); f.controller.configure(f.adapters); f.controller.suspend(); f.controller.activate(); f.editDocument();

@@ -8,6 +8,7 @@ import type { FinancialWorkerBindings } from './financial-worker-config.js';
 const mocks = vi.hoisted(() => ({
   financialPool: vi.fn(), custodyPool: vi.fn(), financialObserve: vi.fn(), custodyObserve: vi.fn(),
   financialReaders: vi.fn(), financialRepository: vi.fn(), financialAuthentication: vi.fn(),
+  closureRepository: vi.fn(),
   custodyReaders: vi.fn(), custodyRepository: vi.fn(), custodyAuthentication: vi.fn(),
 }));
 vi.mock('@pactwoven/db', () => ({
@@ -16,6 +17,7 @@ vi.mock('@pactwoven/db', () => ({
   PostgresFinancialPolicyRepository: class { constructor(...args: unknown[]) { mocks.financialRepository(...args); } readFinancialPolicy = vi.fn(); listFinancialPolicyDrafts = vi.fn(); mutate = vi.fn(); },
   PostgresFinancialAuthenticationRepository: class { constructor(...args: unknown[]) { mocks.financialAuthentication(...args); } append = vi.fn(); },
   PostgresFinancialPolicyPreparationReader: class { prepare = vi.fn(); },
+  PostgresFinancialPolicyClosureRepository: class { constructor(...args: unknown[]) { mocks.closureRepository(...args); } status = vi.fn(); close = vi.fn(); },
   PostgresCustodySetupReaders: class { constructor(...args: unknown[]) { mocks.custodyReaders(...args); } resolveOwner = vi.fn(); specification = vi.fn(); record = vi.fn(); original = vi.fn(); },
   PostgresCustodySetupRepository: class { constructor(...args: unknown[]) { mocks.custodyRepository(...args); } get = vi.fn(); recover = vi.fn(); mutate = vi.fn(); },
   PostgresCustodySetupAuthenticationRepository: class { constructor(...args: unknown[]) { mocks.custodyAuthentication(...args); } append = vi.fn(); },
@@ -33,6 +35,13 @@ vi.mock('./financial-policy-service.js', () => ({ createFinancialPolicyGateway: 
 }) }));
 vi.mock('./financial-policy-write-service.js', () => ({ createFinancialPolicyWriteGateway: () => ({}) }));
 vi.mock('./financial-policy-preparation-service.js', () => ({ createFinancialPolicyPreparationGateway: () => ({}) }));
+vi.mock('./financial-policy-closure-service.js', () => ({ createFinancialPolicyClosureGateway: (d: any) => ({ status: async (token: string, locator: object) => {
+  await d.verifier.observe(token); await d.readers.resolveObserver('development', {}); await d.authentication.append({});
+  await d.closures.status('evidence', {}, locator);
+  return { schemaVersion: 1, scope: { environment: 'development', organizationId: 'org_a', actor: { actorId: 'owner_a', membershipVersion: 1 },
+    roles: ['owner'], organizationEpoch: 1, siteIds: [], actionSiteIds: [] }, observation: { observedAt: new Date(Date.now() - 100).toISOString(), expiresAt: new Date(Date.now() + 19_000).toISOString() },
+    ...locator, status: 'not_recorded', receipt: null, closure: null, effectiveAuthority: false, financialState: null };
+} }) }));
 vi.mock('./custody-setup-service.js', () => ({ createCustodySetupService: (d: any) => ({ recoveryContext: async (token: string, responsibilityId: string) => {
   await d.verifier.observe(token); await d.readers.resolveOwner({}); await d.authentication.append({}); await d.repository.recover({});
   return { schemaVersion: 1, environment: 'development', organizationId: 'org_a', externalOrganizationId: 'clerk_org_a', responsibilityId,
@@ -55,11 +64,15 @@ function bindings(): FinancialWorkerBindings { return {
 }; }
 const pool = () => ({ query: vi.fn(async () => ({ rows: [{ database_matches: true, current_matches: true, session_matches: true }] })), end: vi.fn(async () => {}) });
 function context() { const work: Promise<unknown>[] = []; return { waitUntil(p: Promise<unknown>) { work.push(p); }, done: () => Promise.all(work) }; }
-async function joined(kind: 'financial' | 'custody' = 'financial', config = bindings()) {
-  const path = kind === 'financial' ? '/v1/financial-governance' : '/v1/responsibilities/responsibility_a/custody-setups/recovery-context';
+async function joined(kind: 'financial' | 'custody' | 'closure' = 'financial', config = bindings()) {
+  const locator = { responsibilityId: null, kind: 'save_document' as const, key: 'original_request_key', targetId: 'document_a', publicRequestHash: 'a'.repeat(64) };
+  const path = kind === 'financial' ? '/v1/financial-governance' : kind === 'closure'
+    ? `/v1/financial-governance/operations/${locator.key}?kind=${locator.kind}&targetId=${locator.targetId}&requestHash=${locator.publicRequestHash}`
+    : '/v1/responsibilities/responsibility_a/custody-setups/recovery-context';
   const c = context(), fetch = vi.fn((request: Request) => financialWorker.fetch(request, config, c));
   const g = serviceFinancialGateways({ fetch }, new Request(`https://api.example${path}`, { headers: { Authorization: `Bearer ${token}` } }), issuer);
-  try { return kind === 'financial' ? await g.financialPolicy.index(token, null, { afterId: null, limit: 20 }) : await g.custodySetup.recoveryContext(token, 'responsibility_a', 'trace'); }
+  try { return kind === 'financial' ? await g.financialPolicy.index(token, null, { afterId: null, limit: 20 }) : kind === 'closure'
+    ? await g.financialPolicyClosure.status(token, locator) : await g.custodySetup.recoveryContext(token, 'responsibility_a', 'trace'); }
   finally { await c.done(); }
 }
 beforeEach(() => { vi.resetAllMocks(); mocks.financialPool.mockImplementation(async () => pool()); mocks.custodyPool.mockImplementation(async () => pool()); });
@@ -85,8 +98,16 @@ describe('financial private worker request lifecycle', () => {
     expect(mocks.custodyRepository).toHaveBeenCalledWith(writer); expect(mocks.custodyAuthentication).toHaveBeenCalledWith(verifier);
     expect(writer.end).toHaveBeenCalledOnce(); expect(verifier.end).toHaveBeenCalledOnce();
   });
-  it.each(['financial', 'custody'] as const)('does not open any pool after rejected %s identity', async kind => {
-    (kind === 'financial' ? mocks.financialObserve : mocks.custodyObserve).mockRejectedValue(new DomainError('AUTH_REQUIRED', 401, 'PRIVATE_SENTINEL'));
+  it('opens only the verified financial pair for closure status after identity and closes it after use', async () => {
+    expect(await joined('closure')).toMatchObject({ status: 'not_recorded', closure: null, receipt: null });
+    expect(mocks.financialObserve).toHaveBeenCalledOnce(); expect(mocks.financialPool).toHaveBeenCalledTimes(2);
+    expect(mocks.custodyPool).not.toHaveBeenCalled(); expect(mocks.financialRepository).not.toHaveBeenCalled();
+    const authorizer = await mocks.financialPool.mock.results[0]!.value, verifier = await mocks.financialPool.mock.results[1]!.value;
+    expect(mocks.closureRepository).toHaveBeenCalledExactlyOnceWith(authorizer);
+    expect(authorizer.end).toHaveBeenCalledOnce(); expect(verifier.end).toHaveBeenCalledOnce();
+  });
+  it.each(['financial', 'custody', 'closure'] as const)('does not open any pool after rejected %s identity', async kind => {
+    (kind === 'custody' ? mocks.custodyObserve : mocks.financialObserve).mockRejectedValue(new DomainError('AUTH_REQUIRED', 401, 'PRIVATE_SENTINEL'));
     await expect(joined(kind)).rejects.toMatchObject({ code: 'AUTH_REQUIRED', status: 401, message: 'Sign in again.' });
     expect(mocks.financialPool).not.toHaveBeenCalled(); expect(mocks.custodyPool).not.toHaveBeenCalled();
   });

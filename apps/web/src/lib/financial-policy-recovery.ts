@@ -1,8 +1,8 @@
 import { canonicalJson } from '@pactwoven/contracts/canonical';
 import { FinancialPolicyClientError, FinancialPolicyReferenceSchema, FinancialPolicyLocalScopeSchema,
-  financialParse, financialSame, freezeFinancial, qualifyFinancialReceipt, verifyFinancialPolicyAttempt,
+  financialParse, financialSame, freezeFinancial, qualifyFinancialReceipt, qualifyFinancialClosure, verifyFinancialPolicyAttempt,
   type FinancialPolicyAttempt, type FinancialPolicyReference, type FinancialPolicyLocalScope,
-  type FinancialPolicyQualifiedReceipt } from './financial-policy-contract';
+  type FinancialPolicyQualifiedReceipt, type FinancialPolicyQualifiedClosure } from './financial-policy-contract';
 
 export type FinancialPolicyStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem' | 'key' | 'length'>;
 export const FINANCIAL_POLICY_REFERENCE_PREFIX = 'pactwoven:financial-policy-original:v1:';
@@ -75,10 +75,22 @@ export async function clearFinancialPolicyReminder(storage: FinancialPolicyStora
     if (storage.getItem(financialPolicyReferenceKey(reference)) !== null) throw failed();
   } catch { throw failed(); }
 }
+/** A closure is its own proof; it must never pass through policy-receipt clearing or document selection. */
+export async function clearClosedFinancialPolicyReminder(storage: FinancialPolicyStorage | null, input: FinancialPolicyReference,
+  closureInput: FinancialPolicyQualifiedClosure, isCurrent: () => boolean): Promise<void> {
+  const reference = snapshot(input), raw = assertFinancialPolicyReference(storage, reference);
+  await qualifyFinancialClosure(closureInput, reference);
+  try {
+    if (!storage || !isCurrent() || storage.getItem(financialPolicyReferenceKey(reference)) !== raw) throw failed();
+    storage.removeItem(financialPolicyReferenceKey(reference));
+    if (storage.getItem(financialPolicyReferenceKey(reference)) !== null) throw failed();
+  } catch { throw failed(); }
+}
 /** Full public intents and receipts are ephemeral, never serialized to Storage. */
 export function createFinancialPolicyMemory(scopeInput: FinancialPolicyLocalScope) {
   const scope = freezeFinancial(financialParse(FinancialPolicyLocalScopeSchema, scopeInput));
   const originals = new Map<string, FinancialPolicyAttempt>(), receipts = new Map<string, FinancialPolicyQualifiedReceipt>();
+  const closures = new Map<string, FinancialPolicyQualifiedClosure>();
   const queued = new Map<string, Promise<unknown>>();
   let generation = 0, alive = true;
   function reference(input: FinancialPolicyReference) {
@@ -87,9 +99,10 @@ export function createFinancialPolicyMemory(scopeInput: FinancialPolicyLocalScop
     return result;
   }
   function exact(input: FinancialPolicyReference) {
-    const r = reference(input), key = financialPolicyReferenceKey(r), original = originals.get(key), receipt = receipts.get(key);
+    const r = reference(input), key = financialPolicyReferenceKey(r), original = originals.get(key), receipt = receipts.get(key), closure = closures.get(key);
     if (original && !financialSame(original.reference, r) || receipt && (receipt.publicRequestHash !== r.locator.publicRequestHash ||
-      receipt.target.id !== r.locator.targetId || receipt.kind !== r.locator.kind || receipt.key !== r.locator.key || receipt.responsibilityId !== r.locator.responsibilityId))
+      receipt.target.id !== r.locator.targetId || receipt.kind !== r.locator.kind || receipt.key !== r.locator.key || receipt.responsibilityId !== r.locator.responsibilityId) ||
+      closure && !financialSame(closure.locator, r.locator))
       throw new FinancialPolicyClientError('input');
     return { r, key };
   }
@@ -100,10 +113,12 @@ export function createFinancialPolicyMemory(scopeInput: FinancialPolicyLocalScop
     });
     queued.set(key, next); void next.finally(() => { if (queued.get(key) === next) queued.delete(key); }).catch(() => {}); return next;
   }
-  function clear() { generation++; originals.clear(); receipts.clear(); queued.clear(); }
+  const size = () => new Set([...originals.keys(), ...receipts.keys(), ...closures.keys()]).size;
+  function clear() { generation++; originals.clear(); receipts.clear(); closures.clear(); queued.clear(); }
   return {
     original(input: FinancialPolicyReference) { const { key } = exact(input); return originals.get(key) ?? null; },
     recorded(input: FinancialPolicyReference) { const { key } = exact(input); return receipts.get(key) ?? null; },
+    closed(input: FinancialPolicyReference) { const { key } = exact(input); return closures.get(key) ?? null; },
     retain(input: FinancialPolicyAttempt) {
       // Clone before scheduling asynchronous digest work.
       const pending = structuredClone(input), { r, key } = exact(pending.reference), version = generation;
@@ -111,8 +126,8 @@ export function createFinancialPolicyMemory(scopeInput: FinancialPolicyLocalScop
         const attempt = await verifyFinancialPolicyAttempt(pending);
         if (!alive || generation !== version) throw new FinancialPolicyClientError('scope');
         const existing = originals.get(key);
-        if (!financialSame(attempt.reference, r) || existing && !financialSame(existing, attempt)) throw new FinancialPolicyClientError('input');
-        if (!existing && new Set([...originals.keys(), ...receipts.keys()]).size >= FINANCIAL_POLICY_REFERENCE_LIMIT) throw failed();
+        if (!financialSame(attempt.reference, r) || existing && !financialSame(existing, attempt) || closures.has(key)) throw new FinancialPolicyClientError('input');
+        if (!existing && size() >= FINANCIAL_POLICY_REFERENCE_LIMIT) throw failed();
         // A receipt may have committed while this retain waited in the queue.
         // Recheck both maps now; the pre-queue check is only an early rejection.
         exact(r);
@@ -126,10 +141,21 @@ export function createFinancialPolicyMemory(scopeInput: FinancialPolicyLocalScop
         guard();
         if (!alive || generation !== version) throw new FinancialPolicyClientError('scope');
         const existing = receipts.get(key);
-        if (existing && !financialSame(existing, receipt)) throw new FinancialPolicyClientError('unconfirmed');
-        if (!existing && !originals.has(key) && new Set([...originals.keys(), ...receipts.keys()]).size >= FINANCIAL_POLICY_REFERENCE_LIMIT) throw failed();
+        if (existing && !financialSame(existing, receipt) || closures.has(key)) throw new FinancialPolicyClientError('unconfirmed');
+        if (!existing && !originals.has(key) && size() >= FINANCIAL_POLICY_REFERENCE_LIMIT) throw failed();
         exact(r);
         receipts.set(key, receipt); return receipt;
+      });
+    },
+    recordClosure(input: FinancialPolicyReference, closureInput: FinancialPolicyQualifiedClosure, guard: () => void = () => {}) {
+      const { r, key } = exact(input), pending = structuredClone(closureInput), version = generation;
+      return serial(key, async () => {
+        const closure = await qualifyFinancialClosure(pending, r); guard();
+        if (!alive || generation !== version) throw new FinancialPolicyClientError('scope');
+        const existing = closures.get(key);
+        if (existing && !financialSame(existing, closure) || receipts.has(key)) throw new FinancialPolicyClientError('unconfirmed');
+        if (!existing && !originals.has(key) && size() >= FINANCIAL_POLICY_REFERENCE_LIMIT) throw failed();
+        exact(r); closures.set(key, closure); originals.delete(key); return closure;
       });
     },
     async clearReminder(storage: FinancialPolicyStorage | null, input: FinancialPolicyReference) {

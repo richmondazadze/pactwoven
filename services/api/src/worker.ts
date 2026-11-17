@@ -34,6 +34,7 @@ export default {
         financialPolicyGateway: financial.financialPolicy,
         financialPolicyWriteGateway: financial.financialPolicyWrite,
         financialPolicyPreparationGateway: financial.financialPolicyPreparation,
+        financialPolicyClosureGateway: financial.financialPolicyClosure,
         custodySetupGateway: financial.custodySetup,
       } : {}),
       ...(bindings.SUPPLIER_AUTHORITY ? {

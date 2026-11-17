@@ -11,7 +11,7 @@ const run = promisify(execFile);
 it('keeps administrative Clerk, MFA issuance and privileged SQL out of the compiled public Worker', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pactwoven-worker-bundle-'));
   const wrangler = fileURLToPath(new URL('../../../node_modules/wrangler/bin/wrangler.js', import.meta.url));
-  async function bundle(role: 'api' | 'provisioner' | 'mandate'): Promise<string> {
+  async function bundle(role: 'api' | 'provisioner' | 'mandate' | 'financial'): Promise<string> {
     const config = fileURLToPath(new URL(`../wrangler.${role}.json`, import.meta.url));
     const output = join(directory, role);
     await run(process.execPath, [wrangler, 'deploy', '--dry-run', '--config', config, '--outdir', output], { timeout: 20_000 });
@@ -54,5 +54,12 @@ it('keeps administrative Clerk, MFA issuance and privileged SQL out of the compi
     expect(publicBundle).toContain('internal/financial/dispatch');
     expect(publicBundle).toContain('serviceFinancialGateways');
     expect(publicBundle).toContain('serviceSupplierRelationshipGateway');
+    const financialBundle = await bundle('financial');
+    for (const marker of ['createFinancialPolicyClosureGateway', 'PostgresFinancialPolicyClosureRepository',
+      'SELECT pactwoven.financial_policy_close_original(', 'SELECT pactwoven.financial_policy_original_status(']) {
+      expect(publicBundle, `Public bundle contains ${marker}`).not.toContain(marker);
+      expect(financialBundle, `Private financial bundle lost ${marker}`).toContain(marker);
+    }
+    expect(publicBundle).toContain('policy-close-original');
   } finally { await rm(directory, { recursive: true, force: true }); }
 }, 45_000);

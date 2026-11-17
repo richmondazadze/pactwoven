@@ -96,7 +96,7 @@ describe('financial policy browser public contract', () => {
   });
   it('qualifies immutable original receipts despite a newer viewer membership', async () => {
     const f = await documentFixture();
-    const recovery = { ...envelope, ...f.attempt.reference.locator, status: 'recorded', receipt: f.receipt };
+    const recovery = { ...envelope, ...f.attempt.reference.locator, status: 'recorded', receipt: f.receipt, closure: null };
     expect((await qualifyFinancialRecovery(recovery, scope, f.attempt.reference, f.attempt)).receipt?.actor.membershipVersion).toBe(1);
     for (const field of ['key', 'kind', 'targetId', 'publicRequestHash']) {
       const reference = structuredClone(f.attempt.reference);

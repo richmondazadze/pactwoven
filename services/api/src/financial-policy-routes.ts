@@ -3,10 +3,13 @@ import { z } from 'zod';
 import { ApiErrorSchema, IdSchema, HashSchema, IdempotencyKeySchema, FinancialPolicyVersionSchema,
   FinancialPolicyHttpKindSchema, FinancialPolicyHttpContextSchema, FinancialPolicyHttpRecordResponseSchema,
   FinancialPolicyHttpDraftIndexResponseSchema, FinancialPolicyHttpGovernanceIndexResponseSchema,
-  FinancialPolicyHttpRecoveryLocatorSchema, FinancialPolicyHttpRecoveryResponseSchema } from '@pactwoven/contracts';
+  FinancialPolicyHttpRecoveryLocatorSchema, FinancialPolicyOriginalClosureLocatorSchema,
+  FinancialPolicyOriginalStatusResponseSchema } from '@pactwoven/contracts';
 import { DomainError } from '@pactwoven/domain';
 import type { ApiEnv } from './app.js';
 import { safeFinancialPolicyApiError, validateFinancialPolicyWire, type FinancialPolicyGateway } from './financial-policy-service.js';
+import type { FinancialPolicyClosureGateway } from './financial-policy-closure-service.js';
+import { validateFinancialPolicyOriginalStatusResponse } from './financial-worker-closure-result.js';
 
 // A bounded default keeps index payloads predictable; clients may request 1–50 records.
 export const FINANCIAL_POLICY_INDEX_DEFAULT_LIMIT = 20;
@@ -53,7 +56,8 @@ function failure(c: Context<ApiEnv>, error: unknown) {
 }
 
 /** Register before generic identity middleware: these handlers capture selectors before any provider await. */
-export function registerFinancialPolicyRoutes(app: Hono<ApiEnv>, gateway: FinancialPolicyGateway | undefined): void {
+export function registerFinancialPolicyRoutes(app: Hono<ApiEnv>, gateway: FinancialPolicyGateway | undefined, closureGateway?: FinancialPolicyClosureGateway): void {
+  const originalStatus = closureGateway?.status.bind(closureGateway);
   const captured = gateway && { context: gateway.context.bind(gateway), index: gateway.index.bind(gateway),
     get: gateway.get.bind(gateway), recover: gateway.recover.bind(gateway) };
   const service = () => { if (!captured) throw new DomainError('SETUP_REQUIRED', 503, 'Financial-policy reads are not configured.'); return captured; };
@@ -101,10 +105,13 @@ export function registerFinancialPolicyRoutes(app: Hono<ApiEnv>, gateway: Financ
     const rid = responsibility(c), q = parameters(url, ['kind', 'targetId', 'requestHash'], ['kind', 'targetId', 'requestHash']);
     const locator = input(FinancialPolicyHttpRecoveryLocatorSchema, { responsibilityId: rid, key: input(IdempotencyKeySchema, c.req.param('key')),
       kind: input(FinancialPolicyHttpKindSchema, q.kind), targetId: input(IdSchema, q.targetId), publicRequestHash: input(HashSchema, q.requestHash) });
-    const s = service(), token = bearer(c.req.header('Authorization'));
-    const result = validateFinancialPolicyWire(FinancialPolicyHttpRecoveryResponseSchema, await s.recover(token, { ...locator }));
+    const token = bearer(c.req.header('Authorization')), supported = FinancialPolicyOriginalClosureLocatorSchema.safeParse(locator);
+    if (supported.success && !originalStatus) throw new DomainError('SETUP_REQUIRED', 503, 'Original request status is not configured.');
+    const raw = supported.success ? await originalStatus!(token, supported.data)
+      : { ...await service().recover(token, { ...locator }), closure: null };
+    const result = validateFinancialPolicyWire(FinancialPolicyOriginalStatusResponseSchema, raw);
     if (result.responsibilityId !== rid || result.key !== locator.key || result.kind !== locator.kind || result.targetId !== locator.targetId || result.publicRequestHash !== locator.publicRequestHash) throw unverified();
-    return c.json(result);
+    return c.json(await validateFinancialPolicyOriginalStatusResponse(locator, result));
   });
   app.all(patterns[0], context); app.all(patterns[1], index);
   app.all(patterns[2], context); app.all(patterns[3], index);

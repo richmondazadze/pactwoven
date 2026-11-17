@@ -11,9 +11,11 @@ import { scopedResponsibilitySchema } from '../lib/responsibilities';
 import { FinancialPolicyClientError, financialSame, freezeFinancial, type FinancialPolicyReadTarget, type FinancialPolicyReference } from '../lib/financial-policy-contract';
 import { createFinancialPolicyBootstrap, createFinancialPolicyClock, createFinancialPolicyLifetime, financialPolicyBootstrapKey,
   financialPolicyLocalScope, type FinancialPolicyBootstrap } from '../lib/financial-policy-context';
-import { clearFinancialPolicyReminder, createFinancialPolicyMemory, listFinancialPolicyReferences, financialPolicyReferenceKey, type FinancialPolicyStorage } from '../lib/financial-policy-recovery';
+import { clearFinancialPolicyReminder, clearClosedFinancialPolicyReminder, createFinancialPolicyMemory, listFinancialPolicyReferences, financialPolicyReferenceKey, type FinancialPolicyStorage } from '../lib/financial-policy-recovery';
 import { createFinancialPolicyTransport, type FinancialPolicyTransportAdapters } from '../lib/financial-policy-transport';
+import { createFinancialPolicyClosureClient, FinancialPolicyClosureAttemptError, type FinancialPolicyClosureReview } from '../lib/financial-policy-closure-client';
 import { FinancialPolicyRecoveryPanel, type FinancialPolicyRecoveryRow } from './financial-policy-recovery-panel';
+import { financialPolicyClosureHeadingId } from './financial-policy-closure-review';
 import { FinancialPolicyReview, FinancialPolicyDocumentText, financialPolicyCollectionPath, financialPolicyVersionPath, financialPolicyLabel } from './financial-policy-review';
 import { ActionLabel, Alert, ButtonLink, LoadingState, PageHeading, Panel, StatusBadge } from './ui';
 import { useMotion } from './motion';
@@ -24,9 +26,9 @@ export type FinancialPolicyWorkspaceAdapters = Omit<FinancialPolicyTransportAdap
 type Index = FinancialPolicyHttpDraftIndexResponse | FinancialPolicyHttpGovernanceIndexResponse;
 type View = Readonly<{ visible: boolean; phase: 'idle' | 'checking' | 'ready' | 'expired' | 'denied' | 'unavailable'; busy: boolean;
   context: FinancialPolicyHttpContext | null; index: Index | null; record: FinancialPolicyHttpRecordResponse | null;
-  rows: readonly FinancialPolicyRecoveryRow[]; storageBlocked: boolean; message: string; focus: number }>;
+  rows: readonly FinancialPolicyRecoveryRow[]; storageBlocked: boolean; message: string; focus: number; focusTarget: string | null }>;
 const initial = (): View => ({ visible: false, phase: 'idle', busy: false, context: null, index: null, record: null, rows: [],
-  storageBlocked: false, message: 'Check current access to open financial-policy records and saved references.', focus: 0 });
+  storageBlocked: false, message: 'Check current access to open financial-policy records and saved references.', focus: 0, focusTarget: null });
 const deniedMessage = 'Current financial-policy access could not be verified. Private records have been cleared. Saved original references remain in this tab.';
 const expiredMessage = 'This observation has expired. Refresh current context explicitly before another read.';
 /** One owner per route, separate from replaceable transport/token adapters. No mount I/O. */
@@ -35,6 +37,7 @@ export function createFinancialPolicyWorkspaceController(first: FinancialPolicyW
   const lifetime = createFinancialPolicyLifetime(bootstrap, { wall: () => (adapters.wall ?? Date.now)(), monotonic: () => (adapters.monotonic ?? (() => performance.now()))() });
   let memory = createFinancialPolicyMemory(financialPolicyLocalScope(bootstrap));
   let transport = createFinancialPolicyTransport({ ...adapters, lifetime, memory });
+  let closer = createFinancialPolicyClosureClient({ ...adapters, lifetime, memory });
   let view = initial(), visible = false, closed = false, denied = false, active: object | null = null, sequence = 0;
   let expiry: ReturnType<typeof setTimeout> | null = null;
   let displayDeadline = 0, displayNow: (() => number) | null = null;
@@ -78,21 +81,30 @@ export function createFinancialPolicyWorkspaceController(first: FinancialPolicyW
     const key = financialPolicyReferenceKey(reference);
     publish({ ...view, rows: view.rows.map(value => financialPolicyReferenceKey(value.reference) === key ? { ...value, ...update } : value) });
   }
+  function retireClosureReview() { closer.invalidateReview(); publish({ ...view, rows: view.rows.map(value => ({ ...value, closureReview: null })) }); }
+  function report(error: unknown) {
+    if (!current()) { suspend(); return; }
+    const code = error instanceof FinancialPolicyClientError ? error.code : 'unconfirmed';
+    if (code === 'scope') { denied = true; lifetime.deny(); }
+    if (code === 'expired') lifetime.invalidate();
+    const closureMessage = error instanceof FinancialPolicyClosureAttemptError ? error.outcome === 'unknown'
+      ? 'The closure result is unknown. Preserve this original reminder and check its exact result explicitly before another action.'
+      : 'No closure request was sent. Keep the original reminder and check its exact result again before reviewing closure.' : null;
+    publish({ ...view, phase: code === 'scope' ? 'denied' : code === 'expired' ? 'expired' : view.context ? 'ready' : 'unavailable',
+      message: code === 'scope' ? deniedMessage : closureMessage ?? (code === 'expired' ? expiredMessage : error instanceof FinancialPolicyClientError ? error.message
+        : 'This read could not be confirmed. Saved originals are preserved.'), focus: ++sequence });
+  }
   async function run(message: string, work: (check: () => void) => Promise<void>) {
-    if (active || !current() || denied) return;
+    if (active || denied) return;
+    if (!current()) { suspend(); return; }
     const operation = {}, owner = transport; active = operation;
-    publish({ ...view, busy: true, message });
+    publish({ ...view, busy: true, message, focusTarget: null });
     const check = () => { if (active !== operation || owner !== transport || !current()) throw new FinancialPolicyClientError('scope'); };
     try { await work(check); if (active !== operation || owner !== transport || !current()) return;
       publish({ ...view, focus: ++sequence });
     } catch (error) {
       if (active !== operation || owner !== transport) return;
-      if (!current()) { suspend(); return; }
-      const code = error instanceof FinancialPolicyClientError ? error.code : 'unconfirmed';
-      if (code === 'scope') { denied = true; lifetime.deny(); }
-      if (code === 'expired') lifetime.invalidate();
-      publish({ ...view, phase: code === 'scope' ? 'denied' : code === 'expired' ? 'expired' : view.context ? 'ready' : 'unavailable',
-        message: code === 'scope' ? deniedMessage : code === 'expired' ? expiredMessage : error instanceof FinancialPolicyClientError ? error.message : 'This read could not be confirmed. Saved originals are preserved.', focus: ++sequence });
+      report(error);
     } finally { if (active === operation) { active = null; publish({ ...view, busy: false }); } }
   }
   function suspend() { visible = false; active = null; lifetime.hide(); }
@@ -100,13 +112,15 @@ export function createFinancialPolicyWorkspaceController(first: FinancialPolicyW
     getSnapshot: () => view, getServerSnapshot: () => serverView,
     subscribe(listener: () => void) { subscribers.add(listener); return () => { subscribers.delete(listener); }; },
     matches, current, fresh, expireDisplay,
+    canReviewClosure(reference: FinancialPolicyReference) { return !view.busy && closer.canReview(reference); },
+    closureReviewCurrent(review: FinancialPolicyClosureReview) { return !view.busy && closer.reviewCurrent(review); },
     configure(next: FinancialPolicyWorkspaceAdapters) {
       if (closed || matches(next)) return;
-      active = null; lifetime.invalidate(); memory.close(); adapters = next; bootstrap = freezeFinancial(structuredClone(next.bootstrap));
+      active = null; closer.close(); lifetime.invalidate(); memory.close(); adapters = next; bootstrap = freezeFinancial(structuredClone(next.bootstrap));
       denied = false;
       try { lifetime.activate(bootstrap); } catch { denied = true; }
       memory = createFinancialPolicyMemory(financialPolicyLocalScope(bootstrap));
-      transport = createFinancialPolicyTransport({ ...adapters, lifetime, memory }); clearPrivate();
+      transport = createFinancialPolicyTransport({ ...adapters, lifetime, memory }); closer = createFinancialPolicyClosureClient({ ...adapters, lifetime, memory }); clearPrivate();
     },
     activate() {
       if (closed) return; visible = true; active = null;
@@ -116,49 +130,94 @@ export function createFinancialPolicyWorkspaceController(first: FinancialPolicyW
     },
     suspend,
     refresh() { return run('Checking current financial-policy access…', async check => {
+      retireClosureReview();
       const query = { assetKey: null }, observation = await transport.context(query, lifetime.authorize('context', query));
       check(); ready(); publish({ ...view, phase: 'ready', context: observation.context, message: 'Current context checked. Choose a record page or check an individual saved original.' });
       rows(); arm();
     }); },
     index(afterId: string | null = null) { return run('Reading financial-policy records…', async check => {
+      retireClosureReview();
       ready(); const query = { responsibilityId: bootstrap.responsibilityId, afterId, limit: 25 };
       publish({ ...view, index: null, record: null });
       const value = await transport.index(query, lifetime.authorize('index', query)); check(); ready(); arm(value.observation.expiresAt);
       publish({ ...view, index: value, message: value.items.length ? 'Financial-policy record page checked.' : 'No financial-policy records were returned for this page.' });
     }); },
     read(target: FinancialPolicyReadTarget) { return run(`Reading exact version ${target.version}…`, async check => {
+      retireClosureReview();
       ready(); publish({ ...view, record: null });
       const value = await transport.read(target, lifetime.authorize('read', target)); check(); ready(); arm(value.observation.expiresAt);
       publish({ ...view, record: value, message: `Exact record ${target.id}, version ${target.version}, checked.` });
     }); },
-    refreshReferences() { if (active) return; try { rows(); publish({ ...view, message: 'Saved references refreshed. No request was sent.', focus: ++sequence }); }
+    refreshReferences() { if (active) return; try { retireClosureReview(); rows(); publish({ ...view, message: 'Saved references refreshed. No request was sent.', focus: ++sequence }); }
       catch { active = null; lifetime.invalidate(); publish({ ...view, phase: 'expired', message: expiredMessage }); } },
     lookup(reference: FinancialPolicyReference) { return run('Checking one original financial-policy result…', async check => {
+      retireClosureReview();
       ready(); if (!view.rows.some(value => financialSame(value.reference, reference))) throw new FinancialPolicyClientError('input');
       row(reference, { state: 'checking', message: 'Checking this original result…' });
       try {
         const result = await transport.lookup(reference, lifetime.authorize('lookup', reference)); check(); ready(); arm(result.observation.expiresAt);
-        const receipt = memory.recorded(reference);
-        row(reference, { state: receipt ? 'recorded' : 'not-recorded', receipt,
-          message: result.receipt ? 'The service returned a matching immutable original receipt.' : 'No result was returned at this check. This does not cancel or fail the original request.' });
-        publish({ ...view, message: result.receipt ? 'Original result recorded. Clearing this tab’s reminder is a separate action.' : 'Original result remains unconfirmed at this check.' });
+        const receipt = memory.recorded(reference), closure = memory.closed(reference); closer.noteLookup(reference, result);
+        row(reference, { state: closure ? 'closed' : receipt ? 'recorded' : 'not-recorded', receipt, closure, closureReview: null,
+          message: closure ? 'This exact original request is permanently closed. Inspect the closure receipt before clearing this tab’s reminder separately.'
+            : receipt ? 'The service returned a matching immutable original receipt.' : 'No result was returned at this check. This does not cancel or fail the original request.' });
+        publish({ ...view, focusTarget: closure ? financialPolicyClosureHeadingId(closure.locator.publicRequestHash) : null,
+          message: closure ? 'Original closure recovered. Inspect its immutable receipt; clearing is separate.'
+          : receipt ? 'Original result recorded. Clearing this tab’s reminder is a separate action.' : 'Original result remains unconfirmed at this check.' });
       } catch (error) { check(); row(reference, { state: 'unconfirmed', message: 'The check could not be confirmed. The original reference remains stored.' }); throw error; }
     }); },
-    clear(reference: FinancialPolicyReference) { return run('Clearing this tab’s exact reminder…', async check => {
+    reviewClosure(reference: FinancialPolicyReference) {
+      if (active || !current() || denied) return;
+      try {
+        ready(); const value = view.rows.find(item => financialSame(item.reference, reference));
+        if (value?.state !== 'not-recorded' || value.receipt || value.closure) throw new FinancialPolicyClientError('input');
+        const closureReview = closer.review(reference);
+        publish({ ...view, rows: view.rows.map(item => ({ ...item, closureReview: financialSame(item.reference, reference) ? closureReview : null })),
+          message: 'Review this exact original, permanent closure effect and current pins. Closing is a separate action.' });
+      } catch (error) { report(error); }
+    },
+    cancelClosure(reference: FinancialPolicyReference) { if (active || !current() || denied) return; closer.cancelReview(); row(reference, { closureReview: null }); },
+    closeOriginal(reference: FinancialPolicyReference) { return run('Closing this exact original request…', async check => {
       ready(); const value = view.rows.find(item => financialSame(item.reference, reference));
-      if (!value?.receipt || value.state === 'cleared') throw new FinancialPolicyClientError('input');
+      if (!value?.closureReview || value.state !== 'not-recorded') throw new FinancialPolicyClientError('input');
+      row(reference, { state: 'closing', message: 'Closing this exact original request…' });
+      try {
+        const result = await closer.submit(value.closureReview); check(); ready();
+        if (!financialSame(result.scope, view.context?.scope)) {
+          lifetime.invalidate(); publish({ ...view, message: 'The immutable original result was recovered, but current access pins changed. Check fresh context and this exact original again before inspecting or clearing its reminder.' }); return;
+        }
+        arm(result.observation.expiresAt);
+        row(reference, { state: result.closure ? 'closed' : 'recorded', receipt: result.receipt, closure: result.closure, closureReview: null,
+          message: result.closure ? 'This original request key is permanently closed. Inspect its distinct closure receipt before clearing the reminder separately.'
+            : 'The original committed first. Inspect its actual policy receipt; no closure was created.' });
+        publish({ ...view, focusTarget: result.closure ? financialPolicyClosureHeadingId(result.closure.locator.publicRequestHash) : null,
+          message: result.closure ? 'Original request closed. Inspect its closure receipt; clearing is separate.'
+          : 'The original was already recorded. Inspect its policy receipt before a separate reminder clear.' });
+      } catch (error) {
+        check(); row(reference, { state: 'unconfirmed', closureReview: null, message: 'Closure could not be confirmed. Keep the original reminder and check its exact result explicitly.' }); throw error;
+      }
+    }); },
+    clear(reference: FinancialPolicyReference) { return run('Clearing this tab’s exact reminder…', async check => {
+      retireClosureReview();
+      ready(); const value = view.rows.find(item => financialSame(item.reference, reference));
+      const closure = value?.state === 'closed' ? value.closure : null;
+      if ((!value?.receipt && !closure) || value?.state === 'cleared') throw new FinancialPolicyClientError('input');
       row(reference, { state: 'clearing' });
       try {
-        await clearFinancialPolicyReminder(adapters.storage(), reference, value.receipt, () => { check(); ready(); return true; });
+        const current = () => { check(); ready(); return true; };
+        if (closure) await clearClosedFinancialPolicyReminder(adapters.storage(), reference, closure, current);
+        else await clearFinancialPolicyReminder(adapters.storage(), reference, value!.receipt!, current);
       } catch (error) {
         // The storage helper normalizes errors; recover current scope/expiry before publishing feedback.
         check(); ready(); throw error;
       }
       check(); ready();
+      if (closure) {
+        lifetime.invalidate(); publish({ ...view, message: 'The closed original’s matching tab reminder was cleared. Check fresh context before another action.' }); return;
+      }
       row(reference, { state: 'cleared', message: 'Only this tab’s matching reminder was cleared. The immutable original receipt remains visible during this observation.' });
       publish({ ...view, message: 'This tab’s exact reminder was cleared.' });
     }); },
-    close() { suspend(); closed = true; memory.close(); lifetime.close(); subscribers.clear(); },
+    close() { suspend(); closed = true; closer.close(); memory.close(); lifetime.close(); subscribers.clear(); },
   };
 }
 export type FinancialPolicyWorkspaceController = ReturnType<typeof createFinancialPolicyWorkspaceController>;
@@ -195,9 +254,10 @@ export function FinancialPolicyWorkspaceView({ target = null, ...props }: Financ
     visibility(); document.addEventListener('visibilitychange', visibility);
     return () => { document.removeEventListener('visibilitychange', visibility); controller.suspend(); };
   }, [controller, key, props.currentBootstrap, props.getToken, props.fetch, props.storage, props.wall, props.monotonic, targetKey]);
-  useLayoutEffect(() => { if (view.visible && view.focus > lastFocus.current && feedback.current) {
-    lastFocus.current = view.focus; feedback.current.focus({ preventScroll: true });
-  } }, [view.focus, view.visible]);
+  useLayoutEffect(() => { if (view.visible && view.focus > lastFocus.current && controller.current()) {
+    lastFocus.current = view.focus;
+    ((view.focusTarget ? document.getElementById(view.focusTarget) : null) ?? feedback.current)?.focus({ preventScroll: true });
+  } }, [controller, view.focus, view.visible, view.focusTarget]);
   useLayoutEffect(() => { if (displayExpired) controller.expireDisplay(); }, [controller, displayExpired]);
   useLayoutEffect(() => { if (scopeLost && !controller.current()) controller.suspend(); }, [controller, scopeLost]);
   useEffect(() => { if (!view.busy) { setShowPending(false); return; }
@@ -235,7 +295,9 @@ export function FinancialPolicyWorkspaceView({ target = null, ...props }: Financ
             : <p className="review-note">Load a page explicitly to inspect saved configuration records.</p>}</Panel>
           {props.bootstrap.responsibilityId !== null && context.configurationVisibility === 'full' && <ButtonLink href="/app/organization/financial-policies" secondary>Organization financial policies</ButtonLink>}
           <FinancialPolicyRecoveryPanel rows={view.rows} blocked={view.storageBlocked} busy={view.busy} onRefresh={() => controller.refreshReferences()}
-            onLookup={reference => void controller.lookup(reference)} onClear={reference => void controller.clear(reference)}/>
+            onLookup={reference => void controller.lookup(reference)} onClear={reference => void controller.clear(reference)}
+            canReviewClosure={controller.canReviewClosure} closureReviewCurrent={controller.closureReviewCurrent}
+            onReviewClosure={controller.reviewClosure} onCancelClosure={controller.cancelClosure} onCloseOriginal={reference => void controller.closeOriginal(reference)}/>
         </>}
     </>}
   </div>;

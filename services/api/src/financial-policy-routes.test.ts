@@ -2,13 +2,14 @@ import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiEnv } from './app.js';
 import type { FinancialPolicyGateway } from './financial-policy-service.js';
+import type { FinancialPolicyClosureGateway } from './financial-policy-closure-service.js';
 import { registerFinancialPolicyRoutes, FINANCIAL_POLICY_INDEX_DEFAULT_LIMIT } from './financial-policy-routes.js';
 
 const hash = 'a'.repeat(64), key = 'original_key_12345', token = 'synthetic.token.only';
 const auth = { Authorization: `Bearer ${token}` };
 const envelope = () => ({ schemaVersion: 1, scope: { environment: 'development', organizationId: 'org_a',
   actor: { actorId: 'actor_a', membershipVersion: 9 }, organizationEpoch: 4, roles: ['owner'], siteIds: ['site_a'], actionSiteIds: ['site_a'] },
-  observation: { observedAt: '2026-11-15T12:00:00.000Z', expiresAt: '2026-11-15T12:00:20.000Z' }, effectiveAuthority: false, financialState: null });
+  observation: { observedAt: new Date(Date.now() - 500).toISOString(), expiresAt: new Date(Date.now() + 19_000).toISOString() }, effectiveAuthority: false, financialState: null });
 const context = (rid: string | null) => ({ ...envelope(), kind: rid === null ? 'organization' : 'responsibility', responsibilityId: rid,
   configurationVisibility: 'full', draftScope: rid === null ? null : { authority: { schemaVersion: 1, responsibility: { id: rid, version: 1, hash, siteId: 'site_a' },
     generation: 0, family: 'none', legacyHead: null }, authorityHash: hash, site: { id: 'site_a', generation: 0, recordHash: hash } },
@@ -30,7 +31,9 @@ function fixture(setup = true) {
     recover: vi.fn(async (_token: string, locator: object): Promise<unknown> => ({ ...envelope(), ...locator, status: 'not_recorded', receipt: null })),
   };
   const app = new Hono<ApiEnv>(); app.use('*', async (c, next) => { c.set('correlationId', 'correlation_a'); await next(); });
-  registerFinancialPolicyRoutes(app, setup ? gateway as unknown as FinancialPolicyGateway : undefined);
+  const closure = { close: vi.fn(), status: async (bearer: string, locator: object) => ({ ...await gateway.recover(bearer, locator) as object, closure: null }) };
+  registerFinancialPolicyRoutes(app, setup ? gateway as unknown as FinancialPolicyGateway : undefined,
+    setup ? closure as unknown as FinancialPolicyClosureGateway : undefined);
   const generic = vi.fn(async () => {}); app.use('/v1/*', async (_c, next) => { await generic(); await next(); });
   return { app, gateway, generic };
 }

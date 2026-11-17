@@ -3,6 +3,8 @@ import { IdSchema, HashSchema, FinancialPolicyVersionSchema, FinancialPolicyHttp
   FinancialPolicyHttpRecoveryLocatorSchema, FinancialPolicyHttpContextSchema, FinancialPolicyHttpRecordResponseSchema,
   FinancialPolicyHttpDraftIndexResponseSchema, FinancialPolicyHttpGovernanceIndexResponseSchema,
   FinancialPolicyHttpMutationResponseSchema, FinancialPolicyHttpRecoveryResponseSchema,
+  FinancialPolicyOriginalClosureLocatorSchema, FinancialPolicyOriginalClosureRequestSchema,
+  FinancialPolicyOriginalStatusResponseSchema, FinancialPolicyOriginalClosureResponseSchema, financialPolicyOriginalClosureRoute,
   FinancialPolicyPreparationRequestSchema, FinancialPolicyPreparationResponseSchema,
   CustodyUuidSchema, CustodyPrepareHttpSchema, CustodyChallengeHttpSchema, CustodyConfirmationHttpSchema,
   CustodyConfirmHttpSchema, CustodyCancelHttpSchema, CustodyApiRecoveryQuerySchema,
@@ -12,6 +14,8 @@ import { canonicalJson, commandDigest, custodyRecordHash, custodySpecificationHa
 import type { FinancialPolicyGateway } from './financial-policy-service.js';
 import type { FinancialPolicyWriteGateway } from './financial-policy-write-service.js';
 import type { FinancialPolicyPreparationGateway } from './financial-policy-preparation-service.js';
+import type { FinancialPolicyClosureGateway } from './financial-policy-closure-service.js';
+import { validateFinancialPolicyClosureResponse, validateFinancialPolicyOriginalStatusResponse } from './financial-worker-closure-result.js';
 import type { CustodySetupGateway } from './custody-setup-service.js';
 import type { ServiceBinding } from './worker-config.js';
 import { privateDeadline, readPrivateJson, serviceJsonRequest } from './worker-service.js';
@@ -26,6 +30,7 @@ export type FinancialGateways = {
   financialPolicy: FinancialPolicyGateway;
   financialPolicyWrite: FinancialPolicyWriteGateway;
   financialPolicyPreparation: FinancialPolicyPreparationGateway;
+  financialPolicyClosure?: FinancialPolicyClosureGateway;
   custodySetup: CustodySetupGateway;
 };
 const requestContext = z.strictObject({ url: z.string().url().max(4096), method: z.enum(['GET', 'POST']),
@@ -37,6 +42,8 @@ const actionSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('policy-get'), selector: z.strictObject({ responsibilityId, id: IdSchema,
     version: FinancialPolicyVersionSchema, kind: z.enum(['document', 'draft', 'governance']) }).refine(v => v.kind === 'document' || (v.kind === 'draft') === (v.responsibilityId !== null)) }),
   z.strictObject({ kind: z.literal('policy-recover'), locator: FinancialPolicyHttpRecoveryLocatorSchema }),
+  z.strictObject({ kind: z.literal('policy-original-status'), locator: FinancialPolicyOriginalClosureLocatorSchema }),
+  z.strictObject({ kind: z.literal('policy-close-original'), input: FinancialPolicyOriginalClosureRequestSchema }),
   z.strictObject({ kind: z.literal('policy-submit'), command: FinancialPolicyHttpRequestSchema.refine(v => ['save_document', 'save_draft', 'withdraw_draft', 'propose_governance'].includes(v.kind)) }),
   z.strictObject({ kind: z.literal('policy-prepare'), responsibilityId, selection: FinancialPolicyPreparationRequestSchema }),
   z.strictObject({ kind: z.literal('custody-context'), responsibilityId: IdSchema }),
@@ -103,7 +110,8 @@ function validateRoute(input: Input) {
   if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password || u.hash || u.href.endsWith('?') || u.pathname.includes('%')) throw new Error();
   let path: string, method = 'GET';
   const rid = 'responsibilityId' in a ? a.responsibilityId : a.kind === 'policy-get' ? a.selector.responsibilityId
-    : a.kind === 'policy-recover' ? a.locator.responsibilityId : a.command.responsibilityId;
+    : a.kind === 'policy-recover' || a.kind === 'policy-original-status' ? a.locator.responsibilityId
+    : a.kind === 'policy-close-original' ? a.input.locator.responsibilityId : a.command.responsibilityId;
   const base = rid === null ? '/v1/financial-governance' : `/v1/responsibilities/${rid}/financial-policies`;
   const custody = `/v1/responsibilities/${rid}/custody-setups`;
   switch (a.kind) {
@@ -115,9 +123,11 @@ function validateRoute(input: Input) {
     }
     case 'policy-get': path = a.selector.kind === 'document' ? (rid === null ? `${base}/documents` : `/v1/responsibilities/${rid}/financial-policy-documents`) : base;
       path += `/${a.selector.id}/versions/${a.selector.version}`; query(u, []); break;
+    case 'policy-original-status':
     case 'policy-recover': path = rid === null ? `${base}/operations/${a.locator.key}` : `/v1/responsibilities/${rid}/financial-policy-operations/${a.locator.key}`;
       if (!equal(query(u, ['kind', 'targetId', 'requestHash']), { kind: a.locator.kind, targetId: a.locator.targetId, requestHash: a.locator.publicRequestHash })) throw new Error(); break;
     case 'policy-submit': path = snapshotFinancialPolicyWriteRequest(a.command).route; method = 'POST'; query(u, []); break;
+    case 'policy-close-original': path = financialPolicyOriginalClosureRoute(a.input.locator); method = 'POST'; query(u, []); break;
     case 'policy-prepare': snapshotFinancialPolicyPreparationSelection(rid, a.selection);
       path = rid === null ? '/v1/financial-governance-preparation' : `/v1/responsibilities/${rid}/financial-policy-preparation`; method = 'POST'; query(u, []); break;
     case 'custody-context': path = `${custody}/recovery-context`; query(u, []); break;
@@ -154,6 +164,8 @@ async function parseResult(a: Action, input: unknown) {
     if (!equal({ responsibilityId: v.responsibilityId, kind: v.kind, key: v.key, targetId: v.targetId, publicRequestHash: v.publicRequestHash }, a.locator)) throw new Error(); return v;
   }
   if (a.kind === 'policy-submit') { const v = await validateFinancialPolicyWriteResponse(a.command, input); fresh(v); return v; }
+  if (a.kind === 'policy-original-status') { const v = await validateFinancialPolicyOriginalStatusResponse(a.locator, input); fresh(v); return v; }
+  if (a.kind === 'policy-close-original') { const v = await validateFinancialPolicyClosureResponse(a.input, input); fresh(v); return v; }
   if (a.kind === 'policy-prepare') { const v = await validateFinancialPolicyPreparationResponse(a.responsibilityId, a.selection, input); fresh(v); return v; }
   if (a.kind === 'custody-context') {
     const v = CustodyApiRecoveryContextSchema.parse(input), now = Date.now();
@@ -185,6 +197,12 @@ function dispatch(g: FinancialGateways, token: string, input: Input) {
     case 'policy-index': return g.financialPolicy.index(token, a.responsibilityId, a.query);
     case 'policy-get': return g.financialPolicy.get(token, a.selector);
     case 'policy-recover': return g.financialPolicy.recover(token, a.locator);
+    case 'policy-original-status':
+      if (!g.financialPolicyClosure) throw new DomainError('SETUP_REQUIRED', 503, safeErrors.SETUP_REQUIRED[1]);
+      return g.financialPolicyClosure.status(token, a.locator);
+    case 'policy-close-original':
+      if (!g.financialPolicyClosure) throw new DomainError('SETUP_REQUIRED', 503, safeErrors.SETUP_REQUIRED[1]);
+      return g.financialPolicyClosure.close(token, a.input);
     case 'policy-submit': return g.financialPolicyWrite.submit(token, snapshotFinancialPolicyWriteRequest(a.command));
     case 'policy-prepare': return g.financialPolicyPreparation.prepare(token, a.responsibilityId, a.selection);
     case 'custody-context': return g.custodySetup.recoveryContext(token, a.responsibilityId, trace);
@@ -226,7 +244,7 @@ export async function handlePrivateFinancialRequest(request: Request, issuer: st
 }
 
 /** Public adapters carry only exact request snapshots; private gateways independently verify each bearer. */
-export function serviceFinancialGateways(binding: ServiceBinding, originalRequest: Request, issuer: string): FinancialGateways {
+export function serviceFinancialGateways(binding: ServiceBinding, originalRequest: Request, issuer: string): FinancialGateways & { financialPolicyClosure: FinancialPolicyClosureGateway } {
   const authorization = originalRequest.headers.get('Authorization') ?? '', key = originalRequest.headers.get('Idempotency-Key');
   const url = originalRequest.url, method = originalRequest.method;
   const trace = originalRequest.headers.get('X-Correlation-Id') ?? crypto.randomUUID();
@@ -236,7 +254,8 @@ export function serviceFinancialGateways(binding: ServiceBinding, originalReques
     try {
       const input = requestSchema.parse({ nonce: crypto.randomUUID(), request: { url, method, correlationId }, action });
       validateRoute(input);
-      const expectedKey = input.action.kind === 'policy-submit' ? input.action.command.key : 'input' in input.action ? input.action.input.key : null;
+      const expectedKey = input.action.kind === 'policy-submit' ? input.action.command.key
+        : input.action.kind === 'policy-close-original' ? input.action.input.locator.key : 'input' in input.action ? input.action.input.key : null;
       if (expectedKey !== null && key !== expectedKey || input.action.kind === 'policy-prepare' && key !== null) throw new Error();
       const body = JSON.stringify(input);
       if (new TextEncoder().encode(body).byteLength > financialRequestBytes) throw new Error();
@@ -264,6 +283,10 @@ export function serviceFinancialGateways(binding: ServiceBinding, originalReques
       recover: async (token, locator) => FinancialPolicyHttpRecoveryResponseSchema.parse(await exchange(token, { kind: 'policy-recover', locator })),
     },
     financialPolicyWrite: { submit: async (token, command) => FinancialPolicyHttpMutationResponseSchema.parse(await exchange(token, { kind: 'policy-submit', command })) },
+    financialPolicyClosure: {
+      status: async (token, locator) => FinancialPolicyOriginalStatusResponseSchema.parse(await exchange(token, { kind: 'policy-original-status', locator })),
+      close: async (token, input) => FinancialPolicyOriginalClosureResponseSchema.parse(await exchange(token, { kind: 'policy-close-original', input })),
+    },
     financialPolicyPreparation: { prepare: async (token, responsibilityId, selection) => FinancialPolicyPreparationResponseSchema.parse(await exchange(token, { kind: 'policy-prepare', responsibilityId, selection })) },
     custodySetup: {
       recoveryContext: async (token, responsibilityId, trace) => CustodyApiRecoveryContextSchema.parse(await exchange(token, { kind: 'custody-context', responsibilityId }, trace)),

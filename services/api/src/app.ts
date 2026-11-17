@@ -16,6 +16,8 @@ import { registerFinancialPolicyWriteRoutes } from './financial-policy-write-rou
 import type { FinancialPolicyWriteGateway } from './financial-policy-write-service.js';
 import { registerFinancialPolicyPreparationRoutes } from './financial-policy-preparation-routes.js';
 import type { FinancialPolicyPreparationGateway } from './financial-policy-preparation-service.js';
+import { registerFinancialPolicyClosureRoutes } from './financial-policy-closure-routes.js';
+import type { FinancialPolicyClosureGateway } from './financial-policy-closure-service.js';
 import { registerSupplierRelationshipRoutes } from './supplier-relationship-routes.js';
 import type { SupplierRelationshipHttpGateway } from '@pactwoven/contracts';
 
@@ -30,6 +32,7 @@ export type AppDependencies = {
   financialPolicyGateway?: FinancialPolicyGateway;
   financialPolicyWriteGateway?: FinancialPolicyWriteGateway;
   financialPolicyPreparationGateway?: FinancialPolicyPreparationGateway;
+  financialPolicyClosureGateway?: FinancialPolicyClosureGateway;
   supplierRelationshipGateway?: SupplierRelationshipHttpGateway;
   allowedOrigins: readonly string[];
 };
@@ -113,9 +116,10 @@ export function createApp(dependencies: AppDependencies) {
 
   // Financial routes parse immutable selectors and bounded write bodies before
   // their own identity observation. Writes pass reserved read targets onward.
+  registerFinancialPolicyClosureRoutes(app, dependencies.financialPolicyClosureGateway);
   registerFinancialPolicyPreparationRoutes(app, dependencies.financialPolicyPreparationGateway);
   registerFinancialPolicyWriteRoutes(app, dependencies.financialPolicyWriteGateway);
-  registerFinancialPolicyRoutes(app, dependencies.financialPolicyGateway);
+  registerFinancialPolicyRoutes(app, dependencies.financialPolicyGateway, dependencies.financialPolicyClosureGateway);
   registerSupplierRelationshipRoutes(app, dependencies.supplierRelationshipGateway);
 
   app.use('/v1/*', async (c, next) => {

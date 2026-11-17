@@ -192,7 +192,7 @@ describe('bounded private financial service protocol', () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
   it('keeps the public transport and response validators free of privileged runtime imports', () => {
-    for (const name of ['worker-financial.ts', 'financial-worker-result.ts']) {
+    for (const name of ['worker-financial.ts', 'financial-worker-result.ts', 'financial-worker-closure-result.ts']) {
       const source = readFileSync(new URL(name, import.meta.url), 'utf8');
       expect(source).not.toMatch(/import\s+(?!type\b)[^;]*from ['"](?:@pactwoven\/db|\.\/(?:.*verifier|auth|.*development|financial-policy.*-service|custody-setup-service)\.js)['"]/s);
     }

@@ -1,11 +1,12 @@
 import { createFinancialAuthorityPool, PostgresFinancialPolicyRepository, PostgresFinancialAuthenticationRepository,
-  PostgresFinancialPolicyReaders, PostgresFinancialPolicyPreparationReader,
+  PostgresFinancialPolicyReaders, PostgresFinancialPolicyPreparationReader, PostgresFinancialPolicyClosureRepository,
   createCustodySetupPool, PostgresCustodySetupRepository, PostgresCustodySetupAuthenticationRepository,
   PostgresCustodySetupReaders } from '@pactwoven/db';
 import { createClerkFinancialPolicyVerifier } from './financial-policy-verifier.js';
 import { createFinancialPolicyGateway } from './financial-policy-service.js';
 import { createFinancialPolicyWriteGateway } from './financial-policy-write-service.js';
 import { createFinancialPolicyPreparationGateway } from './financial-policy-preparation-service.js';
+import { createFinancialPolicyClosureGateway } from './financial-policy-closure-service.js';
 import { createClerkCustodySetupVerifier } from './custody-setup-verifier.js';
 import { createCustodySetupService } from './custody-setup-service.js';
 import { readFinancialWorkerConfig, type FinancialWorkerBindings } from './financial-worker-config.js';
@@ -54,6 +55,12 @@ export default {
         return {
           financialPolicy: createFinancialPolicyGateway(dependencies),
           financialPolicyWrite: createFinancialPolicyWriteGateway(dependencies),
+          financialPolicyClosure: createFinancialPolicyClosureGateway({ ...dependencies, closures: {
+            status: async (...args: Parameters<PostgresFinancialPolicyClosureRepository['status']>) =>
+              new PostgresFinancialPolicyClosureRepository(await financialAuthorizer.get()).status(...args),
+            close: async (...args: Parameters<PostgresFinancialPolicyClosureRepository['close']>) =>
+              new PostgresFinancialPolicyClosureRepository(await financialAuthorizer.get()).close(...args),
+          } }),
           financialPolicyPreparation: createFinancialPolicyPreparationGateway({ ...dependencies,
             preparationReader: { prepare: async (...args: Parameters<PostgresFinancialPolicyPreparationReader['prepare']>) =>
               new PostgresFinancialPolicyPreparationReader(await financialAuthorizer.get()).prepare(...args) } }),

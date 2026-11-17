@@ -58,6 +58,7 @@ if (credentials) {
       dependencies.financialPolicyGateway = financialPolicy.gateway;
       dependencies.financialPolicyWriteGateway = financialPolicy.writeGateway;
       dependencies.financialPolicyPreparationGateway = financialPolicy.preparationGateway;
+      dependencies.financialPolicyClosureGateway = financialPolicy.closureGateway;
     }
     supplierRelationship = await createDevelopmentSupplierRelationship(environmentValues, {
       secretKey: credentials.secretKey, issuer: credentials.issuer, authorizedParties: allowedOrigins,

@@ -62,7 +62,7 @@ async function fixture(configured = true) {
   registerFinancialPolicyWriteRoutes(app, configured ? gateway as unknown as FinancialPolicyWriteGateway : undefined);
   const reject = () => vi.fn(async () => { throw new DomainError('FINANCIAL_POLICY_SCOPE_CHANGED', 409, 'synthetic read'); });
   const read: FinancialPolicyGateway = { context: reject(), index: reject(), get: reject(), recover: reject() };
-  registerFinancialPolicyRoutes(app, read);
+  registerFinancialPolicyRoutes(app, read, { close: vi.fn(), status: async (bearer, locator) => ({ ...await read.recover(bearer, locator), closure: null }) });
   const generic = vi.fn(); app.use('*', async (_c, next) => { generic(); await next(); });
   return { app, gateway, read, generic, samples, receipt, draft, bundle, control };
 }

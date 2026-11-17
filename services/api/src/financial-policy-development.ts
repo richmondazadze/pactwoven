@@ -1,10 +1,12 @@
 import { createFinancialAuthorityPool, PostgresFinancialPolicyRepository,
-  PostgresFinancialAuthenticationRepository, PostgresFinancialPolicyReaders, PostgresFinancialPolicyPreparationReader } from '@pactwoven/db';
+  PostgresFinancialAuthenticationRepository, PostgresFinancialPolicyReaders, PostgresFinancialPolicyPreparationReader,
+  PostgresFinancialPolicyClosureRepository } from '@pactwoven/db';
 import type { ClerkIdentityConfig } from './auth.js';
 import { createClerkFinancialPolicyVerifier } from './financial-policy-verifier.js';
 import { createFinancialPolicyGateway } from './financial-policy-service.js';
 import { createFinancialPolicyWriteGateway } from './financial-policy-write-service.js';
 import { createFinancialPolicyPreparationGateway } from './financial-policy-preparation-service.js';
+import { createFinancialPolicyClosureGateway } from './financial-policy-closure-service.js';
 
 /** Construct only from the paired configuration validated by the development entrypoint. */
 export async function createDevelopmentFinancialPolicy(configuration: {
@@ -36,7 +38,8 @@ export async function createDevelopmentFinancialPolicy(configuration: {
     const preparationGateway = createFinancialPolicyPreparationGateway({ environment: dependencies.environment, issuer: dependencies.issuer,
       verifier: dependencies.verifier, readers: dependencies.readers, authentication: dependencies.authentication,
       preparationReader: new PostgresFinancialPolicyPreparationReader(authorizer) });
-    return { gateway, writeGateway, preparationGateway, close };
+    const closureGateway = createFinancialPolicyClosureGateway({ ...dependencies, closures: new PostgresFinancialPolicyClosureRepository(authorizer) });
+    return { gateway, writeGateway, preparationGateway, closureGateway, close };
   } catch {
     await close();
     throw new Error('Financial policy development setup failed. Check the protected paired database and identity configuration.');

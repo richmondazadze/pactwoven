@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const doubles = vi.hoisted(() => ({
   pool: vi.fn(), repository: vi.fn(), authentication: vi.fn(), readers: vi.fn(), verifier: vi.fn(), gateway: vi.fn(), writeGateway: vi.fn(),
   preparationReader: vi.fn(), preparationGateway: vi.fn(), preparationService: { prepare: vi.fn() },
+  closureRepository: vi.fn(), closureGateway: vi.fn(), closureService: { close: vi.fn(), status: vi.fn() },
   authorizer: { end: vi.fn() }, observer: { end: vi.fn() }, service: { context: vi.fn() }, writeService: { submit: vi.fn() },
 }));
 vi.mock('@pactwoven/db', () => ({
@@ -11,11 +12,13 @@ vi.mock('@pactwoven/db', () => ({
   PostgresFinancialAuthenticationRepository: class { constructor(...args: unknown[]) { doubles.authentication(...args); } },
   PostgresFinancialPolicyReaders: class { constructor(...args: unknown[]) { doubles.readers(...args); } },
   PostgresFinancialPolicyPreparationReader: class { constructor(...args: unknown[]) { doubles.preparationReader(...args); } },
+  PostgresFinancialPolicyClosureRepository: class { constructor(...args: unknown[]) { doubles.closureRepository(...args); } },
 }));
 vi.mock('./financial-policy-verifier.js', () => ({ createClerkFinancialPolicyVerifier: doubles.verifier }));
 vi.mock('./financial-policy-service.js', () => ({ createFinancialPolicyGateway: doubles.gateway }));
 vi.mock('./financial-policy-write-service.js', () => ({ createFinancialPolicyWriteGateway: doubles.writeGateway }));
 vi.mock('./financial-policy-preparation-service.js', () => ({ createFinancialPolicyPreparationGateway: doubles.preparationGateway }));
+vi.mock('./financial-policy-closure-service.js', () => ({ createFinancialPolicyClosureGateway: doubles.closureGateway }));
 import { createDevelopmentFinancialPolicy } from './financial-policy-development.js';
 
 const configuration = () => ({ authorizerDatabaseUrl: 'authorizer-fixture', verifierDatabaseUrl: 'verifier-fixture',
@@ -27,16 +30,21 @@ beforeEach(() => {
   doubles.verifier.mockReturnValue({ observe: vi.fn() }); doubles.gateway.mockReturnValue(doubles.service);
   doubles.writeGateway.mockReturnValue(doubles.writeService);
   doubles.preparationGateway.mockReturnValue(doubles.preparationService);
+  doubles.closureGateway.mockReturnValue(doubles.closureService);
 });
 
 describe('development financial policy construction', () => {
-  it('shares one paired capability set and identity verifier across all three gateways without executing a request', async () => {
+  it('shares one paired capability set and identity verifier across all four gateways without executing a request', async () => {
     const config = configuration(), value = await createDevelopmentFinancialPolicy(config);
     expect(doubles.pool.mock.calls).toEqual([['authorizer-fixture', 'authorizer'], ['verifier-fixture', 'verifier']]);
     expect(doubles.repository).toHaveBeenCalledExactlyOnceWith(doubles.authorizer);
     expect(doubles.authentication).toHaveBeenCalledExactlyOnceWith(doubles.observer);
     expect(doubles.readers).toHaveBeenCalledExactlyOnceWith(doubles.authorizer, doubles.observer);
     expect(doubles.preparationReader).toHaveBeenCalledExactlyOnceWith(doubles.authorizer);
+    expect(doubles.closureRepository).toHaveBeenCalledExactlyOnceWith(doubles.authorizer);
+    expect(doubles.closureGateway).toHaveBeenCalledOnce();
+    expect(value.closureGateway).toBe(doubles.closureService);
+    expect(doubles.closureService.close).not.toHaveBeenCalled(); expect(doubles.closureService.status).not.toHaveBeenCalled();
     expect(doubles.verifier).toHaveBeenCalledExactlyOnceWith(config.identity, 'development');
     expect(doubles.gateway.mock.calls[0]![0]).toMatchObject({ environment: 'development', issuer: config.identity.issuer,
       verifier: doubles.verifier.mock.results[0]!.value });

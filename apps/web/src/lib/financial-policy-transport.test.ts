@@ -46,7 +46,7 @@ function fixture() {
         contentHash: createHash('sha256').update(JSON.stringify({ namespace: 'pactwoven:financial-policy-text:v1', text })).digest('hex') } };
     storeFinancialPolicyReference(storage, attempt.reference); await memory.retain(attempt);
     return { attempt, receipt, lookup: () => transport.lookup(attempt.reference, lifetime.authorize('lookup', attempt.reference)),
-      response: (recorded = true) => ({ ...envelope(), ...attempt.reference.locator, status: recorded ? 'recorded' : 'not_recorded', receipt: recorded ? receipt : null }) };
+      response: (recorded = true) => ({ ...envelope(), ...attempt.reference.locator, status: recorded ? 'recorded' : 'not_recorded', receipt: recorded ? receipt : null, closure: null }) };
   }
   return { bootstrap, context, envelope, current, time, lifetime, memory, values, storage, fetcher, getToken, adapters, transport, open, index, original };
 }
@@ -73,6 +73,13 @@ describe('strict bounded financial JSON', () => {
   });
 });
 describe('explicit bounded financial policy transport', () => {
+  it.each([true, false])('accepts bounded Fetch-decoded JSON with a wire length when content encoding is exposed: %s', async exposed => {
+    const f = fixture(), response = json(f.context);
+    response.headers.set('Content-Length', '123');
+    if (exposed) response.headers.set('Content-Encoding', 'gzip');
+    f.fetcher.mockResolvedValueOnce(response);
+    expect((await f.open()).context).toEqual(f.context);
+  });
   it('does no construction I/O and makes one exact fresh-token GET per explicit action', async () => {
     const f = fixture(); expect(f.fetcher).not.toHaveBeenCalled(); expect(f.getToken).not.toHaveBeenCalled();
     await f.open(); expect(f.getToken).toHaveBeenCalledWith({ organizationId: 'provider_org', skipCache: true });

@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { EnvironmentSchema, IdSchema, HashSchema, FinancialPolicyVersionSchema,
   FinancialPolicyHttpRequestSchema, FinancialPolicyHttpRecoveryLocatorSchema, FinancialPolicyHttpReceiptSchema,
   FinancialPolicyHttpRecordResponseSchema, FinancialPolicyHttpDraftIndexResponseSchema,
-  FinancialPolicyHttpGovernanceIndexResponseSchema, FinancialPolicyHttpRecoveryResponseSchema,
+  FinancialPolicyHttpGovernanceIndexResponseSchema, FinancialPolicyOriginalStatusResponseSchema,
+  FinancialPolicyOriginalClosureReceiptSchema, financialPolicyOriginalClosureReceiptHash,
   FinancialPolicyHttpScopeSchema, financialPolicyHttpRoute, type FinancialPolicyHttpRequest,
   FinancialPolicyHttpDraftSchema, FinancialPolicyHttpRecordSchema,
   FinancialPolicyHttpContextSchema, type FinancialPolicyHttpContext,
@@ -174,7 +175,7 @@ export async function qualifyFinancialIndex(input: unknown, scopeInput: Financia
 }
 export async function qualifyFinancialRecovery(input: unknown, scopeInput: FinancialPolicyHttpScope, referenceInput: FinancialPolicyReference,
   originalInput?: FinancialPolicyAttempt) {
-  const value = freezeFinancial(financialParse(FinancialPolicyHttpRecoveryResponseSchema, input));
+  const value = freezeFinancial(financialParse(FinancialPolicyOriginalStatusResponseSchema, input));
   const scope = freezeFinancial(financialParse(FinancialPolicyHttpScopeSchema, scopeInput));
   const reference = freezeFinancial(financialParse(FinancialPolicyReferenceSchema, referenceInput));
   const original = originalInput === undefined ? undefined : freezeFinancial(financialParse(AttemptSchema, originalInput));
@@ -184,6 +185,19 @@ export async function qualifyFinancialRecovery(input: unknown, scopeInput: Finan
     reference.scope.environment !== scope.environment || reference.scope.organizationId !== scope.organizationId || reference.scope.actorId !== scope.actor.actorId)
     throw new FinancialPolicyClientError('unconfirmed');
   if (value.receipt) await qualifyFinancialReceipt(value.receipt, reference, original);
+  if (value.closure) await qualifyFinancialClosure(value.closure, reference);
   return value;
 }
+/** Historical closure pins remain historical; only the stable actor and exact original are correlated here. */
+export async function qualifyFinancialClosure(input: unknown, referenceInput: unknown) {
+  const closure = freezeFinancial(financialParse(FinancialPolicyOriginalClosureReceiptSchema, input));
+  const reference = freezeFinancial(financialParse(FinancialPolicyReferenceSchema, referenceInput));
+  if (closure.environment !== reference.scope.environment || closure.organizationId !== reference.scope.organizationId ||
+    closure.actor.actorId !== reference.scope.actorId || !financialSame(closure.locator, reference.locator))
+    throw new FinancialPolicyClientError('unconfirmed');
+  if (closure.expected.draftScope) await qualifyFinancialDraftBasis(closure, closure.expected.draftScope);
+  if (closure.recordHash !== await financialPolicyOriginalClosureReceiptHash(closure)) throw new FinancialPolicyClientError('unconfirmed');
+  return closure;
+}
+export type FinancialPolicyQualifiedClosure = Awaited<ReturnType<typeof qualifyFinancialClosure>>;
 export type FinancialPolicyQualifiedReceipt = FinancialPolicyHttpReceipt;

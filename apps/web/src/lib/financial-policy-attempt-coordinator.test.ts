@@ -224,7 +224,7 @@ describe('financial policy attempt coordination', () => {
     const reference = f.coordinator.status().reference!, before = [...f.values]; f.coordinator.close();
     const next = createFinancialPolicyAttemptCoordinator({ ...f.adapters });
     expect(() => next.continueUnsent(reference)).toThrow(); expect(() => next.review(f.make())).toThrow();
-    f.readFetch.mockResolvedValueOnce(json({ ...f.envelope, ...reference.locator, status: 'not_recorded', receipt: null }));
+    f.readFetch.mockResolvedValueOnce(json({ ...f.envelope, ...reference.locator, status: 'not_recorded', receipt: null, closure: null }));
     const recovered = await f.read.lookup(next.recoveryReference(reference), f.lifetime.authorize('lookup', reference));
     expect(recovered.status).toBe('not_recorded'); expect([...f.values]).toEqual(before); expect(f.fetcher).not.toHaveBeenCalled();
     expect(() => next.review(f.make())).toThrow();
@@ -366,7 +366,7 @@ describe('financial policy attempt coordination', () => {
     f.fetcher.mockImplementationOnce(async (...args) => { await originalFetch(...args); throw Error('synthetic lost acknowledgement'); });
     await expect(f.send()).rejects.toMatchObject({ outcome: 'unknown' }); expect(f.received).toHaveLength(1);
     const reference = f.coordinator.status().reference!, before = [...f.values];
-    f.readFetch.mockResolvedValueOnce(json({ ...f.envelope, ...reference.locator, status: 'recorded', receipt: f.receipts[0] }));
+    f.readFetch.mockResolvedValueOnce(json({ ...f.envelope, ...reference.locator, status: 'recorded', receipt: f.receipts[0], closure: null }));
     const result = await f.read.lookup(f.coordinator.recoveryReference(reference), f.lifetime.authorize('lookup', reference));
     expect(result.receipt).toEqual(f.receipts[0]); expect(f.fetcher).toHaveBeenCalledOnce(); expect([...f.values]).toEqual(before);
     expect(f.memory.recorded(reference)).toEqual(result.receipt); expect(f.coordinator.status().state).toBe('unknown');

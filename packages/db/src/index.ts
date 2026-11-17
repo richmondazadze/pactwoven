@@ -43,3 +43,8 @@ export { FinancialPolicyPreparationQuerySchema, FinancialPolicyPreparationSchema
 export type { FinancialPolicyPreparationQuery, FinancialPolicyPreparation,
   FinancialPolicyPreparationReader } from './financial-policy-preparation-schema.js';
 export { PostgresFinancialPolicyPreparationReader } from './financial-policy-preparation-repository.js';
+export { FinancialPolicyOriginalClosureIntentSchema, FinancialPolicyOriginalStatusSchema,
+  FinancialPolicyOriginalClosedSchema } from './financial-policy-closure-schema.js';
+export type { FinancialPolicyOriginalClosureIntent, FinancialPolicyOriginalStatus,
+  FinancialPolicyOriginalClosed, FinancialPolicyClosures } from './financial-policy-closure-schema.js';
+export { PostgresFinancialPolicyClosureRepository } from './financial-policy-closure-repository.js';

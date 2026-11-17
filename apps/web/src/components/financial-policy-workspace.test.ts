@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FinancialPolicyBootstrapSchema, type FinancialPolicyBootstrap } from '../lib/financial-policy-context';
 import { createFinancialPolicyAttempt } from '../lib/financial-policy-contract';
 import { storeFinancialPolicyReference, type FinancialPolicyStorage } from '../lib/financial-policy-recovery';
+import { financialClosureFixture } from '../lib/financial-policy-closure-test-support';
 import { createFinancialPolicyWorkspaceController, FinancialPolicyWorkspaceView, type FinancialPolicyWorkspaceController } from './financial-policy-workspace';
 import { MotionProvider } from './motion';
 
@@ -42,13 +43,58 @@ function fixture() {
         version: 1, predecessor: null, organizationEpoch: 2, createdAt: iso(at), purpose: 'budget_policy', text,
         contentHash: createHash('sha256').update(JSON.stringify({ namespace: 'pactwoven:financial-policy-text:v1', text })).digest('hex') } };
     storeFinancialPolicyReference(storage, attempt.reference);
-    return { reference: attempt.reference, receipt, response: (recorded = true) => ({ ...envelope, ...attempt.reference.locator, status: recorded ? 'recorded' : 'not_recorded', receipt: recorded ? receipt : null }) };
+    return { reference: attempt.reference, receipt, response: (recorded = true) => ({ ...envelope, ...attempt.reference.locator, status: recorded ? 'recorded' : 'not_recorded', receipt: recorded ? receipt : null, closure: null }) };
   }
   return { bootstrap, context, envelope, current, time, values, storage, fetcher, token, adapters, controller, original };
 }
 const globalFetch = vi.fn(() => { throw Error('Unexpected real fetch'); });
 beforeEach(() => { vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', base); vi.stubGlobal('fetch', globalFetch); globalFetch.mockClear(); });
 afterEach(() => { for (const controller of controllers.splice(0)) controller.close(); expect(globalFetch).not.toHaveBeenCalled(); vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+describe('organization original-key closure controller', () => {
+  async function review() {
+    const f = fixture(), original = await f.original(); await f.controller.refresh();
+    f.fetcher.mockResolvedValueOnce(json(original.response(false))); await f.controller.lookup(original.reference);
+    const calls = f.fetcher.mock.calls.length; f.controller.reviewClosure(original.reference);
+    expect(f.fetcher).toHaveBeenCalledTimes(calls);
+    return { ...f, original, review: f.controller.getSnapshot().rows[0]!.closureReview! };
+  }
+  it('closes, focuses the immutable closure and clears only through a later distinct action', async () => {
+    const f = await review(), closure = await financialClosureFixture(f.original.reference, f.review.request.expected), originals = [...f.values];
+    f.fetcher.mockResolvedValueOnce(json({ ...f.envelope, ...f.original.reference.locator, status: 'closed', receipt: null, closure }));
+    await f.controller.closeOriginal(f.original.reference);
+    expect(f.controller.getSnapshot().rows[0]).toMatchObject({ state: 'closed', closure, receipt: null, closureReview: null });
+    expect(f.controller.getSnapshot().focusTarget).toBe(`financial-policy-closure-${closure.locator.publicRequestHash}`);
+    expect([...f.values]).toEqual(originals); expect(f.storage.removeItem).not.toHaveBeenCalled();
+    await f.controller.clear(f.original.reference); expect(f.values.size).toBe(0); expect(f.controller.getSnapshot().context).toBeNull();
+    expect(f.fetcher.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+  });
+  it('accepts the real original receipt when closure loses the database race', async () => {
+    const f = await review(); f.fetcher.mockResolvedValueOnce(json(f.original.response(true)));
+    await f.controller.closeOriginal(f.original.reference);
+    expect(f.controller.getSnapshot().rows[0]).toMatchObject({ state: 'recorded', receipt: f.original.receipt, closure: null });
+    expect(f.controller.getSnapshot().message).toContain('already recorded'); expect(f.values.size).toBe(1);
+  });
+  it('never repeats an unknown closure and recovers a historical receipt on a separate lookup', async () => {
+    const f = await review(), historical = { ...f.review.request.expected, actor: { actorId: 'owner_a', membershipVersion: 1 }, organizationEpoch: 0 };
+    const closure = await financialClosureFixture(f.original.reference, historical); f.fetcher.mockRejectedValueOnce(Error('private connection error'));
+    await f.controller.closeOriginal(f.original.reference); expect(f.controller.getSnapshot().message).toContain('closure result is unknown');
+    const calls = f.fetcher.mock.calls.length; await f.controller.closeOriginal(f.original.reference); expect(f.fetcher).toHaveBeenCalledTimes(calls);
+    f.fetcher.mockResolvedValueOnce(json({ ...f.envelope, ...f.original.reference.locator, status: 'closed', receipt: null, closure }));
+    await f.controller.lookup(f.original.reference);
+    expect(f.controller.getSnapshot().rows[0]?.closure?.expected).toEqual(historical);
+    expect(f.controller.getSnapshot().focusTarget).toBe(`financial-policy-closure-${closure.locator.publicRequestHash}`);
+    expect(f.storage.removeItem).not.toHaveBeenCalled();
+  });
+  it('retires the old authorization context when replay response pins have advanced', async () => {
+    const f = await review(), closure = await financialClosureFixture(f.original.reference, f.review.request.expected);
+    f.fetcher.mockResolvedValueOnce(json({ ...f.envelope, scope: { ...f.envelope.scope, organizationEpoch: 3, actor: { actorId: 'owner_a', membershipVersion: 8 } },
+      ...f.original.reference.locator, status: 'closed', receipt: null, closure }));
+    await f.controller.closeOriginal(f.original.reference);
+    expect(f.controller.getSnapshot()).toMatchObject({ context: null, rows: [], focusTarget: null });
+    expect(f.controller.getSnapshot().message).toContain('current access pins changed'); expect(f.values.size).toBe(1);
+    await f.controller.clear(f.original.reference); expect(f.storage.removeItem).not.toHaveBeenCalled();
+  });
+});
 describe('financial policy route controller (no DOM mount)', () => {
   it('offers responsibility preparation and exact revision navigation without initiating a request', () => {
     const f = fixture();

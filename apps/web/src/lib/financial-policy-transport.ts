@@ -64,10 +64,12 @@ function interrupted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
     work.then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
   });
 }
-async function boundedJson(response: Response, signal: AbortSignal, guard: () => void) {
+export async function readFinancialPolicyResponseJson(response: Response, signal: AbortSignal, guard: () => void) {
   if (!/^application\/json(?:\s*;\s*charset=utf-8)?\s*$/i.test(response.headers.get('content-type') ?? '') ||
     !noStore(response.headers.get('cache-control'))) throw unconfirmed();
   const length = response.headers.get('content-length');
+  // Fetch may decode compressed bodies without changing their wire length header.
+  // Bound the declared length and the decoded stream independently.
   if (length !== null && (!/^\d+$/.test(length) || Number(length) > FINANCIAL_POLICY_HTTP_RESPONSE_MAX_BYTES)) throw unconfirmed();
   const reader = response.body?.getReader(); if (!reader) throw unconfirmed();
   let size = 0, text = ''; const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -127,7 +129,7 @@ export function createFinancialPolicyTransport(adapters: FinancialPolicyTranspor
       // Denial is latched synchronously before body parsing or any caller callback.
       if (response.status === 401 || response.status === 403) { lifetime.deny(); throw new FinancialPolicyClientError('scope'); }
       if (response.redirected || response.url && response.url !== url || response.status < 200 || response.status >= 300 && response.status < 400) throw unconfirmed();
-      const value = await boundedJson(response, signal, guard); guard();
+      const value = await readFinancialPolicyResponseJson(response, signal, guard); guard();
       if (!response.ok) {
         const error = z.object({ error: z.object({ code: z.string() }) }).safeParse(value), code = error.success ? error.data.error.code : '';
         if (['AUTH_REQUIRED', 'FORBIDDEN', 'FINANCIAL_POLICY_ACCESS_DENIED', 'FINANCIAL_POLICY_SCOPE_CHANGED'].includes(code)) {
@@ -201,6 +203,7 @@ export function createFinancialPolicyTransport(adapters: FinancialPolicyTranspor
         observationTime(result, at); return result;
       }, () => { assertFinancialPolicyReference(storage(), reference); }, async (result, guard) => {
         guard(); if (result.receipt) { await memory.record(reference, result.receipt, guard); guard(); }
+        if (result.closure) { await memory.recordClosure(reference, result.closure, guard); guard(); }
       });
     },
     dispose() { disposed = true; try { lifetime.assertAdapters(owner); lifetime.invalidate(); } catch { /* Replaced adapters own the route now. */ } },

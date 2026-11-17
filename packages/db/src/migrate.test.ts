@@ -162,10 +162,15 @@ dbSuite('development migrations — dedicated real PostgreSQL database', () => {
     // Two competing writers plus an independent lock observer are required.
     admin = new Pool({ ...config, max: 3 });
     expect((await admin.query('SELECT current_database()')).rows[0].current_database).toBe('pactwoven_migration_test');
+    // These cluster roles must be created only by this exclusive migration suite.
+    expect((await admin.query("SELECT rolname FROM pg_roles WHERE rolname IN ('pactwoven_supplier_owner','pactwoven_supplier_executor')")).rows).toEqual([]);
   });
   beforeEach(async () => {
     await admin.query('DROP SCHEMA IF EXISTS pactwoven CASCADE');
     await admin.query('DROP SCHEMA IF EXISTS pactwoven_migrations CASCADE');
+    // A schema reset does not remove roles created by migration 0015.
+    // DROP ROLE has no CASCADE, so unexpected dependencies stop the fixture.
+    await admin.query('DROP ROLE IF EXISTS pactwoven_supplier_executor, pactwoven_supplier_owner');
   });
   afterAll(async () => { await admin?.end(); });
 

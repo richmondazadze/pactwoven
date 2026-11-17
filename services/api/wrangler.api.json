@@ -16,7 +16,7 @@
   "vars": {
     "APP_ENVIRONMENT": "development",
     "WORKER_ROLE": "api",
-    "ALLOWED_ORIGINS": "http://127.0.0.1:3001,http://localhost:3001,https://pactwoven-web-development.richmondazadze1313.workers.dev",
+    "ALLOWED_ORIGINS": "http://127.0.0.1:3001,http://localhost:3001,https://pactwoven-web-development.richmondazadze1313.workers.dev,https://pactwoven-richmond-s-projects.vercel.app,https://pactwoven-ceheah86v-richmond-s-projects.vercel.app,https://pactwoven.vercel.app",
     "EXPECTED_DATABASE_USER": "pactwoven_dev_app"
   },
   "services": [

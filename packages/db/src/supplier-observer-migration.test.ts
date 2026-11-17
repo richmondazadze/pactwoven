@@ -12,9 +12,9 @@ function body(sql: string, name: string) {
 }
 
 describe('supplier observer migration source boundary', () => {
-  it('preserves accepted migration 0015 bytes and changes only the verifier allowlist term in role_safe', async () => {
+  it('pins the accepted managed-owner migration and changes only the verifier allowlist term in role_safe', async () => {
     const original = await readFile(originalUrl, 'utf8'), next = await readFile(nextUrl, 'utf8');
-    expect(createHash('sha256').update(original).digest('hex')).toBe('4fe259454de7f05f9e2a1de55b4ab1ec0ea79e6c28f02f7a35c275ca5d38271c');
+    expect(createHash('sha256').update(original).digest('hex')).toBe('9e2e58c8495038812317e0e654e1490c2a90e76c35c6576c4f4f5fbab33572f3');
     const before = body(original, 'supplier_role_safe'), after = body(next, 'supplier_role_safe');
     const term = "p.oid=to_regprocedure('pactwoven.supplier_record_evidence(jsonb)')";
     const expanded = "p.oid=ANY(ARRAY[to_regprocedure('pactwoven.supplier_record_evidence(jsonb)'),to_regprocedure('pactwoven.supplier_resolve_observer(jsonb,jsonb)')]::oid[])";
@@ -60,7 +60,13 @@ describe('supplier observer migration source boundary', () => {
     expect(sql).toContain("GRANT EXECUTE ON FUNCTION %s TO pactwoven_supplier_executor");
     expect(sql).toContain("ALTER FUNCTION %s OWNER TO pactwoven_supplier_executor");
     expect(sql).toContain("c.relname IN ('organizations','memberships','session_revocations') AND c.relowner=legacy_owner");
-    expect(sql).toContain("c.relname='organizations' AND r.rolsuper");
+    expect(sql).toContain("c.relname='organizations' AND r.rolname=current_user");
+    expect(sql).toContain('current_user=session_user');
+    expect(sql).toContain("c.relkind='r' AND c.relrowsecurity");
+    expect(sql).toContain('NOT c.relforcerowsecurity OR');
+    expect(sql).toContain('(r.rolsuper OR r.rolbypassrls)');
+    expect(sql).toContain('admin_option AND NOT inherit_option AND NOT set_option');
+    expect(sql).toContain('REVOKE CREATE ON SCHEMA pactwoven FROM pactwoven_supplier_executor');
     expect(sql).toContain('AUTH-SQL-04');
     expect(sql).not.toMatch(/GRANT[^\n]*TO (?:PUBLIC|pactwoven_runtime|pactwoven_supplier_verifier)/i);
   });

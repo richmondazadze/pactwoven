@@ -46,6 +46,30 @@ function rules(root: string) { return checkBoundaries({ root }).findings.map((fi
 afterEach(() => { temporary.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })); });
 
 describe('dependency and import boundaries', () => {
+  it('accepts only the two reviewed patch inputs and rejects executable additions', () => {
+    const root = workspace();
+    write(root, 'packages/security-patches/picomatch-4.0.7.patch', 'reviewed patch input');
+    write(root, 'packages/security-patches/picomatch-LICENSE', 'upstream license');
+    expect(rules(root)).toEqual([]);
+    write(root, 'packages/security-patches/index.js', 'export const unexpected = true;');
+    expect(rules(root)).toContain('dependency patch directory contains unreviewed files');
+  });
+
+  it('rejects a symlink in the patch input directory', () => {
+    const root = workspace();
+    write(root, 'packages/security-patches/picomatch-4.0.7.patch', 'reviewed patch input');
+    symlinkSync('picomatch-4.0.7.patch', path.join(root, 'packages/security-patches/picomatch-LICENSE'));
+    expect(rules(root)).toContain('dependency patch directory contains unreviewed files');
+  });
+
+  it('excludes generated OpenNext output while continuing to inspect web source', () => {
+    const root = workspace();
+    write(root, 'apps/web/.open-next/worker.js', 'import db from "@pactwoven/db";');
+    expect(rules(root)).toEqual([]);
+    write(root, 'apps/web/src/worker.ts', 'import db from "@pactwoven/db";');
+    expect(rules(root)).toContain('forbidden dependency: apps/web -> packages/db');
+  });
+
   it('accepts the reviewed graph including pure policy calls inside repositories', () => {
     const root = workspace();
     write(root, 'apps/web/src/index.ts', 'import type { RecordId } from "@pactwoven/contracts"; export type WebId = RecordId;');
@@ -347,6 +371,12 @@ describe('dependency and import boundaries', () => {
 });
 
 describe('code-only publication', () => {
+  it('admits only the reviewed dependency patch path', () => {
+    expect(inspectPath('packages/security-patches/picomatch-4.0.7.patch')).toBeNull();
+    expect(inspectPath('packages/security-patches/picomatch-LICENSE')).toBeNull();
+    for (const file of ['packages/security-patches/other.patch', 'packages/security-patches/picomatch-4.0.8.patch',
+      'apps/web/picomatch-4.0.7.patch', 'docs/picomatch-4.0.7.patch']) expect(inspectPath(file)).not.toBeNull();
+  });
   it.each(['apps/web/wrangler.jsonc', 'apps/web/public/_headers'])('allows reviewed Cloudflare source configuration %s', file => {
     expect(inspectPath(file)).toBeNull();
   });

@@ -23,7 +23,7 @@ export const allowedGraph = Object.freeze({
   'programs/pactwoven': [],
 });
 const pureModules = new Set(['packages/contracts', 'packages/domain', 'packages/adapters', 'packages/testkit']);
-const ignored = new Set(['node_modules', '.next', '.turbo', 'dist', 'build', 'target', 'coverage', '.local', '.wrangler', '.vercel']);
+const ignored = new Set(['node_modules', '.next', '.open-next', '.turbo', 'dist', 'build', 'target', 'coverage', '.local', '.wrangler', '.vercel']);
 const sourcePattern = /\.(?:[cm]?[jt]s|[jt]sx)$/;
 const testPattern = /(?:^|\/)(?:__tests__|tests)\/|\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const safePureExternals = new Set(['zod']);
@@ -148,6 +148,16 @@ export function checkBoundaries({ root = process.cwd() } = {}) {
       if (entry.isSymbolicLink()) { add(directoryPath, 'workspace symlink requires boundary review'); continue; }
       if (!entry.isDirectory()) continue;
       const owner = `${parent}/${entry.name}`;
+      if (owner === 'packages/security-patches') {
+        // This is patch input, not an executable workspace. The audit gate
+        // verifies its exact bytes before accepting the installed dependency.
+        const files = fs.readdirSync(directoryPath, { withFileTypes: true });
+        if (files.length !== 2 || files.some(file => !file.isFile()
+          || !['picomatch-4.0.7.patch', 'picomatch-LICENSE'].includes(file.name))) {
+          add(directoryPath, 'dependency patch directory contains unreviewed files');
+        }
+        continue;
+      }
       if (!allowedGraph[owner]) { add(directoryPath, 'workspace has no reviewed boundary policy'); continue; }
       const manifestPath = path.join(directoryPath, 'package.json');
       const manifest = fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, 'utf8')) : {};

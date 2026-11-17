@@ -2,6 +2,8 @@ import type { NextConfig } from 'next';
 const config: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // All product images are static assets; the runtime optimizer is not used.
+  images: { unoptimized: true },
   // Clerk's same-origin rewrite must retain the explicit loopback development host.
   skipProxyUrlNormalize: true,
   transpilePackages: ['@pactwoven/contracts'],

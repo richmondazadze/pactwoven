@@ -1,0 +1,16 @@
+--- a/lib/parse.js
++++ b/lib/parse.js
+@@ -538,9 +538,12 @@
+ 
+   const extglobClose = token => {
+     const literal = input.slice(token.startIndex, state.index + 1);
+     const body = input.slice(token.startIndex + 2, state.index);
+-    const analysis = analyzeRepeatedExtglob(body, opts);
++    // Repeated extglobs can nest ambiguous or unbounded quantifiers.
++    // Pactwoven treats parsed plus/star extglobs literally, including when
++    // configurable recursion protection is disabled. Other extglob types remain unchanged.
++    const analysis = { risky: true };
+ 
+     if ((token.type === 'plus' || token.type === 'star') && analysis.risky) {
+       const safeOutput = analysis.safeOutput
+         ? (token.output ? '' : ONE_CHAR) + (opts.capture ? `(${analysis.safeOutput})` : analysis.safeOutput)

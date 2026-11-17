@@ -50,6 +50,7 @@ export function inspectPath(file) {
   if (parts[0] === '.github') return /^\.github\/workflows\/[^/]+\.ya?ml$/.test(file) ? null : 'unreviewed GitHub artifact';
   if (!codeRoots.has(parts[0])) return 'outside approved implementation directories';
   if (file === 'apps/web/wrangler.jsonc' || file === 'apps/web/public/_headers') return null;
+  if (file === 'packages/security-patches/picomatch-4.0.7.patch') return null;
   if (/^(?:Dockerfile(?:\.[\w-]+)?|Makefile|Cargo\.lock|\.gitignore|\.dockerignore)$/.test(parts.at(-1))) return null;
   return sourceExtensions.has(path.posix.extname(name)) ? null : 'unreviewed artifact type';
 }

@@ -5,6 +5,7 @@ import { DomainError, commandDigest, financialPolicyHttpRequestHash, physicalAss
   financialBudgetPeriodId } from '@pactwoven/domain';
 import { createApp } from './app.js';
 import type { FinancialPolicyGateway } from './financial-policy-service.js';
+import type { FinancialPolicyClosureGateway } from './financial-policy-closure-service.js';
 import type { FinancialPolicyWriteGateway, FinancialPolicyWriteRequest } from './financial-policy-write-service.js';
 import type { CustodySetupGateway } from './custody-setup-service.js';
 
@@ -20,17 +21,22 @@ const reads = [
   [`${responsibility}/financial-policies/draft_a/versions/1`, 'get'], [`${docPath}/versions/1`, 'get'],
   ['/v1/financial-governance/context', 'context'], ['/v1/financial-governance', 'index'],
   ['/v1/financial-governance/proposal_a/versions/1', 'get'], ['/v1/financial-governance/documents/document_a/versions/1', 'get'],
-  [`${responsibility}/financial-policy-operations/${key}?kind=save_draft&targetId=draft_a&requestHash=${hash}`, 'recover'],
+  [`${responsibility}/financial-policy-operations/${key}?kind=save_draft&targetId=draft_a&requestHash=${hash}`, 'status'],
+  [`${responsibility}/financial-policy-operations/${key}?kind=save_document&targetId=document_a&requestHash=${hash}`, 'status'],
+  [`/v1/financial-governance/operations/${key}?kind=save_document&targetId=document_a&requestHash=${hash}`, 'status'],
   [`/v1/financial-governance/operations/${key}?kind=propose_governance&targetId=proposal_a&requestHash=${hash}`, 'recover'],
+  [`${responsibility}/financial-policy-operations/${key}?kind=withdraw_draft&targetId=draft_a&requestHash=${hash}`, 'recover'],
 ] as const;
-function fixture(configured = true) {
+function fixture(configured = true, closureConfigured = true) {
   const verifyIdentity = vi.fn(async () => { throw new Error('Generic identity must not authorize a financial route.'); });
   const reject = () => vi.fn(async () => { throw new DomainError('FINANCIAL_POLICY_SCOPE_CHANGED', 409, 'private diagnostic'); });
   const read: FinancialPolicyGateway = { context: reject(), index: reject(), get: reject(), recover: reject() };
+  const closure: FinancialPolicyClosureGateway = { status: reject(), close: reject() };
   const submit = vi.fn<FinancialPolicyWriteGateway['submit']>(async () => { throw new DomainError('FINANCIAL_POLICY_SCOPE_CHANGED', 409, 'private diagnostic'); });
   const app = createApp({ allowedOrigins: [origin], verifyIdentity, financialPolicyGateway: read,
-    ...(configured ? { financialPolicyWriteGateway: { submit } } : {}) });
-  return { app, verifyIdentity, read, submit };
+    ...(configured ? { financialPolicyWriteGateway: { submit } } : {}),
+    ...(closureConfigured ? { financialPolicyClosureGateway: closure } : {}) });
+  return { app, verifyIdentity, read, submit, closure };
 }
 function secure(response: Response) {
   expect(response.headers.get('cache-control')).toBe('private, no-store');
@@ -41,7 +47,7 @@ function secure(response: Response) {
 }
 function noProvider(f: ReturnType<typeof fixture>) {
   expect(f.submit).not.toHaveBeenCalled(); expect(f.verifyIdentity).not.toHaveBeenCalled();
-  for (const method of Object.values(f.read)) expect(method).not.toHaveBeenCalled();
+  for (const method of [...Object.values(f.read), ...Object.values(f.closure)]) expect(method).not.toHaveBeenCalled();
 }
 async function samples() {
   const instant = (offset: number) => new Date(Date.now() + offset).toISOString();
@@ -102,7 +108,7 @@ describe('financial writers integrated before dedicated reads and generic middle
         message: 'The policy scope changed. Refresh the review.', correlationId: 'financial_integration' } });
     }
     expect(f.submit).toHaveBeenCalledTimes(5); expect(f.verifyIdentity).not.toHaveBeenCalled();
-    for (const method of Object.values(f.read)) expect(method).not.toHaveBeenCalled();
+    for (const method of [...Object.values(f.read), ...Object.values(f.closure)]) expect(method).not.toHaveBeenCalled();
   });
   it.each(['raw', 'escaped'] as const)('lets the document parser accept a maximum %s body larger than the generic 64 KiB cap', async encoding => {
     const f = fixture(), text = '🧵'.repeat(20_000), json = JSON.stringify({ ...documentBody, text });
@@ -137,8 +143,15 @@ describe('financial writers integrated before dedicated reads and generic middle
   });
   it.each(reads)('preserves the dedicated reader for %s', async (path, method) => {
     const f = fixture(), response = await f.app.request(path, { headers });
-    expect(response.status).toBe(409); secure(response); expect(f.read[method]).toHaveBeenCalledOnce();
+    expect(response.status).toBe(409); secure(response); expect(method === 'status' ? f.closure.status : f.read[method]).toHaveBeenCalledOnce();
     expect(f.submit).not.toHaveBeenCalled(); expect(f.verifyIdentity).not.toHaveBeenCalled();
+    for (const [name, provider] of Object.entries(f.read)) if (name !== method) expect(provider).not.toHaveBeenCalled();
+    if (method !== 'status') expect(f.closure.status).not.toHaveBeenCalled(); expect(f.closure.close).not.toHaveBeenCalled();
+  });
+  it.each(reads.filter(([, method]) => method === 'status'))('does not fall back to the legacy reader when closure is missing for %s', async path => {
+    const f = fixture(true, false), response = await f.app.request(path, { headers });
+    expect(response.status).toBe(503); secure(response); expect(await response.json()).toMatchObject({ error: { code: 'SETUP_REQUIRED' } });
+    noProvider(f);
   });
   it.each(reads)('preserves method rejection before body parsing on read %s', async path => {
     for (const method of ['POST', 'HEAD', 'PUT', 'PATCH', 'DELETE']) {

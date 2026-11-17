@@ -3,7 +3,7 @@ import type { Pool, PoolClient } from 'pg';
 import { describe, expect, it, vi } from 'vitest';
 import { financialPolicyFixtureConfig, financialPolicyFixtureEnvironment, assertFinancialPolicyFixture } from './financial-authority.test-support.js';
 import { assertFinancialAuthorityConnection } from './financial-authority-pool.js';
-import { financialPolicyRoutines } from './financial-policy-schema.js';
+import { financialPolicyRoutines, financialPolicyClosureRoutines, financialPolicyClosureTable } from './financial-policy-schema.js';
 import { financialPolicyTransaction } from './financial-policy-repository.js';
 
 const url=(port=55439)=>{const u=new URL(`postgres://127.0.0.1:${port}/pactwoven_financial_policy_fa1_test`);u.username='fixture';u.password='synthetic';return u.href;};
@@ -27,7 +27,8 @@ describe('financial policy fixture and capability boundaries',()=>{
   });
   it('pins separated routine allowlists and checks every checkout',async()=>{
     const query=vi.fn().mockResolvedValue({rows:[{safe:true}]});await assertFinancialAuthorityConnection({query} as unknown as PoolClient,'verifier');
-    expect(query.mock.calls[0]?.[1]).toEqual([financialPolicyRoutines.verifier,expect.any(Array),'pactwoven_financial_verifier','pactwoven_financial_authorizer']);
+    expect(query.mock.calls[0]?.[1]).toEqual([financialPolicyRoutines.verifier,expect.any(Array),'pactwoven_financial_verifier','pactwoven_financial_authorizer',
+      financialPolicyClosureRoutines,financialPolicyClosureTable,false,false]);
     expect(financialPolicyRoutines.authorizer).toHaveLength(9);expect(financialPolicyRoutines.verifier).toEqual(['pactwoven.financial_policy_attest(jsonb)', 'pactwoven.financial_policy_resolve_observer(text,jsonb)']);
     expect(financialPolicyRoutines.authorizer).toEqual(expect.arrayContaining([
       'pactwoven.financial_policy_read_context(uuid,jsonb,jsonb)', 'pactwoven.financial_policy_governance_index(uuid,jsonb,jsonb)',

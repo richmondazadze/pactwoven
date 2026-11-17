@@ -12,7 +12,7 @@ const authoredMigrationFiles = ['0001_foundation.sql', '0002_organization_bootst
   '0008_financial_authority_fences.sql', '0009_custody_setup_owner_bindings.sql', '0010_custody_setup_private_reads.sql',
   '0011_financial_policy_authority.sql', '0012_financial_policy_private_reads.sql', '0013_financial_policy_preparation.sql',
   '0014_supplier_identity_versions.sql', '0015_supplier_relationship_authority.sql', '0016_supplier_observer_resolution.sql',
-  '0017_managed_postgres_qualification.sql', '0018_bootstrap_site_read_grant.sql'];
+  '0017_managed_postgres_qualification.sql', '0018_bootstrap_site_read_grant.sql', '0019_financial_policy_request_fences.sql'];
 function fixtureDatabaseUrl(source: string): string {
   const url = new URL(source);
   url.password = 'fixture';
@@ -139,10 +139,10 @@ describe('development migration validation', () => {
     await expect(loadMigrations(gap)).rejects.toMatchObject({ code: 'MIGRATION_ORDER_INVALID' });
     await expect(loadMigrations(duplicate)).rejects.toMatchObject({ code: 'MIGRATION_ORDER_INVALID' });
   });
-  it('loads the exact eighteen authored migrations including bootstrap read-grant repair without a database connection', async () => {
+  it('loads the exact nineteen authored migrations including original request fences without a database connection', async () => {
     const migrations = await loadMigrations();
     expect(migrations.map(migration => migration.filename)).toEqual(authoredMigrationFiles);
-    expect(migrations.map(migration => migration.number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+    expect(migrations.map(migration => migration.number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
     for (const migration of migrations) {
       expect(migration.checksum).toMatch(/^[a-f0-9]{64}$/);
       expect(migration.statements.length).toBeGreaterThan(0);

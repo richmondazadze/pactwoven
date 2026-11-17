@@ -9,10 +9,38 @@ DO $$ BEGIN
       WHERE n.nspname='pactwoven' AND p.proname LIKE 'supplier_%') THEN
     RAISE EXCEPTION 'Supplier authority namespace must be reserved and unused';
   END IF;
+  -- The installer is the exact existing identity owner, not a role-name proxy
+  -- for superuser. Table ownership supplies the required row/table lock rights;
+  -- FORCE RLS additionally requires the owner's actual bypass capability.
+  IF current_user<>session_user OR (SELECT count(*) FROM pg_class c
+    JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles r ON r.oid=c.relowner
+    WHERE n.nspname='pactwoven' AND c.relname IN ('organizations','memberships','session_revocations','sites')
+      AND c.relkind='r' AND c.relrowsecurity AND r.rolname=current_user
+      AND (NOT c.relforcerowsecurity OR r.rolsuper OR r.rolbypassrls))<>4 THEN
+    RAISE EXCEPTION 'Supplier identity reader requires the exact shared installer owner and effective identity RLS access';
+  END IF;
 END $$;
 CREATE ROLE pactwoven_supplier_owner NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 CREATE ROLE pactwoven_supplier_executor NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 GRANT USAGE ON SCHEMA pactwoven TO pactwoven_supplier_owner,pactwoven_supplier_executor;
+-- A managed PostgreSQL installer cannot rely on superuser ownership-transfer
+-- shortcuts. Temporary inheritance/SET and schema CREATE disappear atomically
+-- at commit. ADMIN-only membership remains for later authorized migrations;
+-- it confers neither inherited access nor SET ROLE to a runtime principal.
+DO $$ BEGIN
+  IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname=current_user) THEN
+    -- PostgreSQL 16+ gives a CREATEROLE creator ADMIN-only membership through
+    -- the bootstrap grantor. Never grant ADMIN back to that role ourselves.
+    IF (SELECT count(*) FROM pg_auth_members a JOIN pg_roles r ON r.oid=a.roleid
+      WHERE r.rolname IN ('pactwoven_supplier_owner','pactwoven_supplier_executor')
+        AND a.member=current_user::regrole AND a.admin_option AND NOT a.inherit_option AND NOT a.set_option)<>2 THEN
+      RAISE EXCEPTION 'Supplier installation requires exact creator administrative membership';
+    END IF;
+    EXECUTE format('GRANT pactwoven_supplier_owner,pactwoven_supplier_executor TO %I WITH INHERIT TRUE',current_user);
+    EXECUTE format('GRANT pactwoven_supplier_owner,pactwoven_supplier_executor TO %I WITH SET TRUE',current_user);
+    GRANT CREATE ON SCHEMA pactwoven TO pactwoven_supplier_owner,pactwoven_supplier_executor;
+  END IF;
+END $$;
 
 CREATE FUNCTION pactwoven.supplier_require(ok boolean) RETURNS void
 LANGUAGE plpgsql IMMUTABLE SET search_path=pg_catalog AS $$ BEGIN
@@ -582,9 +610,10 @@ DECLARE observed timestamptz;expiry timestamptz;issued timestamptz;membership_ti
     AND expiry<=pactwoven.supplier_time(v->'sessionExpiresAt');
 EXCEPTION WHEN OTHERS THEN RETURN false;END $$;
 
--- Disclosed AUTH-SQL-04 trust: this one narrow reader runs as the existing
--- legacy identity owner, whose actual superuser attribute is checked at install.
--- Its new-table privileges are NOT confined by NOLOGIN or FORCE RLS. Fixed code,
+-- Disclosed AUTH-SQL-04 trust: this one fixed reader runs as the exact existing
+-- legacy identity owner, whose ownership and effective RLS access are checked.
+-- That administrative owner may have broad BYPASSRLS/superuser privileges;
+-- its privileges are NOT confined by NOLOGIN or FORCE RLS. Fixed code,
 -- exact relations and bounded arguments are the boundary. No dynamic SQL/DML,
 -- provider call, raw session row, business/support-table read or row-to-JSON.
 CREATE FUNCTION pactwoven.supplier_base_identity(v jsonb,site_ids jsonb,approver_ids jsonb) RETURNS jsonb
@@ -1086,10 +1115,12 @@ CREATE TRIGGER supplier_context_append BEFORE INSERT ON pactwoven.supplier_acces
 -- Install only this packet's guards, owner split and exact table allowlist.
 DO $$ DECLARE table_name text;fn record;grant_row record;legacy_owner oid;legacy_name text;BEGIN
   SELECT c.relowner,r.rolname INTO legacy_owner,legacy_name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles r ON r.oid=c.relowner
-    WHERE n.nspname='pactwoven' AND c.relname='organizations' AND r.rolsuper;
+    WHERE n.nspname='pactwoven' AND c.relname='organizations' AND r.rolname=current_user;
   IF legacy_owner IS NULL OR (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pactwoven'
-    AND c.relname IN ('organizations','memberships','session_revocations','sites') AND c.relowner=legacy_owner)<>4 THEN
-    RAISE EXCEPTION 'Supplier legacy reader requires the disclosed shared broad superuser identity owner';
+    AND c.relname IN ('organizations','memberships','session_revocations','sites') AND c.relowner=legacy_owner
+    AND c.relkind='r' AND c.relrowsecurity AND (NOT c.relforcerowsecurity OR
+      EXISTS(SELECT 1 FROM pg_roles r WHERE r.oid=legacy_owner AND (r.rolsuper OR r.rolbypassrls))))<>4 THEN
+    RAISE EXCEPTION 'Supplier legacy reader requires the disclosed shared identity owner and effective RLS access';
   END IF;
   FOREACH table_name IN ARRAY ARRAY['supplier_private_bindings','supplier_authentication_evidence','supplier_access_contexts',
     'supplier_relationship_scope_policies','supplier_relationship_proposals','supplier_relationship_versions','supplier_relationship_receipts'] LOOP
@@ -1124,6 +1155,21 @@ DO $$ DECLARE table_name text;fn record;grant_row record;legacy_owner oid;legacy
       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pactwoven_supplier_executor',fn.identity);
     ELSE EXECUTE format('ALTER FUNCTION %s OWNER TO pactwoven_supplier_executor',fn.identity);END IF;
   END LOOP;
+  -- BYPASSRLS and table ownership do not confer EXECUTE on these routines.
+  -- Keep an explicit exact overload closure for the fixed identity reader;
+  -- no database-reading/business authorizer helper is granted to this owner.
+  EXECUTE format('GRANT EXECUTE ON FUNCTION pactwoven.supplier_category(jsonb,boolean),
+    pactwoven.supplier_id(jsonb),pactwoven.supplier_ids(jsonb),pactwoven.supplier_instant(timestamptz),
+    pactwoven.supplier_integer(jsonb,numeric,numeric),pactwoven.supplier_object(jsonb,text[]),
+    pactwoven.supplier_pair(jsonb),pactwoven.supplier_reference(jsonb,boolean),
+    pactwoven.supplier_request_scope(jsonb),pactwoven.supplier_request_valid(jsonb),
+    pactwoven.supplier_require(boolean),pactwoven.supplier_scope(jsonb),pactwoven.supplier_time(jsonb) TO %I',legacy_name);
+  IF NOT (SELECT rolsuper FROM pg_roles WHERE oid=legacy_owner) THEN
+    REVOKE CREATE ON SCHEMA pactwoven FROM pactwoven_supplier_owner,pactwoven_supplier_executor;
+    -- Remove our temporary grants, preserving only the distinct bootstrap
+    -- grantor's ADMIN-only rows for the next authorized migration.
+    EXECUTE format('REVOKE pactwoven_supplier_owner,pactwoven_supplier_executor FROM %I GRANTED BY %I',legacy_name,legacy_name);
+  END IF;
 END $$;
 
 -- Offline role/binding enrollment is deliberately absent. A separately reviewed

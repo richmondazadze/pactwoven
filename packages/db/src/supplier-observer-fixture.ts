@@ -65,7 +65,7 @@ type FunctionMetadata = {
 };
 type FunctionFingerprint = FunctionMetadata & { signature: string; acl: FunctionAcl[]; definitionSha256: string };
 
-export async function createObserverFixture() {
+export async function createObserverFixture(options: { managedOwner?: boolean } = {}) {
   const migrations = await loadObserverFixtureMigrations();
   const config = await readObserverFixtureConfig(), admin = new Pool(config), suffix = randomBytes(5).toString('hex');
   const pools = new Set<Pool>();
@@ -87,8 +87,44 @@ export async function createObserverFixture() {
         FROM pg_roles r WHERE r.rolname=SESSION_USER`)).rows[0];
       assert.deepEqual(row, { rolsuper: true, schemas: 0, roles: 0 }, 'New empty disposable cluster only; no reset path.');
     } finally { client.release(); }
-    for (const migration of migrations.slice(0, 15)) await transaction(admin, async c => {
+    for (const migration of migrations.slice(0, 14)) await transaction(admin, async c => {
       for (const statement of migration.statements) {
+        const query = { text: statement, queryMode: 'extended' };
+        await c.query(query);
+      }
+    });
+    let installer = { pool: admin, name: config.user!, managed: false, forcedOwnerRejected: false };
+    if (options.managedOwner) {
+      // The existing loopback admission still requires a fresh superuser-owned
+      // fixture. Only setup uses it: both supplier migrations then run through a
+      // real separate LOGIN with neither superuser nor BYPASSRLS capability.
+      const name = `pactwoven_observer_test_${suffix}_managed`, password = randomBytes(32).toString('base64url');
+      await admin.query(`CREATE ROLE ${identifier(name)} LOGIN INHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB CREATEROLE NOREPLICATION PASSWORD ${literal(password)}`);
+      await admin.query(`GRANT CREATE ON DATABASE "${config.database}" TO ${identifier(name)}`);
+      await admin.query(`ALTER SCHEMA pactwoven OWNER TO ${identifier(name)}`);
+      await admin.query(`REVOKE CREATE ON DATABASE "${config.database}" FROM ${identifier(name)}`);
+      for (const table of ['organizations', 'memberships', 'session_revocations', 'sites']) {
+        await admin.query(`ALTER TABLE pactwoven.${table} OWNER TO ${identifier(name)}`);
+      }
+      const pool = new Pool({ ...config, user: name, password }); pools.add(pool);
+      const client = await pool.connect();
+      try {
+        await assertObserverSocket(client, { ...config, user: name });
+        const role = (await client.query('SELECT rolsuper,rolbypassrls,rolcreaterole FROM pg_roles WHERE rolname=session_user')).rows[0];
+        assert.deepEqual(role, { rolsuper: false, rolbypassrls: false, rolcreaterole: true });
+      } finally { client.release(); }
+      // Exercise the actual 0015 guard before any supplier role exists. The
+      // forced-RLS alteration is always rolled back, including unexpected pass.
+      await assert.rejects(transaction(pool, async c => {
+        await c.query('ALTER TABLE pactwoven.organizations FORCE ROW LEVEL SECURITY');
+        const query = { text: migrations[14]!.statements[0]!, queryMode: 'extended' };
+        await c.query(query);
+        throw new Error('Forced owner without bypass was unexpectedly accepted.');
+      }), { code: 'P0001' });
+      installer = { pool, name, managed: true, forcedOwnerRejected: true };
+    }
+    await transaction(installer.pool, async c => {
+      for (const statement of migrations[14]!.statements) {
         const query = { text: statement, queryMode: 'extended' };
         await c.query(query);
       }
@@ -99,15 +135,15 @@ export async function createObserverFixture() {
     // it from both new routines. Restore the default immediately afterward.
     const defaultRole = `pactwoven_observer_test_${suffix}_default`;
     await admin.query(`CREATE ROLE ${identifier(defaultRole)} NOLOGIN NOSUPERUSER NOBYPASSRLS`);
-    await admin.query(`ALTER DEFAULT PRIVILEGES GRANT EXECUTE ON FUNCTIONS TO ${identifier(defaultRole)}`);
+    await installer.pool.query(`ALTER DEFAULT PRIVILEGES GRANT EXECUTE ON FUNCTIONS TO ${identifier(defaultRole)}`);
     try {
-      await transaction(admin, async c => {
+      await transaction(installer.pool, async c => {
         for (const statement of migrations[15]!.statements) {
           const query = { text: statement, queryMode: 'extended' };
           await c.query(query);
         }
       });
-    } finally { await admin.query(`ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM ${identifier(defaultRole)}`); }
+    } finally { await installer.pool.query(`ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM ${identifier(defaultRole)}`); }
     const sources = await Promise.all([15, 16].map(number => readFile(new URL(`../migrations/${observerMigrationPins[number - 1]![0]}`, import.meta.url), 'utf8')));
     assert.equal(beforeRoleSafe.prosrc, sourceBody(sources[0]!, 'supplier_role_safe'));
     const functionIdentities = ['supplier_role_safe(oid,text)', 'supplier_observer_identity(text,text,jsonb)', observerWrapper];
@@ -137,8 +173,8 @@ export async function createObserverFixture() {
     for (const key of ['proowner', 'prosecdef', 'proconfig', 'proacl'] as const) assert.deepEqual(roleSafe[key], beforeRoleSafe[key]);
     for (const row of installed) {
       assert.equal(row.prosrc, sourceBody(sources[1]!, row.signature.split('(')[0]!));
-      assert.equal(row.owner, row.signature.startsWith('supplier_observer_identity(') ? config.user : 'pactwoven_supplier_executor');
-      assert.equal(row.rolsuper, row.signature.startsWith('supplier_observer_identity('));
+      assert.equal(row.owner, row.signature.startsWith('supplier_observer_identity(') ? installer.name : 'pactwoven_supplier_executor');
+      assert.equal(row.rolsuper, row.signature.startsWith('supplier_observer_identity(') && !installer.managed);
       assert.equal(row.prosecdef, !row.signature.startsWith('supplier_role_safe('));
       assert.equal(row.prokind, 'f'); assert.equal(row.provolatile, 'v'); assert.equal(row.proparallel, 'u');
       assert.equal(row.proleakproof, false); assert.equal(row.proisstrict, false);
@@ -147,7 +183,7 @@ export async function createObserverFixture() {
       assert.equal(row.pronargs, row.signature.startsWith('supplier_observer_identity(') ? 3 : 2);
       assert.deepEqual(row.proconfig, row.prosecdef ? ['search_path=pg_catalog', 'lock_timeout=3s'] : ['search_path=pg_catalog']);
       assert.deepEqual(row.acl.map(grant => grant.grantee).sort(),
-        row.signature.startsWith('supplier_observer_identity(') ? ['pactwoven_supplier_executor', config.user].sort() : ['pactwoven_supplier_executor']);
+        row.signature.startsWith('supplier_observer_identity(') ? ['pactwoven_supplier_executor', installer.name].sort() : ['pactwoven_supplier_executor']);
       for (const grant of row.acl) { assert.equal(grant.privilege_type, 'EXECUTE'); assert.equal(grant.is_grantable, false); assert.equal(grant.grantor, row.proowner); }
     }
     const helperRelations = [...new Set([...installed[1]!.prosrc.matchAll(/(?:FROM|JOIN|LOCK TABLE) pactwoven\.([a-z_]+)/g)].map(match => match[1]!))].sort();
@@ -227,11 +263,13 @@ export async function createObserverFixture() {
         for (const principal of principals) if (pools.has(principal.pool)) await retire(principal);
         const live = (await admin.query('SELECT oid FROM pg_roles WHERE oid=ANY($1::oid[]) AND rolcanlogin', [principals.map(principal => principal.oid)])).rows;
         assert.equal(live.length, 0, 'Every fixture runtime login must be retired.');
+        if (installer.managed) await admin.query(`ALTER ROLE ${identifier(installer.name)} NOLOGIN`);
         const after = await functionFingerprints(); assert.deepEqual(after, installed, 'Installed routines/ACLs must be restored exactly.');
         await emit('after', after);
       } finally { await close(); }
     };
-    return { admin, scenario, login, retire, installed, beforeRoleSafe, helperRelations, inventory, functionFingerprints, finish, close };
+    return { admin, installer, observerInstallPreflight: migrations[15]!.statements[0]!, scenario, login, retire,
+      installed, beforeRoleSafe, helperRelations, inventory, functionFingerprints, finish, close };
   } catch (error) { await close(); throw error; }
 }
 export type ObserverFixture = Awaited<ReturnType<typeof createObserverFixture>>;

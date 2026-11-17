@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
-// Each matrix job has its own fresh PostgreSQL service. Neither fixture can
+// Each matrix job has its own fresh PostgreSQL service. No fixture can
 // share the main CI cluster: their admission checks require no existing roles.
 const fixtures = Object.freeze({
   relationship: {
@@ -15,6 +15,12 @@ const fixtures = Object.freeze({
   observer: {
     port: 55442, user: 'supplier_observer_fixture_admin', database: 'pactwoven_supplier_observer_sql_test',
     file: 'packages/db/src/supplier-observer-sql.test.ts',
+    urlVariable: 'PACTWOVEN_SUPPLIER_OBSERVER_TEST_ADMIN_URL_FILE',
+    consentVariable: 'PACTWOVEN_SUPPLIER_OBSERVER_DISPOSABLE',
+  },
+  'managed-owner': {
+    port: 55442, user: 'supplier_observer_fixture_admin', database: 'pactwoven_supplier_observer_sql_test',
+    file: 'packages/db/src/supplier-managed-owner-sql.test.ts',
     urlVariable: 'PACTWOVEN_SUPPLIER_OBSERVER_TEST_ADMIN_URL_FILE',
     consentVariable: 'PACTWOVEN_SUPPLIER_OBSERVER_DISPOSABLE',
   },

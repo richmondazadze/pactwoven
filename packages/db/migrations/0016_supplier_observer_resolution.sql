@@ -1,7 +1,32 @@
 BEGIN;
 
+-- Re-enter only the administrative installation capability retained by 0015.
+-- Runtime logins never receive role membership or schema CREATE rights.
+DO $$ DECLARE legacy_owner oid; BEGIN
+  SELECT r.oid INTO legacy_owner FROM pg_roles r WHERE r.rolname=current_user AND current_user=session_user;
+  IF legacy_owner IS NULL OR (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE n.nspname='pactwoven' AND c.relname IN ('organizations','memberships','session_revocations')
+      AND c.relowner=legacy_owner AND c.relkind='r' AND c.relrowsecurity
+      AND (NOT c.relforcerowsecurity OR EXISTS(SELECT 1 FROM pg_roles r WHERE r.oid=legacy_owner AND (r.rolsuper OR r.rolbypassrls))))<>3
+    OR NOT EXISTS(SELECT 1 FROM pg_proc WHERE oid=to_regprocedure('pactwoven.supplier_base_identity(jsonb,jsonb,jsonb)')
+      AND proowner=legacy_owner AND prosecdef) THEN
+    RAISE EXCEPTION 'Supplier observer requires the exact installed identity owner and effective RLS access';
+  END IF;
+  IF NOT (SELECT rolsuper FROM pg_roles WHERE oid=legacy_owner) THEN
+    IF NOT EXISTS(SELECT 1 FROM pg_auth_members WHERE roleid='pactwoven_supplier_executor'::regrole
+      AND member=legacy_owner AND admin_option AND NOT inherit_option AND NOT set_option)
+      OR EXISTS(SELECT 1 FROM pg_auth_members WHERE roleid='pactwoven_supplier_executor'::regrole
+        AND member=legacy_owner AND (inherit_option OR set_option)) THEN
+      RAISE EXCEPTION 'Supplier observer requires the retained administrative installation capability';
+    END IF;
+    EXECUTE format('GRANT pactwoven_supplier_executor TO %I WITH INHERIT TRUE',current_user);
+    EXECUTE format('GRANT pactwoven_supplier_executor TO %I WITH SET TRUE',current_user);
+    GRANT CREATE ON SCHEMA pactwoven TO pactwoven_supplier_executor;
+  END IF;
+END $$;
+
 -- The only change to the 0015 role-safe body is the second verifier entry.
--- No grant, login, binding enrollment or existing function authority is implied.
+-- No runtime grant, login or binding enrollment is implied.
 CREATE OR REPLACE FUNCTION pactwoven.supplier_role_safe(who oid,capability text) RETURNS boolean
 LANGUAGE sql VOLATILE SET search_path=pg_catalog AS $$
   SELECT coalesce((SELECT r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolbypassrls AND NOT r.rolcreatedb
@@ -21,8 +46,9 @@ LANGUAGE sql VOLATILE SET search_path=pg_catalog AS $$
     FROM pg_roles r WHERE r.oid=who),false)
 $$;
 
--- AUTH-SQL-04 remains explicit: the legacy identity owner is a superuser.
--- NOLOGIN/FORCE RLS do not confine this owner. This additional fixed reader has
+-- AUTH-SQL-04 remains explicit: the legacy identity owner is administrative
+-- and may have broad superuser/BYPASSRLS authority. NOLOGIN/FORCE RLS do not
+-- confine that authority. This additional fixed reader has
 -- three identity relations, bounded arguments and no dynamic SQL, DML, provider
 -- calls, site lookup, business/support reads or row-to-JSON expansion. Only the
 -- supplier executor can call it; a runtime verifier calls the wrapper below.
@@ -92,9 +118,11 @@ END $$;
 -- to an exact safe verifier LOGIN; it is deliberately absent from this migration.
 DO $$ DECLARE legacy_owner oid;legacy_name text;fn record;grant_row record;BEGIN
   SELECT c.relowner,r.rolname INTO legacy_owner,legacy_name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-    JOIN pg_roles r ON r.oid=c.relowner WHERE n.nspname='pactwoven' AND c.relname='organizations' AND r.rolsuper;
+    JOIN pg_roles r ON r.oid=c.relowner WHERE n.nspname='pactwoven' AND c.relname='organizations' AND r.rolname=current_user;
   IF legacy_owner IS NULL OR (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-    WHERE n.nspname='pactwoven' AND c.relname IN ('organizations','memberships','session_revocations') AND c.relowner=legacy_owner)<>3
+    WHERE n.nspname='pactwoven' AND c.relname IN ('organizations','memberships','session_revocations') AND c.relowner=legacy_owner
+      AND c.relkind='r' AND c.relrowsecurity AND (NOT c.relforcerowsecurity OR
+        EXISTS(SELECT 1 FROM pg_roles r WHERE r.oid=legacy_owner AND (r.rolsuper OR r.rolbypassrls))))<>3
     OR NOT EXISTS(SELECT 1 FROM pg_proc WHERE oid='pactwoven.supplier_base_identity(jsonb,jsonb,jsonb)'::regprocedure
       AND proowner=legacy_owner AND prosecdef)
     OR NOT EXISTS(SELECT 1 FROM pg_proc WHERE oid='pactwoven.supplier_role_safe(oid,text)'::regprocedure
@@ -114,6 +142,14 @@ DO $$ DECLARE legacy_owner oid;legacy_name text;fn record;grant_row record;BEGIN
       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO pactwoven_supplier_executor',fn.identity);
     ELSE EXECUTE format('ALTER FUNCTION %s OWNER TO pactwoven_supplier_executor',fn.identity);END IF;
   END LOOP;
+  -- Four dependencies are already granted by 0015; these are the only two
+  -- additional pure/current-session validators used by the new fixed reader.
+  EXECUTE format('GRANT EXECUTE ON FUNCTION pactwoven.supplier_observation_current(jsonb,timestamptz),
+    pactwoven.supplier_read_committed() TO %I',legacy_name);
+  IF NOT (SELECT rolsuper FROM pg_roles WHERE oid=legacy_owner) THEN
+    REVOKE CREATE ON SCHEMA pactwoven FROM pactwoven_supplier_executor;
+    EXECUTE format('REVOKE pactwoven_supplier_executor FROM %I GRANTED BY %I',legacy_name,legacy_name);
+  END IF;
 END $$;
 
 COMMIT;

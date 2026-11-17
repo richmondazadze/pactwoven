@@ -84,6 +84,10 @@ jobs:
             port: 55442
             user: supplier_observer_fixture_admin
             database: pactwoven_supplier_observer_sql_test
+          - fixture: managed-owner
+            port: 55442
+            user: supplier_observer_fixture_admin
+            database: pactwoven_supplier_observer_sql_test
     services:
       postgres:
         image: postgres:17.11-bookworm@sha256:665dc7b37ac52a17e298511414c21d23ffa4e6a6ef6225b3e5d59c7afb35e994

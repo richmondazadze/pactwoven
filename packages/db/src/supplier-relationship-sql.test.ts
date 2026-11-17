@@ -42,7 +42,7 @@ const historicalSupplierMigrationPins = [
   ['0012_financial_policy_private_reads.sql', 'b43480fcc62cbd384ea484f7cfc81e79fe178861d39d0e5c9a61d07df29b2588'],
   ['0013_financial_policy_preparation.sql', '9d08d5f3a68608265df2f497c3bb0d78cc35c40cc854c13dfa2f64437b683927'],
   ['0014_supplier_identity_versions.sql', '1cb551bb5e8872cd49f438cd3574bda9dcf5b763a6806567441394c50affc0c7'],
-  ['0015_supplier_relationship_authority.sql', '4fe259454de7f05f9e2a1de55b4ab1ec0ea79e6c28f02f7a35c275ca5d38271c'],
+  ['0015_supplier_relationship_authority.sql', '9e2e58c8495038812317e0e654e1490c2a90e76c35c6576c4f4f5fbab33572f3'],
 ] as const;
 const tableNames = ['supplier_private_bindings', 'supplier_authentication_evidence', 'supplier_access_contexts',
   'supplier_relationship_scope_policies', 'supplier_relationship_proposals', 'supplier_relationship_versions', 'supplier_relationship_receipts'];

@@ -90,8 +90,9 @@ describe.skipIf(!enabled)('managed PostgreSQL qualification on one fresh native 
     await admin.query(`CREATE ROLE ${identifier(ownerName)} LOGIN INHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB CREATEROLE NOREPLICATION PASSWORD ${literal(password)}`);
     await admin.query(`GRANT CREATE ON DATABASE ${identifier(String(config.database))} TO ${identifier(ownerName)}`);
     owner = new Pool({ ...config, user: ownerName, password });
-    const migrations = await loadMigrations();
+    const migrations = (await loadMigrations()).slice(0, 17);
     expect(migrations).toHaveLength(17); next = migrations[16]!;
+    expect(next.filename).toBe('0017_managed_postgres_qualification.sql');
     for (const migration of await loadObserverFixtureMigrations()) await apply(owner, migration);
     await admin.query(`REVOKE CREATE ON DATABASE ${identifier(String(config.database))} FROM ${identifier(ownerName)}`);
     initialFunctions = await functions(admin); initialRelations = await relations(admin); initialMemberships = await memberships(admin);

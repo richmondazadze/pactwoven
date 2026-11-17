@@ -5,7 +5,12 @@ import { FinancialAuthorityFenceSchema, FinancialAuthorityHistorySchema } from '
 import { financialAuthorityFenceHash, verifyFinancialAuthorityHistory, commandDigest } from '@pactwoven/domain';
 import { loadMigrations } from './migrate';
 import { PostgresFinanceProvenanceRepository } from './finance-provenance-repository';
-import { PostgresOrganizationProvisioner } from './provisioner';
+import { PostgresOrganizationProvisioner, assertProvisionerPool } from './provisioner';
+import { PostgresFoundationRepository, assertRuntimePool } from './repository';
+import { PostgresFinancialPolicyReaders } from './financial-policy-read-repository';
+import { PostgresFinancialAuthenticationRepository } from './financial-authentication-repository';
+import { assertFinancialAuthorityPool } from './financial-authority-pool';
+import type { FinancialAuthEvidence } from './financial-auth-evidence';
 import { financialFenceFixture, financialFenceFixtureEnabled, authorizeFenceLegacy, directFenceControl, fenceIdentity, fenceVerified, type FinancialFenceFixture } from './financial-fences.test-support';
 
 const suite = financialFenceFixtureEnabled ? describe : describe.skip;
@@ -63,7 +68,9 @@ suite('FA-0 canonical authority and control generations — exclusive PostgreSQL
     const client=await fixture.admin.connect();
     try{
       await client.query('BEGIN'); await client.query('DROP SCHEMA pactwoven CASCADE');
-      for(const migration of await loadMigrations())for(const statement of migration.statements)await client.query(statement);
+      const historical=(await loadMigrations()).slice(0,8);
+      expect(historical.at(-1)?.filename).toBe('0008_financial_authority_fences.sql');
+      for(const migration of historical)for(const statement of migration.statements)await client.query(statement);
       await client.query('SET CONSTRAINTS ALL IMMEDIATE');
       expect((await client.query('SELECT count(*)::int AS count FROM pactwoven.financial_authority_fences')).rows[0].count).toBe(0);
     }finally{await client.query('ROLLBACK');client.release();}
@@ -228,5 +235,137 @@ suite('FA-0 canonical authority and control generations — exclusive PostgreSQL
     const rows=(await fixture.admin.query("SELECT f.generation,f.active,h.basis,g.actor_id FROM pactwoven.financial_site_fences f JOIN pactwoven.financial_site_history h USING(environment,organization_id,site_id) JOIN pactwoven.member_action_sites g USING(environment,organization_id,site_id) JOIN pactwoven.organizations o ON(o.environment,o.id)=(f.environment,f.organization_id) WHERE o.external_organization_id='clerk_new_organization'")).rows;
     expect(rows).toHaveLength(1);expect(rows[0]).toMatchObject({generation:0,active:true,basis:'initial'});
     expect((await fixture.admin.query('SELECT count(*)::int AS count FROM pactwoven.financial_authority_fences')).rows[0].count).toBe(1);
+  });
+});
+
+suite('Bootstrap site read repair — exclusive PostgreSQL', () => {
+  let fixture: FinancialFenceFixture | undefined;
+  afterEach(async () => { await fixture?.close(); fixture = undefined; });
+  const bootstrapCommand = { expectedVersion: 0, mandateVersion: null, authorityEpoch: null,
+    payload: { initialSite: { name: 'Initial site', timeZone: 'America/Chicago' } } };
+  async function bootstrap(f: FinancialFenceFixture, label: string) {
+    const identity = { ...fenceIdentity(`repair_${label}`), externalOrganizationId: `clerk_repair_${label}`,
+      externalOrganizationName: 'Synthetic bootstrap repair organization', externalRole: 'org:admin' };
+    const provisioner = new PostgresOrganizationProvisioner(f.bootstrap.pool, 'development');
+    const key = `bootstrap_repair_${label}`;
+    const operation = await provisioner.bootstrapOrganization(identity, key, bootstrapCommand, 'bootstrap_repair');
+    expect(operation).toMatchObject({ status: 'succeeded', aggregateVersion: 1, financialState: null });
+    const row = (await f.admin.query(`SELECT m.actor_id AS actor,s.id AS site FROM pactwoven.memberships m
+      JOIN pactwoven.sites s USING(environment,organization_id) WHERE m.organization_id=$1`, [operation.aggregateId])).rows[0];
+    return { identity, provisioner, key, operation, organization: operation.aggregateId!, actor: row.actor as string, site: row.site as string };
+  }
+  async function state(f: FinancialFenceFixture, organization: string) {
+    return (await f.admin.query(`SELECT o.authority_epoch AS epoch,o.row_version AS organization_version,m.row_version AS member_version,
+      (SELECT count(*)::int FROM pactwoven.site_memberships s WHERE (s.environment,s.organization_id,s.actor_id)=(m.environment,m.organization_id,m.actor_id)) AS reads,
+      (SELECT count(*)::int FROM pactwoven.member_action_sites a WHERE (a.environment,a.organization_id,a.actor_id)=(m.environment,m.organization_id,m.actor_id)) AS actions
+      FROM pactwoven.organizations o JOIN pactwoven.memberships m ON(m.environment,m.organization_id)=(o.environment,o.id) WHERE o.id=$1`, [organization])).rows[0];
+  }
+  async function observe(f: FinancialFenceFixture, b: Awaited<ReturnType<typeof bootstrap>>) {
+    const readers = new PostgresFinancialPolicyReaders(f.policy!.authorizer.pool, f.policy!.verifier.pool);
+    const now = Date.now(), observation = { issuer: 'https://synthetic.invalid', tokenHash: 'a'.repeat(64),
+      tokenIssuedAt: new Date(now - 1000).toISOString(), observedAt: new Date(now).toISOString(), expiresAt: new Date(now + 240000).toISOString() };
+    const scope = await readers.resolveObserver('development', { identity: { ...b.identity, membershipObservedAt: observation.observedAt }, observation });
+    const evidence: FinancialAuthEvidence = { schemaVersion: 1, id: crypto.randomUUID(), environment: 'development', organizationId: scope.organizationId,
+      kind: 'identity', purpose: 'financial_policy_observation', actor: scope.actor, externalOrganizationId: scope.externalOrganizationId,
+      externalRole: b.identity.externalRole, ...observation, sessionExpiresAt: observation.expiresAt };
+    await new PostgresFinancialAuthenticationRepository(f.policy!.verifier.pool).append(evidence);
+    return { readers, scope, evidence };
+  }
+  async function prepare(f: FinancialFenceFixture, b: Awaited<ReturnType<typeof bootstrap>>) {
+    // Synthetic provider identities plus dedicated non-owner logins exercise the
+    // real RPCs. The owner enrolls only fixture service capabilities, not members.
+    for (const [capability, login] of Object.entries(f.policy!)) await f.admin.query(`INSERT INTO pactwoven.financial_policy_principals
+      SELECT oid,rolname,'development',$1,$2,1,true,now()+interval '1 day' FROM pg_roles WHERE rolname=$3`, [b.organization, capability, login.role]);
+    const repository = new PostgresFoundationRepository(f.runtime.pool, 'development');
+    const session = await repository.getSession(b.identity, 'bootstrap_repair');
+    const draft = await repository.createResponsibility(session.actor, `responsibility_${b.key}`, { expectedVersion: 0, mandateVersion: null, authorityEpoch: null,
+      payload: { title: 'Synthetic repair responsibility', description: 'Native fixture only.', siteId: b.site,
+        window: { startsAt: new Date().toISOString(), endsAt: new Date(Date.now() + 86400000).toISOString(), timeZone: 'America/Chicago' },
+        requirements: [], acceptancePolicy: 'Signed delivery evidence.' } });
+    expect(draft.status).toBe('succeeded');
+    return { responsibilityId: draft.aggregateId!, assetKey: null, documents: [] };
+  }
+  async function repair(f: FinancialFenceFixture) {
+    const migration = (await loadMigrations())[17]!;
+    expect(migration.filename).toBe('0018_bootstrap_site_read_grant.sql');
+    await f.applyMigration(migration);
+  }
+  const functionIdentity = `SELECT p.oid,p.proowner,p.proacl,p.proconfig,t.oid AS trigger_oid FROM pg_proc p
+    JOIN pg_trigger t ON t.tgfoid=p.oid WHERE p.oid='pactwoven.grant_bootstrap_action_site()'::regprocedure`;
+  async function roleGuards(f: FinancialFenceFixture) {
+    await assertProvisionerPool(f.bootstrap.pool);
+    await assertRuntimePool(f.runtime.pool);
+    await assertFinancialAuthorityPool(f.policy!.authorizer.pool, 'authorizer');
+    await assertFinancialAuthorityPool(f.policy!.verifier.pool, 'verifier');
+    for (const [capability, login] of Object.entries(f.policy!)) expect((await f.admin.query(
+      'SELECT pactwoven.financial_policy_role_safe(oid,$2) AS safe FROM pg_roles WHERE rolname=$1', [login.role, capability])).rows).toEqual([{ safe: true }]);
+  }
+  it('repairs genuine 17 bootstrap atomically and invalidates old financial scope before allowing a fresh context', async () => {
+    fixture = await financialFenceFixture({ through: 17 }); const f = fixture, b = await bootstrap(f, 'upgrade');
+    const initial = { epoch: 0, organization_version: 1, member_version: 1, reads: 0, actions: 1 };
+    expect(await state(f, b.organization)).toEqual(initial);
+    const query = await prepare(f, b), old = await observe(f, b);
+    expect(old.scope.siteIds).toEqual([]); expect(old.scope.actionSiteIds).toEqual([b.site]);
+    await expect(old.readers.context(old.evidence.id, old.scope, query)).rejects.toMatchObject({ code: 'FINANCIAL_POLICY_ACCESS_DENIED', status: 403 });
+    const before = (await f.admin.query(functionIdentity)).rows;
+    const oldSource = (await f.admin.query("SELECT prosrc FROM pg_proc WHERE oid='pactwoven.grant_bootstrap_action_site()'::regprocedure")).rows;
+    await f.admin.query("CREATE FUNCTION pactwoven.fixture_reject_epoch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'Synthetic epoch failure'; END $$");
+    await f.admin.query('CREATE TRIGGER fixture_reject_epoch BEFORE UPDATE OF authority_epoch ON pactwoven.organizations FOR EACH ROW EXECUTE FUNCTION pactwoven.fixture_reject_epoch()');
+    try {
+      await expect(repair(f)).rejects.toBeDefined();
+      expect(await state(f, b.organization)).toEqual(initial);
+      expect((await f.admin.query("SELECT prosrc FROM pg_proc WHERE oid='pactwoven.grant_bootstrap_action_site()'::regprocedure")).rows).toEqual(oldSource);
+    } finally {
+      await f.admin.query('DROP TRIGGER fixture_reject_epoch ON pactwoven.organizations');
+      await f.admin.query('DROP FUNCTION pactwoven.fixture_reject_epoch()');
+    }
+    await repair(f);
+    expect(await state(f, b.organization)).toEqual({ epoch: 1, organization_version: 2, member_version: 2, reads: 1, actions: 1 });
+    expect((await f.admin.query(functionIdentity)).rows).toEqual(before);
+    await expect(old.readers.context(old.evidence.id, old.scope, query)).rejects.toMatchObject({ code: 'FINANCIAL_POLICY_ACCESS_DENIED', status: 403 });
+    const current = await observe(f, b);
+    expect(current.scope).toMatchObject({ organizationEpoch: 1, actor: { membershipVersion: 2 }, siteIds: [b.site], actionSiteIds: [b.site] });
+    expect(await current.readers.context(current.evidence.id, current.scope, query)).toMatchObject({ responsibilityId: query.responsibilityId,
+      effectiveAuthority: false, financialState: null, blockers: expect.arrayContaining(['TRUST_UNAVAILABLE', 'FINANCIAL_AUTHORITY_UNAVAILABLE']) });
+    expect(await b.provisioner.bootstrapOrganization(b.identity, b.key, bootstrapCommand, 'replay')).toEqual(b.operation);
+    await repair(f); // A repeated upgrade is also a no-op after the version bump.
+    expect(await state(f, b.organization)).toEqual({ epoch: 1, organization_version: 2, member_version: 2, reads: 1, actions: 1 });
+    await roleGuards(f);
+  });
+  it('leaves revised, revoked, expired, inactive, removed-action and invalid-provenance owners unchanged', async () => {
+    fixture = await financialFenceFixture({ through: 17 }); const f = fixture;
+    const cases = ['revised', 'revoked', 'expired', 'inactive', 'removed_action', 'existing_read', 'read_only', 'wrong_source', 'wrong_member', 'wrong_operation'] as const;
+    const snapshots = [];
+    for (const label of cases) {
+      const b = await bootstrap(f, label);
+      if (label === 'revised') await f.admin.query('UPDATE pactwoven.memberships SET row_version=2 WHERE organization_id=$1', [b.organization]);
+      if (label === 'revoked') await f.admin.query("UPDATE pactwoven.memberships SET status='revoked' WHERE organization_id=$1", [b.organization]);
+      if (label === 'expired') await f.admin.query("UPDATE pactwoven.memberships SET expires_at=now()-interval '1 day' WHERE organization_id=$1", [b.organization]);
+      if (label === 'inactive') await f.admin.query("UPDATE pactwoven.organizations SET status='suspended' WHERE id=$1", [b.organization]);
+      if (label === 'removed_action' || label === 'read_only') await f.admin.query('DELETE FROM pactwoven.member_action_sites WHERE organization_id=$1', [b.organization]);
+      if (label === 'existing_read' || label === 'read_only') await f.admin.query("INSERT INTO pactwoven.site_memberships VALUES('development',$1,$2,$3)", [b.organization, b.actor, b.site]);
+      if (label === 'wrong_source') await f.admin.query(`UPDATE pactwoven.outbox_events SET payload=jsonb_set(payload,'{source}','"wrong-source"') WHERE organization_id=$1`, [b.organization]);
+      if (label === 'wrong_member') await f.admin.query(`UPDATE pactwoven.outbox_events SET payload=jsonb_set(payload,'{payload,externalMembershipId}','"wrong-member"') WHERE organization_id=$1`, [b.organization]);
+      if (label === 'wrong_operation') await f.admin.query("UPDATE pactwoven.operations SET kind='synthetic.wrong' WHERE organization_id=$1", [b.organization]);
+      snapshots.push({ b, state: await state(f, b.organization) });
+    }
+    const genuine = await bootstrap(f, 'exact_site');
+    await f.admin.query("INSERT INTO pactwoven.sites(environment,organization_id,id,name,time_zone) VALUES('development',$1,'unrelated_site','Other site','America/Chicago')", [genuine.organization]);
+    const unrelated = (await f.admin.query("SELECT to_jsonb(o) AS body FROM pactwoven.organizations o WHERE id='org_a'")).rows;
+    await repair(f);
+    for (const item of snapshots) expect(await state(f, item.b.organization), item.b.key).toEqual(item.state);
+    expect((await f.admin.query('SELECT site_id FROM pactwoven.site_memberships WHERE organization_id=$1', [genuine.organization])).rows).toEqual([{ site_id: genuine.site }]);
+    expect((await f.admin.query('SELECT site_id FROM pactwoven.member_action_sites WHERE organization_id=$1', [genuine.organization])).rows).toEqual([{ site_id: genuine.site }]);
+    expect((await f.admin.query("SELECT to_jsonb(o) AS body FROM pactwoven.organizations o WHERE id='org_a'")).rows).toEqual(unrelated);
+  });
+  it('gives a genuine fresh 18 bootstrap exactly one read and action grant without a version advance', async () => {
+    fixture = await financialFenceFixture({ through: 18 }); const f = fixture;
+    await roleGuards(f);
+    const b = await bootstrap(f, 'fresh'), query = await prepare(f, b), current = await observe(f, b);
+    expect(await state(f, b.organization)).toEqual({ epoch: 0, organization_version: 1, member_version: 1, reads: 1, actions: 1 });
+    expect(current.scope).toMatchObject({ organizationEpoch: 0, actor: { membershipVersion: 1 }, siteIds: [b.site], actionSiteIds: [b.site] });
+    expect(await current.readers.context(current.evidence.id, current.scope, query)).toMatchObject({ effectiveAuthority: false, financialState: null });
+    expect(await b.provisioner.bootstrapOrganization(b.identity, b.key, bootstrapCommand, 'replay')).toEqual(b.operation);
+    expect(await state(f, b.organization)).toEqual({ epoch: 0, organization_version: 1, member_version: 1, reads: 1, actions: 1 });
   });
 });

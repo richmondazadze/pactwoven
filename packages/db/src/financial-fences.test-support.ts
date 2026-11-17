@@ -48,11 +48,11 @@ export async function assertFinancialFenceFixture(client: PoolClient, config: Po
   if (row.database !== database || row.current !== config.user || row.session !== config.user) throw new Error('Exact FA-0 database and authenticated login required.');
   return { server: row.server as string, port: row.port as number };
 }
-export async function sharedFinancialCapabilityRoles(admin: Pool) {
+export async function sharedFinancialCapabilityRoles(admin: Pool, names = ['pactwoven_runtime','pactwoven_provisioner','pactwoven_access_provisioner','pactwoven_mandate_writer','pactwoven_finance_observer']) {
   return (await admin.query(`SELECT r.rolname,r.rolsuper,r.rolinherit,r.rolcreaterole,r.rolcreatedb,r.rolcanlogin,r.rolreplication,r.rolbypassrls,r.rolconnlimit,r.rolvaliduntil,r.rolconfig,
     (SELECT coalesce(jsonb_agg(jsonb_build_object('role',parent.rolname,'member',child.rolname,'admin',m.admin_option,'inherit',m.inherit_option,'set',m.set_option) ORDER BY parent.rolname,child.rolname),'[]'::jsonb)
       FROM pg_auth_members m JOIN pg_roles parent ON parent.oid=m.roleid JOIN pg_roles child ON child.oid=m.member WHERE(m.roleid=r.oid OR m.member=r.oid) AND child.rolname NOT LIKE 'pactwoven_fa0_%') AS grants
-    FROM pg_roles r WHERE r.rolname IN ('pactwoven_runtime','pactwoven_provisioner','pactwoven_access_provisioner','pactwoven_mandate_writer','pactwoven_finance_observer') ORDER BY r.rolname`)).rows;
+    FROM pg_roles r WHERE r.rolname=ANY($1) ORDER BY r.rolname`, [names])).rows;
 }
 export const fenceIdentity = (subject = 'finance_a'): VerifiedIdentity => ({ subject, externalOrganizationId: 'clerk_org_a', externalOrganizationName: 'Mandate test organization',
   externalMembershipId: `membership_${subject}`, externalRole: 'org:member', sessionId: `session_${subject}`,
@@ -72,16 +72,26 @@ export async function fenceVerified(mutation: MandateMutation, key: string, subj
     intentHash: await mandateIntentHash(intent), requestHash: await commandDigest({ schemaVersion: 1, purpose, request: { nonce: requestNonce, key, intent } }) } };
 }
 
-export async function financialFenceFixture(options: { beforeFence?: (input: { admin: Pool; mandate: Pool }) => Promise<void> } = {}) {
+export async function financialFenceFixture(options: { beforeFence?: (input: { admin: Pool; mandate: Pool }) => Promise<void>; through?: 8 | 17 | 18 } = {}) {
   const path = process.env[financialFenceFixtureVariable];
   if (!path || Object.keys(process.env).some(key => (key.startsWith('PACTWOVEN_') && key !== financialFenceFixtureVariable) || key.startsWith('PG'))) throw new Error('Use only the explicit FA-0 credential variable in a scrubbed environment.');
   const config = await readFinancialFenceFixtureConfig(path), admin = new Pool(config), lock = await admin.connect(), pools: Pool[] = [], roles: string[] = [];
   let locked = false;
+  const through = options.through ?? 8, createdMigrationRoles: string[] = [];
   const originalRoles = await sharedFinancialCapabilityRoles(admin);
+  const migrationRoleNames = ['pactwoven_custody_setup_writer', 'pactwoven_custody_setup_verifier', 'pactwoven_financial_authorizer', 'pactwoven_financial_verifier', 'pactwoven_supplier_owner', 'pactwoven_supplier_executor'];
+  const originalMigrationRoles = await sharedFinancialCapabilityRoles(admin, migrationRoleNames);
   const close = async () => {
     await Promise.all(pools.map(pool => pool.end()));
     for (const role of roles) { await admin.query(`DROP OWNED BY "${role}"`); await admin.query(`DROP ROLE "${role}"`); }
-    const preserved = JSON.stringify(originalRoles) === JSON.stringify(await sharedFinancialCapabilityRoles(admin));
+    if (createdMigrationRoles.length) {
+      // Only this admitted disposable database and roles absent before this run.
+      // DROP ROLE has no CASCADE: dependencies in another database fail closed.
+      await admin.query('DROP SCHEMA IF EXISTS pactwoven CASCADE');
+      for (const role of createdMigrationRoles.reverse()) await admin.query(`DROP ROLE IF EXISTS "${role}"`);
+    }
+    const preserved = JSON.stringify(originalRoles) === JSON.stringify(await sharedFinancialCapabilityRoles(admin)) &&
+      JSON.stringify(originalMigrationRoles) === JSON.stringify(await sharedFinancialCapabilityRoles(admin, migrationRoleNames));
     if (locked) await lock.query("SELECT pg_advisory_unlock(hashtextextended('financial_fences_fa0_fixture',0))");
     lock.release(); await admin.end();
     if (!preserved) throw new Error('Shared capability role attributes or grants changed.');
@@ -91,11 +101,19 @@ export async function financialFenceFixture(options: { beforeFence?: (input: { a
     if (originalRoles.length !== 5) throw new Error('The existing five shared capability roles must be provisioned before this exclusive fixture runs.');
     await lock.query('SET statement_timeout=0');
     await lock.query("SELECT pg_advisory_lock(hashtextextended('financial_fences_fa0_fixture',0))"); locked = true;
+    // Historical FA-0 remains exactly 1–8. Bootstrap repair cases explicitly
+    // select 1–17 or 1–18 without shifting any historical fixture boundary.
+    const migrations = (await loadMigrations()).slice(0, through);
+    const expected = ['0001_foundation.sql', '0002_organization_bootstrap.sql', '0003_identity_access.sql', '0004_mandate_authority.sql', '0005_access_acceptance.sql', '0006_access_recovery_fences.sql', '0007_finance_provenance.sql', '0008_financial_authority_fences.sql',
+      '0009_custody_setup_owner_bindings.sql', '0010_custody_setup_private_reads.sql', '0011_financial_policy_authority.sql', '0012_financial_policy_private_reads.sql', '0013_financial_policy_preparation.sql',
+      '0014_supplier_identity_versions.sql', '0015_supplier_relationship_authority.sql', '0016_supplier_observer_resolution.sql', '0017_managed_postgres_qualification.sql', '0018_bootstrap_site_read_grant.sql'].slice(0, through);
+    if (migrations.length !== expected.length || migrations.some((item, index) => item.filename !== expected[index])) throw new Error('The exact allocated financial fixture prefix is required.');
+    if (through > 8) {
+      const existing = new Set(originalMigrationRoles.map(row => row.rolname));
+      if (existing.has('pactwoven_supplier_owner') || existing.has('pactwoven_supplier_executor')) throw new Error('Bootstrap repair fixture requires unoccupied supplier installation roles.');
+      createdMigrationRoles.push(...migrationRoleNames.filter(name => !existing.has(name)));
+    }
     await admin.query('DROP SCHEMA IF EXISTS pactwoven CASCADE');
-    // This historical fixture deliberately applies its reviewed prefix; newer stages have separate suites.
-    const migrations = (await loadMigrations()).slice(0, 8);
-    const expected = ['0001_foundation.sql', '0002_organization_bootstrap.sql', '0003_identity_access.sql', '0004_mandate_authority.sql', '0005_access_acceptance.sql', '0006_access_recovery_fences.sql', '0007_finance_provenance.sql', '0008_financial_authority_fences.sql'];
-    if (migrations.length !== expected.length || migrations.some((item, index) => item.filename !== expected[index])) throw new Error('The exact allocated eight-migration prefix is required.');
     const apply = async (migration: Migration) => {
       const client = await admin.connect();
       try { await client.query('BEGIN'); for (const [index, statement] of migration.statements.entries()) {
@@ -140,8 +158,11 @@ export async function financialFenceFixture(options: { beforeFence?: (input: { a
     }
     await options.beforeFence?.({admin,mandate:mandate.pool});
     await apply(migrations[7]!);
+    for (const migration of migrations.slice(8)) await apply(migration);
+    const policy = through > 8 ? { authorizer: await makeLogin('policy_authorizer', 'pactwoven_financial_authorizer'),
+      verifier: await makeLogin('policy_verifier', 'pactwoven_financial_verifier') } : null;
     return {admin,config,runtime,mandate,observer,access,bootstrap,stranger,assetKey,accountA:accountKeys[0]!,accountB:accountKeys[1]!,close,originalRoles,
-      repository: new PostgresMandateRepository(mandate.pool,'development')};
+      policy, applyMigration: apply, repository: new PostgresMandateRepository(mandate.pool,'development')};
   } catch(error) { await close(); throw error; }
 }
 export type FinancialFenceFixture = Awaited<ReturnType<typeof financialFenceFixture>>;

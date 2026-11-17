@@ -76,6 +76,8 @@ export function createFinancialPolicyClock(receivedAt: number, receivedMonotonic
 }
 export type FinancialPolicyReadAction = 'context' | 'read' | 'index' | 'lookup';
 export type FinancialPolicyPermission = Readonly<{ action: FinancialPolicyReadAction; target: string }>;
+export type FinancialPolicyInvalidationCause = 'observation-expired' | 'clock-error' | 'context-refresh' | 'invalidated'
+  | 'adapters-replaced' | 'denied' | 'hidden' | 'activated' | 'closed';
 type Ticket = { controller: AbortController; generation: number; action: FinancialPolicyReadAction };
 /** Own this once per mounted route, independently of replaceable transport adapters. */
 export function createFinancialPolicyLifetime(initial: FinancialPolicyBootstrap,
@@ -84,16 +86,16 @@ export function createFinancialPolicyLifetime(initial: FinancialPolicyBootstrap,
   let generation = 0, visible = true, alive = true, active: Ticket | null = null;
   let observation: FinancialPolicyObservation | null = null, now: (() => number) | null = null;
   let adapterOwner: object | null = null;
-  const denied = new Set<string>(), cleanups = new Set<() => void>();
+  const denied = new Set<string>(), cleanups = new Set<(cause: FinancialPolicyInvalidationCause) => void>();
   const permissions = new WeakMap<object, { generation: number; used: boolean }>();
   const wall = clocks.wall ?? Date.now, monotonic = clocks.monotonic ?? (() => performance.now());
   let invalidating = false;
-  function invalidate() {
+  function invalidate(cause: Exclude<FinancialPolicyInvalidationCause, 'context-refresh'> = 'invalidated') {
     if (invalidating) return;
     invalidating = true;
     generation++; observation = null; now = null; const old = active; active = null;
     old?.controller.abort();
-    for (const clear of cleanups) { try { clear(); } catch { /* Cleanup cannot reopen a lifetime. */ } }
+    for (const clear of cleanups) { try { clear(cause); } catch { /* Cleanup cannot reopen a lifetime. */ } }
     invalidating = false;
   }
   function permitted() {
@@ -102,13 +104,15 @@ export function createFinancialPolicyLifetime(initial: FinancialPolicyBootstrap,
   function currentObservation() {
     permitted();
     if (!observation || !now) throw new FinancialPolicyClientError('expired');
-    try { if (now() >= observation.expiresAt) throw new FinancialPolicyClientError('expired'); }
-    catch { invalidate(); throw new FinancialPolicyClientError('expired'); }
+    let currentTime: number;
+    try { currentTime = now(); }
+    catch { invalidate('clock-error'); throw new FinancialPolicyClientError('expired'); }
+    if (currentTime >= observation.expiresAt) { invalidate('observation-expired'); throw new FinancialPolicyClientError('expired'); }
     return observation;
   }
   return {
     bootstrap: () => bootstrap,
-    onInvalidate(clear: () => void) { cleanups.add(clear); return () => cleanups.delete(clear); },
+    onInvalidate(clear: (cause: FinancialPolicyInvalidationCause) => void) { cleanups.add(clear); return () => cleanups.delete(clear); },
     authorize(action: FinancialPolicyReadAction, target: unknown): FinancialPolicyPermission {
       permitted(); if (active || !['context', 'read', 'index', 'lookup'].includes(action)) throw new FinancialPolicyClientError('scope');
       if (action !== 'context') currentObservation();
@@ -121,7 +125,7 @@ export function createFinancialPolicyLifetime(initial: FinancialPolicyBootstrap,
         throw new FinancialPolicyClientError('scope');
       if (action !== 'context') currentObservation();
       issued.used = true; active = { controller: new AbortController(), generation, action };
-      if (action === 'context') { observation = null; now = null; for (const clear of cleanups) { try { clear(); } catch { /* Already invalid. */ } } }
+      if (action === 'context') { observation = null; now = null; for (const clear of cleanups) { try { clear('context-refresh'); } catch { /* Already invalid. */ } } }
       return active;
     },
     assert(ticket: Ticket, expected: FinancialPolicyBootstrap) {
@@ -134,23 +138,26 @@ export function createFinancialPolicyLifetime(initial: FinancialPolicyBootstrap,
       if (ticket.action !== 'context' || !parsedObservations.has(value)) throw new FinancialPolicyClientError('input');
       this.assert(ticket, value.bootstrap);
       const nextNow = createFinancialPolicyClock(value.receivedAt, value.receivedMonotonic, wall, monotonic);
-      if (nextNow() >= value.expiresAt) { invalidate(); throw new FinancialPolicyClientError('expired'); }
+      let currentTime: number;
+      try { currentTime = nextNow(); }
+      catch { invalidate('clock-error'); throw new FinancialPolicyClientError('expired'); }
+      if (currentTime >= value.expiresAt) { invalidate('observation-expired'); throw new FinancialPolicyClientError('expired'); }
       observation = value; now = nextNow;
     },
     observation: currentObservation,
     finish(ticket: Ticket) { if (active === ticket) active = null; ticket.controller.abort(); },
     invalidate,
     // Invoke synchronously on replacement; importantly this never clears denied.
-    replaceAdapters() { invalidate(); adapterOwner = {}; return adapterOwner; },
+    replaceAdapters() { invalidate('adapters-replaced'); adapterOwner = {}; return adapterOwner; },
     assertAdapters(owner: object) { if (owner !== adapterOwner) throw new FinancialPolicyClientError('scope'); },
-    deny() { denied.add(financialPolicyBootstrapKey(bootstrap)); invalidate(); },
-    hide() { visible = false; invalidate(); },
+    deny() { denied.add(financialPolicyBootstrapKey(bootstrap)); invalidate('denied'); },
+    hide() { visible = false; invalidate('hidden'); },
     activate(next: FinancialPolicyBootstrap) {
       if (!alive) throw new FinancialPolicyClientError('scope');
       const parsed = freezeFinancial(financialParse(FinancialPolicyBootstrapSchema, next));
-      invalidate(); bootstrap = parsed; visible = true; permitted();
+      invalidate('activated'); bootstrap = parsed; visible = true; permitted();
     },
-    close() { alive = false; visible = false; invalidate(); cleanups.clear(); },
+    close() { alive = false; visible = false; invalidate('closed'); cleanups.clear(); },
   };
 }
 export type FinancialPolicyLifetime = ReturnType<typeof createFinancialPolicyLifetime>;

@@ -85,6 +85,40 @@ describe('financial policy bootstrap and observation', () => {
   });
 });
 describe('financial policy lifetime', () => {
+  it.each(['invalidated', 'adapters-replaced', 'denied', 'hidden', 'activated', 'closed', 'context-refresh'] as const)(
+    'reports the explicit %s cleanup cause without calling it expiry', cause => {
+      const f = fixture(), lifetime = createFinancialPolicyLifetime(f.bootstrap), cleanup = vi.fn(); lifetime.onInvalidate(cleanup);
+      if (cause === 'invalidated') lifetime.invalidate();
+      if (cause === 'adapters-replaced') lifetime.replaceAdapters();
+      if (cause === 'denied') lifetime.deny();
+      if (cause === 'hidden') lifetime.hide();
+      if (cause === 'activated') lifetime.activate(f.bootstrap);
+      if (cause === 'closed') lifetime.close();
+      if (cause === 'context-refresh') lifetime.start(lifetime.authorize('context', {}), 'context', {});
+      expect(cleanup).toHaveBeenCalledExactlyOnceWith(cause);
+    });
+  it.each(['deadline', 'monotonic-rollback', 'invalid-wall'] as const)('distinguishes %s at synchronous observation access', async mode => {
+    const f = fixture(); let wall = at, mono = 100;
+    const lifetime = createFinancialPolicyLifetime(f.bootstrap, { wall: () => wall, monotonic: () => mono });
+    const ticket = lifetime.start(lifetime.authorize('context', {}), 'context', {});
+    lifetime.accept(ticket, await qualifyFinancialContext(f.context, f.bootstrap, at, 100)); lifetime.finish(ticket);
+    const cleanup = vi.fn(); lifetime.onInvalidate(cleanup);
+    if (mode === 'deadline') mono += 19000; if (mode === 'monotonic-rollback') mono--; if (mode === 'invalid-wall') wall = NaN;
+    expect(() => lifetime.observation()).toThrow();
+    expect(cleanup).toHaveBeenCalledExactlyOnceWith(mode === 'deadline' ? 'observation-expired' : 'clock-error');
+    wall = at; mono = 100; expect(() => lifetime.observation()).toThrow();
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+  it.each(['deadline', 'clock-error'] as const)('identifies %s while accepting a newly received observation', async mode => {
+    const f = fixture(); let wall = at, mono = 100;
+    const lifetime = createFinancialPolicyLifetime(f.bootstrap, { wall: () => wall, monotonic: () => mono });
+    const ticket = lifetime.start(lifetime.authorize('context', {}), 'context', {});
+    const observation = await qualifyFinancialContext(f.context, f.bootstrap, at, 100), cleanup = vi.fn(); lifetime.onInvalidate(cleanup);
+    if (mode === 'deadline') wall += 19000; else mono--;
+    expect(() => lifetime.accept(ticket, observation)).toThrow();
+    expect(cleanup).toHaveBeenCalledExactlyOnceWith(mode === 'deadline' ? 'observation-expired' : 'clock-error');
+    expect(ticket.controller.signal.aborted).toBe(true);
+  });
   it('requires one-use exact explicit permissions and a fresh context for each read', async () => {
     const f = fixture(), lifetime = createFinancialPolicyLifetime(f.bootstrap, { wall: () => at, monotonic: () => 100 });
     expect(() => lifetime.authorize('lookup', {})).toThrow();

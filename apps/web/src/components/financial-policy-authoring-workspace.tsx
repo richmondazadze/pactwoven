@@ -4,23 +4,27 @@ import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { IdSchema, FinancialPolicyRefSchema, FinancialPolicyVersionSchema, financialPolicyHttpRoute,
   type FinancialPolicyHttpContext, type FinancialPolicyHttpRecordResponse, type FinancialPolicyHttpDraftIndexResponse, type FinancialPolicyHttpGovernanceIndexResponse, type FinancialPolicyRef } from '@pactwoven/contracts';
+import { canonicalJson } from '@pactwoven/contracts/canonical';
 import { apiRequest } from '../lib/api';
 import { browserRecoveryStorage } from '../lib/bootstrap-recovery';
 import { getApiBase } from '../lib/config';
 import { scopedResponsibilitySchema } from '../lib/responsibilities';
-import { FinancialPolicyClientError, financialSame, freezeFinancial, type FinancialPolicyQualifiedReceipt, type FinancialPolicyReference } from '../lib/financial-policy-contract';
+import { FinancialPolicyClientError, FinancialPolicyReferenceSchema, financialParse, financialSame, freezeFinancial, type FinancialPolicyQualifiedReceipt, type FinancialPolicyReference } from '../lib/financial-policy-contract';
 import { createFinancialPolicyBootstrap, createFinancialPolicyClock, createFinancialPolicyLifetime, financialPolicyBootstrapKey,
-  financialPolicyLocalScope, type FinancialPolicyBootstrap } from '../lib/financial-policy-context';
+  financialPolicyLocalScope, type FinancialPolicyBootstrap, type FinancialPolicyInvalidationCause } from '../lib/financial-policy-context';
 import { createFinancialPolicyTransport, type FinancialPolicyTransportAdapters } from '../lib/financial-policy-transport';
 import { createFinancialPolicyPreparationClient, type FinancialPolicyPreparationSnapshot } from '../lib/financial-policy-preparation-client';
 import { createFinancialPolicyAttemptCoordinator, FinancialPolicyWriteAttemptError, FINANCIAL_POLICY_INITIAL_SAVE_MARGIN_MS } from '../lib/financial-policy-attempt-coordinator';
 import { createFinancialPolicyClosureClient, FinancialPolicyClosureAttemptError, type FinancialPolicyClosureReview } from '../lib/financial-policy-closure-client';
 import { parseFinancialPolicyWriteRequest, type FinancialPolicyWriteRequest } from '../lib/financial-policy-write-transport';
-import { clearFinancialPolicyReminder, clearClosedFinancialPolicyReminder, createFinancialPolicyMemory, listFinancialPolicyReferences, type FinancialPolicyStorage } from '../lib/financial-policy-recovery';
+import { clearFinancialPolicyReminder, clearClosedFinancialPolicyReminder, createFinancialPolicyMemory, listFinancialPolicyReferences,
+  FINANCIAL_POLICY_REFERENCE_PREFIX, FINANCIAL_POLICY_REFERENCE_LIMIT, FINANCIAL_POLICY_REFERENCE_MAX_BYTES, financialPolicyReferenceKey, type FinancialPolicyStorage } from '../lib/financial-policy-recovery';
+import { digestFinancialPolicyNewTextMaterial } from '../lib/financial-policy-new-text-intent';
 import { FinancialPolicyRecoveryPanel, type FinancialPolicyRecoveryRow } from './financial-policy-recovery-panel';
 import { financialPolicyClosureHeadingId } from './financial-policy-closure-review';
 import { FinancialPolicyReview, FinancialPolicyReceiptReview, financialPolicyCollectionPath } from './financial-policy-review';
 import { FinancialPolicyPreparationReview } from './financial-policy-preparation-review';
+import { FinancialPolicyNewTextIntentReview } from './financial-policy-new-text-intent-review';
 import { FinancialPolicyDocumentEditor, FinancialPolicyAuthoringInputError, reviewFinancialPolicyDocument } from './financial-policy-document-editor';
 import { FinancialPolicyDraftEditor, emptyFinancialPolicyDraftDates, reviewFinancialPolicyDraft, type FinancialPolicyDraftDates } from './financial-policy-draft-editor';
 import { ActionLabel, Alert, ButtonLink, LoadingState, PageHeading, Panel } from './ui';
@@ -50,13 +54,13 @@ type View = Readonly<{ visible: boolean; phase: 'idle' | 'ready' | 'expired' | '
   context: FinancialPolicyHttpContext | null; exact: FinancialPolicyHttpRecordResponse | null; preparation: FinancialPolicyPreparationSnapshot;
   index: FinancialPolicyHttpDraftIndexResponse | FinancialPolicyHttpGovernanceIndexResponse | null; documentRead: FinancialPolicyHttpRecordResponse | null;
   buffer: Buffer; review: Review | null; receipt: FinancialPolicyQualifiedReceipt | null;
-  unsent: FinancialPolicyReference | null; saveNeedsRefresh: boolean;
+  unsent: FinancialPolicyReference | null; saveNeedsRefresh: boolean; newTextAcknowledged: boolean; newTextSaving: boolean;
   rows: readonly FinancialPolicyRecoveryRow[]; storageBlocked: boolean; message: string; focus: number; focusTarget: string | null; error: { field: string; message: string } | null }>;
 const emptyBuffer = (revision: CapturedRevision): Buffer => ({ kind: revision?.kind ?? 'document', documentId: revision?.id ?? '', draftId: revision?.id ?? '', text: '',
   dates: emptyFinancialPolicyDraftDates(), document: { id: '', version: '', recordHash: '' } });
 const idlePreparation = (): FinancialPolicyPreparationSnapshot => ({ state: 'idle', preparation: null });
 const initial = (revision: CapturedRevision): View => ({ visible: false, phase: 'idle', busy: false, saving: false, editorOpened: false, context: null, exact: null, index: null, documentRead: null, preparation: idlePreparation(),
-  buffer: emptyBuffer(revision), review: null, receipt: null, unsent: null, saveNeedsRefresh: false, rows: [], storageBlocked: false, message: 'Check current context explicitly to begin. Nothing has been saved.', focus: 0, focusTarget: null, error: null });
+  buffer: emptyBuffer(revision), review: null, receipt: null, unsent: null, saveNeedsRefresh: false, newTextAcknowledged: false, newTextSaving: false, rows: [], storageBlocked: false, message: 'Check current context explicitly to begin. Nothing has been saved.', focus: 0, focusTarget: null, error: null });
 const expiredMessage = 'The observation expired. Your unsent edits remain here; check current context, review and prepare again.';
 const deniedMessage = 'Current access is unavailable. Private text and review material have been cleared. Original reminders remain in this tab.';
 const refreshSaveMessage = 'Refresh checks before saving. Your unsent edits and chosen record remain here; check current context, review and check preparation again.';
@@ -75,6 +79,11 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
   let preserveBuffer = false, replacing = false, expiry: ReturnType<typeof setTimeout> | null = null;
   let admissionTimer: ReturnType<typeof setTimeout> | null = null;
   let displayNow: (() => number) | null = null, preparationNow: (() => number) | null = null, displayDeadline = 0;
+  type NewTextIntent = Readonly<{ version: 1; digest: string; targetId: string; text: string }>;
+  type NewTextOperation = Readonly<{ intent: NewTextIntent; generation: number }>;
+  let newTextIntent: NewTextIntent | null = null, newTextOperation: NewTextOperation | null = null;
+  let newTextAcknowledgment: object | null = null, intentGeneration = 0, materialGeneration = 0;
+  let lastInvalidationCause: FinancialPolicyInvalidationCause = 'invalidated';
   const serverView = initial(revision), listeners = new Set<() => void>();
   const lifetime = createFinancialPolicyLifetime(bootstrap, { wall: () => (adapters.wall ?? Date.now)(), monotonic: () => (adapters.monotonic ?? (() => performance.now()))() });
   let memory = createFinancialPolicyMemory(financialPolicyLocalScope(bootstrap));
@@ -82,19 +91,34 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
   let preparation = createFinancialPolicyPreparationClient({ ...adapters, lifetime });
   let writer = createFinancialPolicyAttemptCoordinator({ ...adapters, lifetime, memory, preparation: preparation.verifier });
   let closer = createFinancialPolicyClosureClient({ ...adapters, lifetime, memory });
-  function publish(next: View) { view = freezeFinancial(next); for (const listener of listeners) listener(); }
+  function publish(next: View) {
+    if (next.context !== view.context || next.review !== view.review || next.preparation.preparation !== view.preparation.preparation) materialGeneration++;
+    view = freezeFinancial({ ...next, newTextAcknowledged: newTextIntent !== null, newTextSaving: newTextOperation !== null }); for (const listener of listeners) listener();
+  }
+  function invalidateNewTextIntent() { intentGeneration++; newTextIntent = null; newTextOperation = null; newTextAcknowledgment = null; }
   function admissionOff() { if (admissionTimer !== null) clearTimeout(admissionTimer); admissionTimer = null; }
   function timerOff() { if (expiry !== null) clearTimeout(expiry); expiry = null; admissionOff(); }
-  function current() { try { return !closed && visible && isCurrent() && getApiBase() === bootstrap.apiBase && financialSame(adapters.currentBootstrap(), bootstrap); } catch { return false; } }
+  function current() {
+    let valid = false;
+    try { valid = !closed && visible && isCurrent() && getApiBase() === bootstrap.apiBase && financialSame(adapters.currentBootstrap(), bootstrap); } catch { /* Fail closed. */ }
+    if (!valid && (newTextIntent || newTextOperation || newTextAcknowledgment)) {
+      invalidateNewTextIntent(); lifetime.invalidate();
+    }
+    return valid;
+  }
   function matches(next: FinancialPolicyAuthoringAdapters) {
     try { return financialPolicyBootstrapKey(next.bootstrap) === financialPolicyBootstrapKey(bootstrap) && financialSame(captureRevision(next.revision), revision) &&
       next.currentBootstrap === adapters.currentBootstrap && next.getToken === adapters.getToken && next.fetch === adapters.fetch && next.storage === adapters.storage &&
       next.wall === adapters.wall && next.monotonic === adapters.monotonic && next.createKey === adapters.createKey && next.createTargetId === adapters.createTargetId; } catch { return false; }
   }
   function preserving<T>(work: () => T): T { const previous = preserveBuffer; preserveBuffer = current(); try { return work(); } finally { preserveBuffer = previous; } }
-  function clearProtected() {
+  function clearProtected(cause: FinancialPolicyInvalidationCause = 'invalidated') {
+    lastInvalidationCause = cause;
     timerOff(); displayNow = null; preparationNow = null; displayDeadline = 0;
-    const keepLocal = preserveBuffer && current(), buffer = keepLocal ? view.buffer : emptyBuffer(revision);
+    const retainIntent = cause === 'observation-expired' && !newTextOperation && !newTextAcknowledgment && !denied && current();
+    const ownedRefresh = cause === 'context-refresh' && newTextOperation !== null && !denied && current();
+    if (!retainIntent && !ownedRefresh) invalidateNewTextIntent();
+    const keepLocal = (preserveBuffer || retainIntent && newTextIntent !== null) && current(), buffer = keepLocal ? view.buffer : emptyBuffer(revision);
     publish({ ...initial(revision), visible, phase: denied ? 'denied' : 'idle', busy: active !== null, buffer,
       editorOpened: keepLocal && view.editorOpened, focus: view.focus });
   }
@@ -102,9 +126,19 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
   function observePreparation() {
     return preparation.subscribe(() => {
       if (replacing || closed) return;
+      const previousPreparation = view.preparation.preparation;
       // This freshness getter can synchronously expire the lifetime before the
       // display timer runs. Preserve only this current owner's local edits.
       const snapshot = denied ? preparation.getSnapshot() : preserving(() => preparation.getSnapshot()); writer.invalidateReview(); closer.invalidateReview();
+      if (newTextIntent && snapshot.state === 'expired') {
+        // The client's public expired state also covers clock failure. Retain only a proven elapsed deadline.
+        let ordinaryExpiry = lastInvalidationCause === 'observation-expired' && view.context === null && view.preparation.preparation === null;
+        if (!ordinaryExpiry) {
+          try { ordinaryExpiry = Boolean(previousPreparation && displayNow && displayTime() >= previousPreparation.expiresAt); }
+          catch { /* displayTime already invalidates a failed clock with its specific cause. */ }
+        }
+        if (!ordinaryExpiry) invalidateNewTextIntent();
+      }
       const expired = snapshot.state === 'expired' && !denied && current();
       if (snapshot.preparation !== view.preparation.preparation || snapshot.state !== 'reviewable') preparationNow = null;
       publish({ ...view, unsent: null, saveNeedsRefresh: false, rows: view.rows.map(row => ({ ...row, closureReview: null })), preparation: snapshot, ...(expired ? { review: null, phase: view.context ? view.phase : 'expired',
@@ -114,16 +148,34 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
     });
   }
   let unlistenPreparation = observePreparation();
+  function displayTime() {
+    if (!displayNow) throw new FinancialPolicyClientError('expired');
+    try { return displayNow(); }
+    catch { lifetime.invalidate('clock-error'); throw new FinancialPolicyClientError('expired'); }
+  }
   function ready() {
     if (!current() || denied) throw new FinancialPolicyClientError('scope');
-    if (displayNow && displayNow() >= displayDeadline) throw new FinancialPolicyClientError('expired');
+    if (displayNow && displayTime() >= displayDeadline) {
+      preserving(() => lifetime.invalidate('observation-expired')); throw new FinancialPolicyClientError('expired');
+    }
     return preserving(() => lifetime.observation());
   }
-  function fresh() { try { return !view.context || Boolean(displayNow && displayNow() < displayDeadline); } catch { return false; } }
+  function fresh() { try { return !view.context || Boolean(displayNow && displayTime() < displayDeadline); } catch { return false; } }
   function initialSaveRemaining() {
     const prepared = view.preparation.preparation, review = view.review;
     if (!current() || denied || !view.context || !displayNow || !preparationNow || !review || !prepared || view.preparation.state !== 'reviewable') return null;
-    const now = preserving(() => Math.max(displayNow!(), preparationNow!()));
+    const now = preserving(() => {
+      const displayedAt = displayTime();
+      if (displayedAt >= Math.min(displayDeadline, prepared.expiresAt)) {
+        lifetime.invalidate('observation-expired'); throw new FinancialPolicyClientError('expired');
+      }
+      try { return Math.max(displayedAt, preparationNow!()); }
+      catch (error) {
+        // A verifier failure is not itself evidence of expiry. Only an explicit lifetime expiry may retain intent.
+        if (!(lastInvalidationCause === 'observation-expired' && view.context === null)) lifetime.invalidate();
+        throw error;
+      }
+    });
     return Math.min(displayDeadline, prepared.expiresAt, review.kind === 'save_draft' ? Date.parse(review.input.draft.expiresAt) : Infinity)
       - now;
   }
@@ -149,18 +201,22 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
     } catch { /* Synchronous save/currentness checks remain authoritative if a clock fails. */ }
   }
   function invalidateReview(clear = true) {
+    invalidateNewTextIntent();
     writer.invalidateReview(); preparation.invalidate(); closer.invalidateReview();
     publish({ ...view, unsent: null, saveNeedsRefresh: false, rows: view.rows.map(row => ({ ...row, closureReview: null })), review: clear ? null : view.review, error: null });
   }
   function expireDisplay() {
-    active = null; preserving(() => lifetime.invalidate());
+    let cause: 'observation-expired' | 'clock-error' | 'invalidated' = 'invalidated';
+    try { if (displayNow && displayDeadline > 0 && displayNow() >= displayDeadline) cause = 'observation-expired'; }
+    catch { cause = 'clock-error'; }
+    active = null; preserving(() => lifetime.invalidate(cause));
     if (current()) publish({ ...view, phase: 'expired', busy: false, message: expiredMessage });
   }
   function arm(responseExpiry?: string) {
     timerOff(); const observation = ready();
     displayNow ??= createFinancialPolicyClock(observation.receivedAt, observation.receivedMonotonic, adapters.wall, adapters.monotonic);
     displayDeadline = Math.min(displayDeadline || observation.expiresAt, observation.expiresAt, responseExpiry ? Date.parse(responseExpiry) : Infinity);
-    const remaining = displayDeadline - displayNow(); if (remaining <= 0) throw new FinancialPolicyClientError('expired');
+    const remaining = displayDeadline - displayTime(); if (remaining <= 0) throw new FinancialPolicyClientError('expired');
     expiry = setTimeout(expireDisplay, remaining);
     armSaveAdmission();
   }
@@ -211,13 +267,13 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
             : `No save was sent. ${saveReason} Any stored original reminder is preserved and remains lookup-only after its input is lost.`
         : error instanceof FinancialPolicyClientError ? error.message : 'This action could not be confirmed. Original reminders are preserved.'), focus: ++sequence });
   }
-  async function run(message: string, work: (check: () => void) => Promise<void>, saving = false) {
+  async function run(message: string, work: (check: () => void) => Promise<void>, saving = false, keepFocus = false) {
     if (active || denied) return;
     if (!current()) { suspend(); return; }
     const operation = {}, owner = transport, buffer = view.buffer, editorOpened = view.editorOpened; active = operation;
     publish({ ...view, busy: true, saving, error: null, message, focusTarget: null });
     const check = () => { if (active !== operation || transport !== owner || !current()) throw new FinancialPolicyClientError('scope'); };
-    try { await work(check); check(); publish({ ...view, focus: ++sequence }); }
+    try { await work(check); check(); publish({ ...view, focus: keepFocus ? view.focus : ++sequence }); }
     catch (error) { if (active === operation && transport === owner) report(error, buffer, editorOpened); }
     finally { if (active === operation) { active = null; publish({ ...view, busy: false, saving: false }); } }
   }
@@ -245,9 +301,69 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
     return parseFinancialPolicyWriteRequest({ kind, id, responsibilityId, key, route: financialPolicyHttpRoute({ kind, id, responsibilityId }), input: review.input });
   }
   function local(work: () => void) {
+    interruptNewTextInput();
     if (active || !current() || denied) return;
     invalidateReview();
     try { ready(); work(); publish({ ...view, focus: ++sequence }); } catch (error) { report(error); }
+  }
+  function interruptNewTextInput() {
+    if (!active || !newTextOperation && !newTextAcknowledgment || !current() || denied) return;
+    active = null; invalidateNewTextIntent(); preserving(() => lifetime.invalidate());
+    publish({ ...view, busy: false, saving: false, message: 'The reviewed action was interrupted. Any original request reminder is preserved; check its result before another save.' });
+  }
+  function noNewTextOriginal(expectedStorage?: FinancialPolicyStorage): FinancialPolicyStorage {
+    try {
+      const storage = adapters.storage();
+      if (!storage || expectedStorage && storage !== expectedStorage) throw new FinancialPolicyClientError('storage');
+      const count = storage.length, keys: string[] = [], seen = new Set<string>(), saved = new Map<string, string>();
+      if (!Number.isSafeInteger(count) || count < 0 || count > 4096) throw new FinancialPolicyClientError('storage');
+      for (let i = 0; i < count; i++) {
+        const key = storage.key(i); if (key === null || seen.has(key)) throw new FinancialPolicyClientError('storage');
+        seen.add(key); keys.push(key); if (!key.startsWith(FINANCIAL_POLICY_REFERENCE_PREFIX)) continue;
+        const raw = storage.getItem(key);
+        if (saved.size >= FINANCIAL_POLICY_REFERENCE_LIMIT || raw === null ||
+          new TextEncoder().encode(key).byteLength > FINANCIAL_POLICY_REFERENCE_MAX_BYTES ||
+          new TextEncoder().encode(raw).byteLength > FINANCIAL_POLICY_REFERENCE_MAX_BYTES) throw new FinancialPolicyClientError('storage');
+        const reference = financialParse(FinancialPolicyReferenceSchema, JSON.parse(raw));
+        if (canonicalJson(reference) !== raw || financialPolicyReferenceKey(reference) !== key ||
+          reference.scope.environment === bootstrap.environment && reference.scope.organizationId === bootstrap.organizationId &&
+          reference.locator.targetId === view.buffer.documentId) throw new FinancialPolicyClientError('storage');
+        saved.set(key, raw);
+      }
+      if (storage.length !== count) throw new FinancialPolicyClientError('storage');
+      for (let i = 0; i < count; i++) if (storage.key(i) !== keys[i]) throw new FinancialPolicyClientError('storage');
+      for (const [key, raw] of saved) if (storage.getItem(key) !== raw) throw new FinancialPolicyClientError('storage');
+      if (storage.length !== count) throw new FinancialPolicyClientError('storage');
+      return storage;
+    } catch { invalidateNewTextIntent(); throw new FinancialPolicyClientError('storage'); }
+  }
+  function newTextMaterial() {
+    const observation = ready(), review = view.review, snapshot = preparation.getSnapshot(), prepared = snapshot.preparation;
+    if (revision !== null || view.buffer.kind !== 'document' || !review || review.kind !== 'save_document' ||
+      review.input.previous !== null || review.input.purpose !== 'financial_mandate' || view.buffer.text !== review.input.text ||
+      !prepared || snapshot.state !== 'reviewable' || prepared.response.target.state !== 'absent' ||
+      prepared.observation !== observation) throw new FinancialPolicyClientError('unavailable');
+    const request = requestFor(review, 'local_review_placeholder');
+    const verifier = preparation.verifier.capture({ request, bootstrap, observation }); verifier.assertCurrent();
+    const { key: placeholder, ...action } = request; void placeholder;
+    return { review, prepared, observation, verifier,
+      material: { bootstrap, action, selection: prepared.selection, context: observation.context, preparation: prepared.response } };
+  }
+  function newTextDigest() {
+    const captured = newTextMaterial();
+    // This synchronous frame ends before hashing resolves; the caller retains no raw checked graph or old verifier.
+    return { pending: digestFinancialPolicyNewTextMaterial(captured.material), materialGeneration,
+      targetId: captured.material.action.id, text: captured.review.input.text };
+  }
+  function canAcknowledgeNewText() {
+    if (!current() || denied || active || newTextIntent || revision !== null || view.buffer.kind !== 'document') return false;
+    try { newTextMaterial(); return true; } catch { return false; }
+  }
+  function assertNewTextOperation(operation: NewTextOperation, check: () => void) {
+    check();
+    if (newTextOperation !== operation || intentGeneration !== operation.generation || revision !== null || denied ||
+      view.buffer.kind !== 'document' || view.buffer.documentId !== operation.intent.targetId || view.buffer.text !== operation.intent.text)
+      throw new FinancialPolicyClientError('scope');
   }
   async function sendReviewed(check: () => void, original: FinancialPolicyReference | null) {
     ready(); const review = view.review;
@@ -284,9 +400,10 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
     getSnapshot: () => view, getServerSnapshot: () => serverView,
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     matches, current, fresh, expireDisplay, hasVisibleOriginal, initialSaveFresh,
+    canAcknowledgeNewText,
     canReviewClosure(reference: FinancialPolicyReference) { return !view.busy && preserving(() => closer.canReview(reference)); },
     closureReviewCurrent(review: FinancialPolicyClosureReview) { return !view.busy && preserving(() => closer.reviewCurrent(review)); },
-    preparationFresh() { try { return Boolean(current() && view.preparation.preparation && displayNow && displayNow() < view.preparation.preparation.expiresAt); } catch { return false; } },
+    preparationFresh() { try { return Boolean(current() && view.preparation.preparation && displayNow && displayTime() < view.preparation.preparation.expiresAt); } catch { return false; } },
     configure(next: FinancialPolicyAuthoringAdapters) {
       if (closed || matches(next)) return;
       const nextRevision = captureRevision(next.revision);
@@ -319,6 +436,7 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
         ? 'Policy text started. This form keeps its chosen record through checks and retries.' : 'Draft started. Select a checked policy text or saved receipt, then review the exact terms and dates.' });
     }); },
     edit(update: Partial<Pick<Buffer, 'kind' | 'text' | 'dates'>>) {
+      interruptNewTextInput();
       if (active || !current() || denied || !view.editorOpened) return;
       invalidateReview();
       const buffer = { ...view.buffer, ...(update.kind && ['document', 'draft'].includes(update.kind) ? { kind: update.kind } : {}),
@@ -364,12 +482,13 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
     reviewDraft() { local(() => {
       if (view.buffer.kind !== 'draft') throw new FinancialPolicyClientError('input');
       targetId('draft'); const observation = ready(); if (!observation.context.draftScope) throw new FinancialPolicyClientError('unavailable');
-      const value = reviewFinancialPolicyDraft(view.buffer.dates, observation.context.draftScope, selectedDocument(), displayNow!());
+      const value = reviewFinancialPolicyDraft(view.buffer.dates, observation.context.draftScope, selectedDocument(), displayTime());
       const review: Review = { kind: 'save_draft', dates: value.dates, input: { schemaVersion: 1, previous: previous('draft'), organizationEpoch: observation.context.scope.organizationEpoch, draft: value.draft } };
       requestFor(review, 'local_review_placeholder');
       publish({ ...view, review, message: 'Exact draft boundaries reviewed locally. Check the selected current policy text and preparation before saving.' });
     }); },
     prepare() { return run('Checking exact action preparation…', async check => {
+      invalidateNewTextIntent();
       writer.invalidateReview(); publish({ ...view, unsent: null }); ready(); const review = view.review;
       if (!review) throw new FinancialPolicyAuthoringInputError(view.buffer.kind === 'document' ? 'policy-text' : 'draft-start', 'Review the exact local input before checking preparation.');
       const request = requestFor(review, 'local_review_placeholder');
@@ -382,8 +501,72 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
         ? 'Preparation checked. Read the exact text, terms and dates; saving remains a separate action.' : 'This action is not ready to save. Read its preparation reasons.' });
       armSaveAdmission();
     }); },
-    save() { return view.unsent ? Promise.resolve() : run('Saving the exact reviewed configuration…', check => sendReviewed(check, null), true); },
+    acknowledgeNewText() {
+      if (!canAcknowledgeNewText()) return Promise.resolve();
+      invalidateNewTextIntent(); const acknowledgment = Object.freeze({}), generation = intentGeneration;
+      newTextAcknowledgment = acknowledgment;
+      return run('Acknowledging the exact reviewed text and current checks…', async check => {
+        try {
+          const storage = noNewTextOriginal(), calculation = newTextDigest(), digest = await calculation.pending;
+          check(); ready();
+          if (newTextAcknowledgment !== acknowledgment || generation !== intentGeneration || materialGeneration !== calculation.materialGeneration ||
+            view.buffer.text !== calculation.text || targetId('document') !== calculation.targetId) throw new FinancialPolicyClientError('expired');
+          noNewTextOriginal(storage); check(); ready(); newTextMaterial().verifier.assertCurrent();
+          if (newTextAcknowledgment !== acknowledgment || generation !== intentGeneration || materialGeneration !== calculation.materialGeneration)
+            throw new FinancialPolicyClientError('expired');
+          newTextAcknowledgment = null;
+          newTextIntent = freezeFinancial({ version: 1, digest, targetId: calculation.targetId, text: calculation.text });
+          publish({ ...view, message: 'Text and current checks acknowledged. You can review your unsent text at your pace; the separate save action must refresh every check.' });
+        } finally { if (newTextAcknowledgment === acknowledgment) invalidateNewTextIntent(); }
+      }, false, true);
+    },
+    refreshAndSaveNewText() {
+      if (!current() || denied || active || newTextOperation || !newTextIntent || revision !== null || view.buffer.kind !== 'document') return Promise.resolve();
+      const operation: NewTextOperation = Object.freeze({ intent: newTextIntent, generation: intentGeneration });
+      newTextIntent = null; newTextOperation = operation;
+      return run('Refreshing current checks for the exact acknowledged text…', async check => {
+        const assert = () => assertNewTextOperation(operation, check);
+        try {
+          assert(); const storage = noNewTextOriginal(); assert();
+          const query = { assetKey: null };
+          await preserving(() => transport.context(query, lifetime.authorize('context', query))).then(observation => {
+            assert(); ready(); noNewTextOriginal(storage); assert();
+            publish({ ...view, phase: 'ready', editorOpened: true, context: observation.context }); rows(); arm();
+            const review: Review = { kind: 'save_document', input: { schemaVersion: 1, previous: null,
+              organizationEpoch: observation.context.scope.organizationEpoch, purpose: 'financial_mandate', text: operation.intent.text } };
+            publish({ ...view, review, message: 'Checking the exact selected action. Nothing has been saved.' });
+          });
+          assert();
+          const selection = { schemaVersion: 1, action: 'save_document', targetId: operation.intent.targetId, previous: null, purpose: 'financial_mandate' };
+          const reviewable = await preparation.prepare(preparation.issue(selection)).then(prepared => {
+            assert(); ready(); noNewTextOriginal(storage); assert();
+            return prepared.response.decision.state === 'reviewable' && prepared.response.target.state === 'absent';
+          });
+          assert();
+          if (!reviewable) {
+            publish({ ...view, review: null, message: 'The checked action is no longer reviewable. Review the current preparation before another save.' }); return;
+          }
+          const calculation = newTextDigest(), digest = await calculation.pending;
+          assert(); ready(); noNewTextOriginal(storage); assert();
+          if (materialGeneration !== calculation.materialGeneration) throw new FinancialPolicyClientError('expired');
+          if (digest !== operation.intent.digest) {
+            publish({ ...view, review: null, message: 'The checked material changed. Review the current checks and acknowledge them again before saving. Nothing was saved.' }); return;
+          }
+          preparationNow = newTextMaterial().verifier.now;
+          armSaveAdmission(); assert();
+          if (!initialSaveFresh()) throw new FinancialPolicyWriteAttemptError('unavailable', 'not-dispatched', 'refresh-checks');
+          await sendReviewed(assert, null);
+        } finally {
+          if (newTextOperation === operation) invalidateNewTextIntent();
+        }
+      }, true, true);
+    },
+    save() {
+      interruptNewTextInput(); if (!active) { invalidateNewTextIntent(); publish({ ...view }); }
+      return view.unsent ? Promise.resolve() : run('Saving the exact reviewed configuration…', check => sendReviewed(check, null), true);
+    },
     continueOriginalSave() {
+      interruptNewTextInput(); if (!active) { invalidateNewTextIntent(); publish({ ...view }); }
       const original = view.unsent;
       return original ? run('Continuing the exact original save…', check => sendReviewed(check, original), true) : Promise.resolve();
     },
@@ -417,6 +600,7 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
     }); },
     reviewClosure(reference: FinancialPolicyReference) {
       if (active || !current() || denied) return;
+      invalidateNewTextIntent();
       try {
         ready(); const row = view.rows.find(value => financialSame(value.reference, reference));
         if (row?.state !== 'not-recorded' || row.receipt || row.closure) throw new FinancialPolicyClientError('input');
@@ -427,9 +611,11 @@ export function createFinancialPolicyAuthoringController(first: FinancialPolicyA
     },
     cancelClosure(reference: FinancialPolicyReference) {
       if (active || !current() || denied) return;
+      invalidateNewTextIntent();
       closer.cancelReview(); updateRow(reference, { closureReview: null });
     },
     closeOriginal(reference: FinancialPolicyReference) { return run('Closing this exact original request…', async check => {
+      invalidateNewTextIntent();
       ready(); const row = view.rows.find(value => financialSame(value.reference, reference));
       if (!row?.closureReview || row.state !== 'not-recorded') throw new FinancialPolicyClientError('input');
       updateRow(reference, { state: 'closing', message: 'Closing this exact original request…' });
@@ -595,6 +781,10 @@ export function FinancialPolicyAuthoringWorkspaceView(props: FinancialPolicyAuth
           onClick={() => focusFinancialPolicySavedRequests(controller, props, savedRequests.current, { mode: motion.mode, keyboard: motion.keyboard.current,
             prefersReducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches })}>Go to saved financial requests</button>
       </div>}</Panel>
+      {!props.revision && buffer.kind === 'document' && <FinancialPolicyNewTextIntentReview text={buffer.text} targetId={buffer.documentId}
+        context={context} preparation={prepared?.response ?? null} acknowledged={safe && view.newTextAcknowledged}
+        canAcknowledge={safe && controller.canAcknowledgeNewText()} disabled={disabled || visibleOriginal} saving={view.newTextSaving}
+        onAcknowledge={() => void controller.acknowledgeNewText()} onSave={() => void controller.refreshAndSaveNewText()}/>}
       {prepared ? <FinancialPolicyPreparationReview response={prepared.response}/> : <p className="review-note">No current preparation is available. Nothing can be saved until your exact action is checked.</p>}
       {context && view.receipt && <Panel title="Immutable original result"><FinancialPolicyReceiptReview receipt={view.receipt}/>
         {view.receipt.record.kind === 'document' && !props.revision && <button type="button" className="button secondary" disabled={disabled}

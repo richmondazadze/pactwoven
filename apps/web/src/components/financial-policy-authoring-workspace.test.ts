@@ -121,6 +121,248 @@ async function setDocumentRevisionResponse(f: Awaited<ReturnType<typeof fixture>
 const noNetwork = vi.fn(() => { throw Error('Unexpected actual network'); });
 beforeEach(() => { vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', base); noNetwork.mockClear(); vi.stubGlobal('fetch', noNetwork); });
 afterEach(() => { for (const controller of controllers.splice(0)) controller.close(); expect(noNetwork).not.toHaveBeenCalled(); vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+describe('explicit new policy text review intent', () => {
+  type Fixture = Awaited<ReturnType<typeof fixture>>;
+  async function acknowledged() {
+    const f = await fixture(); await f.prepareDocument();
+    expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false);
+    await f.controller.acknowledgeNewText(); expect(f.controller.getSnapshot().newTextAcknowledged).toBe(true);
+    expect(f.createKey).not.toHaveBeenCalled(); expect(f.writeInputs).toHaveLength(0); expect(f.values.size).toBe(0);
+    return f;
+  }
+  function freshen(f: Fixture, remaining = 19000) {
+    f.envelope.observation.observedAt = iso(f.time.wall - 1000); f.envelope.observation.expiresAt = iso(f.time.wall + remaining);
+  }
+  function holdIntentDigest() {
+    const entered = deferred<void>(), release = deferred<void>(), original = crypto.subtle.digest.bind(crypto.subtle);
+    vi.spyOn(crypto.subtle, 'digest').mockImplementation((algorithm, bytes) => {
+      const isIntent = new TextDecoder().decode(bytes as Uint8Array).includes('pactwoven:financial-new-text-review-intent:v1');
+      const result = original(algorithm, bytes);
+      if (isIntent) { entered.resolve(); return release.promise.then(() => result); }
+      return result;
+    });
+    return { entered: entered.promise, release: () => release.resolve() };
+  }
+  it.each(['display-timer', 'synchronous-observation'] as const)('retains only local input and intent through ordinary expiry via %s, then explicitly saves once', async path => {
+    if (path === 'display-timer') vi.useFakeTimers();
+    const f = await acknowledged(), text = f.controller.getSnapshot().buffer.text, calls = f.fetcher.mock.calls.length;
+    f.time.wall += 45000; f.time.mono += 45000;
+    if (path === 'display-timer') await vi.advanceTimersByTimeAsync(45000); else expect(f.controller.initialSaveFresh()).toBe(false);
+    const expired = f.controller.getSnapshot();
+    expect(expired.newTextAcknowledged).toBe(true); expect(expired.buffer.text).toBe(text);
+    expect(expired.context).toBeNull(); expect(expired.review).toBeNull(); expect(expired.preparation.preparation).toBeNull();
+    expect(JSON.stringify(expired)).not.toContain('membershipVersion'); expect(JSON.stringify(expired)).not.toContain('digest');
+    expect(f.fetcher).toHaveBeenCalledTimes(calls); expect(f.createKey).not.toHaveBeenCalled();
+    f.time.wall += 45000; f.time.mono += 45000; if (path === 'display-timer') await vi.advanceTimersByTimeAsync(45000);
+    expect(f.fetcher).toHaveBeenCalledTimes(calls); freshen(f);
+    await f.controller.refreshAndSaveNewText();
+    expect(f.writeInputs).toHaveLength(1); expect(f.createKey).toHaveBeenCalledOnce();
+    expect((f.writeInputs[0] as any).input.text).toBe(text); expect((f.writeInputs[0] as any).input.previous).toBeNull();
+    expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false); expect(f.controller.getSnapshot().receipt).not.toBeNull();
+    await f.controller.refreshAndSaveNewText(); expect(f.writeInputs).toHaveLength(1);
+  });
+  it.each(['display-callback', 'synchronous-getter'] as const)('destroys acknowledgement on clock failure at %s, even if the clock is later restored', async path => {
+    const f = await acknowledged(); f.time.mono--;
+    if (path === 'display-callback') f.controller.expireDisplay(); else expect(f.controller.initialSaveFresh()).toBe(false);
+    expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false);
+    f.time.mono = 100; freshen(f); await f.controller.refreshAndSaveNewText();
+    expect(f.createKey).not.toHaveBeenCalled(); expect(f.writeInputs).toHaveLength(0);
+  });
+  it('does not mistake an isolated preparation-clock failure for an elapsed observation', async () => {
+    const f = await acknowledged(); let reads = 0;
+    Object.defineProperty(f.time, 'mono', { configurable: true, get: () => ++reads === 3 ? 99 : 100 });
+    expect(f.controller.initialSaveFresh()).toBe(false); expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false);
+    Object.defineProperty(f.time, 'mono', { configurable: true, value: 100, writable: true });
+    await f.controller.refreshAndSaveNewText(); expect(f.createKey).not.toHaveBeenCalled(); expect(f.writeInputs).toHaveLength(0);
+  });
+  it('retains acknowledgement when a genuinely earlier preparation deadline expires', async () => {
+    vi.useFakeTimers(); const f = await fixture();
+    f.state.prepChange = response => ({ ...response, observation: { ...response.observation, expiresAt: iso(at + 15000) } });
+    await f.prepareDocument(); await f.controller.acknowledgeNewText(); expect(f.controller.getSnapshot().newTextAcknowledged).toBe(true);
+    f.time.wall += 15000; f.time.mono += 15000; await vi.advanceTimersByTimeAsync(15000);
+    expect(f.controller.getSnapshot().newTextAcknowledged).toBe(true); expect(f.controller.getSnapshot().preparation.preparation).toBeNull();
+    expect(f.controller.getSnapshot().context).toBeNull(); expect(f.controller.getSnapshot().buffer.text).toContain('Exact full financial mandate.');
+    expect(f.createKey).not.toHaveBeenCalled();
+  });
+  it.each(['final-gesture', 'eligibility-getter'] as const)('observed owner loss at %s cannot be restored into a reusable acknowledgement', async path => {
+    const f = await acknowledged(); f.current.value = { ...f.bootstrap, sessionId: 'changed_session' };
+    if (path === 'final-gesture') await f.controller.refreshAndSaveNewText(); else expect(f.controller.canAcknowledgeNewText()).toBe(false);
+    f.current.value = f.bootstrap; expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false);
+    await f.controller.refreshAndSaveNewText(); expect(f.writeInputs).toHaveLength(0); expect(f.createKey).not.toHaveBeenCalled();
+  });
+  it('allows acknowledgement with little current time but requires new observations for the later save', async () => {
+    const f = await fixture(); await f.prepareDocument(); f.time.wall += 12000; f.time.mono += 12000;
+    expect(f.controller.initialSaveFresh()).toBe(false); await f.controller.acknowledgeNewText();
+    expect(f.controller.getSnapshot().newTextAcknowledged).toBe(true); expect(f.createKey).not.toHaveBeenCalled();
+    freshen(f); await f.controller.refreshAndSaveNewText(); expect(f.writeInputs).toHaveLength(1);
+  });
+  it.each(['edit', 'selection', 'hide', 'expiry'] as const)('pending acknowledgement is cancelled by %s without retaining raw checked state', async change => {
+    const f = await fixture(); await f.prepareDocument(); const gate = holdIntentDigest();
+    const work = f.controller.acknowledgeNewText(); await gate.entered;
+    if (change === 'edit') f.controller.edit({ text: 'Changed while digest was pending.' });
+    if (change === 'selection') f.controller.startNew('draft');
+    if (change === 'hide') f.controller.suspend();
+    if (change === 'expiry') { f.time.wall += 20000; f.time.mono += 20000; f.controller.expireDisplay(); }
+    expect(f.controller.getSnapshot().context).toBeNull(); expect(f.controller.getSnapshot().preparation.preparation).toBeNull();
+    gate.release(); await work; expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false);
+    expect(f.createKey).not.toHaveBeenCalled(); expect(f.writeInputs).toHaveLength(0);
+    if (change === 'edit') expect(f.controller.getSnapshot().buffer.text).toBe('Changed while digest was pending.');
+  });
+  it.each(['edit', 'selection', 'hide', 'expiry', 'owner', 'adapter'] as const)('pending final digest cannot survive %s', async change => {
+    const f = await acknowledged(), gate = holdIntentDigest(); freshen(f);
+    const work = f.controller.refreshAndSaveNewText(); await gate.entered;
+    if (change === 'edit') f.controller.edit({ text: 'Queued new input.' });
+    if (change === 'selection') f.controller.startNew('draft');
+    if (change === 'hide') f.controller.suspend();
+    if (change === 'expiry') { f.time.wall += 20000; f.time.mono += 20000; f.controller.expireDisplay(); }
+    if (change === 'owner') { f.current.value = null; f.controller.current(); }
+    if (change === 'adapter') f.controller.configure({ ...f.adapters, fetch: async (...args) => f.fetcher(...args) });
+    expect(f.controller.getSnapshot().context).toBeNull(); gate.release(); await work;
+    expect(f.createKey).not.toHaveBeenCalled(); expect(f.writeInputs).toHaveLength(0); expect(f.values.size).toBe(0);
+    expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false);
+  });
+  it.each(['context', 'preparation'] as const)('queued input events interrupt a pending %s token/read chain', async stage => {
+    const f = await acknowledged(), entered = deferred<void>(), release = deferred<void>(); let calls = 0;
+    f.token.mockImplementation(async () => { calls++; if (calls === (stage === 'context' ? 1 : 2)) { entered.resolve(); await release.promise; } return 'test_token'; });
+    const work = f.controller.refreshAndSaveNewText(); await entered.promise; f.controller.edit({ text: 'A new edit.' });
+    release.resolve(); await work;
+    expect(f.controller.getSnapshot().buffer.text).toBe('A new edit.'); expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false);
+    expect(f.createKey).not.toHaveBeenCalled(); expect(f.writeInputs).toHaveLength(0);
+  });
+  it.each(['membership', 'warning', 'unknown', 'target'] as const)('changed %s stops before a key and requires new acknowledgement', async change => {
+    const f = await acknowledged();
+    if (change === 'membership') f.context.scope.actor.membershipVersion++;
+    if (change === 'warning') f.state.prepChange = response => ({ ...response, configurationWarnings: ['ACCOUNT_MISSING', ...response.configurationWarnings] });
+    if (change === 'unknown') f.state.prepChange = response => ({ ...response, material: { ...response.material, newUnreviewedField: true } });
+    if (change === 'target') f.state.prepChange = response => ({ ...response,
+      target: { state: 'changed', latestReference: { id: 'mandate_doc', version: 1, recordHash: hash }, record: null, historicalDocuments: [] },
+      decision: { action: 'save_document', state: 'blocked', reasons: ['PREDECESSOR_CHANGED'], requiredAuthentication: null } });
+    await f.controller.refreshAndSaveNewText(); expect(f.createKey).not.toHaveBeenCalled(); expect(f.writeInputs).toHaveLength(0);
+    expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false); await f.controller.refreshAndSaveNewText();
+    expect(f.createKey).not.toHaveBeenCalled();
+  });
+  it.each([10999, 11000, 11001])('preserves strict initial admission with %dms remaining', async remaining => {
+    const f = await acknowledged(); freshen(f, remaining); await f.controller.refreshAndSaveNewText();
+    expect(f.writeInputs).toHaveLength(remaining > 11000 ? 1 : 0);
+    expect(f.createKey).toHaveBeenCalledTimes(remaining > 11000 ? 1 : 0);
+  });
+  it('preserves the later post-hash margin and never stores a failed initial original', async () => {
+    const f = await acknowledged(), original = crypto.subtle.digest.bind(crypto.subtle); freshen(f, 11001);
+    vi.spyOn(crypto.subtle, 'digest').mockImplementation((algorithm, bytes) => {
+      const value = new TextDecoder().decode(bytes as Uint8Array), result = original(algorithm, bytes);
+      if (value.includes('pactwoven:financial-policy-http-request:v1')) { f.time.wall++; f.time.mono++; }
+      return result;
+    });
+    await f.controller.refreshAndSaveNewText(); expect(f.createKey).toHaveBeenCalledOnce();
+    expect(f.storage.setItem).not.toHaveBeenCalled(); expect(f.writeInputs).toHaveLength(0); expect(f.values.size).toBe(0);
+    await f.controller.refreshAndSaveNewText(); expect(f.createKey).toHaveBeenCalledOnce();
+  });
+  it('consumes synchronously so duplicate activation can only produce one chain', async () => {
+    const f = await acknowledged(), entered = deferred<void>(), release = deferred<void>();
+    f.token.mockImplementationOnce(async () => { entered.resolve(); await release.promise; return 'test_token'; });
+    const first = f.controller.refreshAndSaveNewText(); await entered.promise;
+    const second = f.controller.refreshAndSaveNewText(); expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false);
+    release.resolve(); await Promise.all([first, second]); expect(f.writeInputs).toHaveLength(1); expect(f.createKey).toHaveBeenCalledOnce();
+  });
+  const interruptionStages = ['context-token', 'context-response', 'preparation-token', 'preparation-response', 'comparison-digest',
+    'original-hash', 'retained-original-hash', 'write-token', 'write-response'] as const;
+  const interruptionEvents = ['edit', 'selection', 'hide', 'owner', 'adapter', 'clock'] as const;
+  it.each(interruptionStages.flatMap(stage => interruptionEvents.map(event => [stage, event] as const)))(
+    'guards %s against %s without another dispatch or executable intent', async (stage, event) => {
+      const f = await acknowledged(), entered = deferred<void>(), release = deferred<void>();
+      const fetcher = f.fetcher.getMockImplementation()!, digest = crypto.subtle.digest.bind(crypto.subtle);
+      let tokenCalls = 0, originalHashes = 0;
+      f.token.mockImplementation(async () => {
+        tokenCalls++;
+        if (stage === 'context-token' && tokenCalls === 1 || stage === 'preparation-token' && tokenCalls === 2 || stage === 'write-token' && tokenCalls === 3) {
+          entered.resolve(); await release.promise;
+        }
+        return 'test_token';
+      });
+      f.fetcher.mockImplementation(async (url, init) => {
+        const response = await fetcher(url, init);
+        if (stage === 'context-response' && url.endsWith('/context') || stage === 'preparation-response' && url.endsWith('/financial-policy-preparation') ||
+          stage === 'write-response' && url.includes('/financial-policy-documents/')) { entered.resolve(); await release.promise; }
+        return response;
+      });
+      vi.spyOn(crypto.subtle, 'digest').mockImplementation((algorithm, bytes) => {
+        const value = new TextDecoder().decode(bytes as Uint8Array), result = digest(algorithm, bytes);
+        if (value.includes('pactwoven:financial-policy-http-request:v1')) originalHashes++;
+        if (stage === 'comparison-digest' && value.includes('pactwoven:financial-new-text-review-intent:v1') ||
+          stage === 'original-hash' && originalHashes === 1 && value.includes('pactwoven:financial-policy-http-request:v1') ||
+          stage === 'retained-original-hash' && originalHashes === 2 && value.includes('pactwoven:financial-policy-http-request:v1')) {
+          entered.resolve(); return release.promise.then(() => result);
+        }
+        return result;
+      });
+      const work = f.controller.refreshAndSaveNewText(); await entered.promise;
+      if (event === 'edit') f.controller.edit({ text: 'Changed by an input event during the action.' });
+      if (event === 'selection') f.controller.startNew('draft');
+      if (event === 'hide') f.controller.suspend();
+      if (event === 'owner') { f.current.value = null; f.controller.current(); }
+      if (event === 'adapter') f.controller.configure({ ...f.adapters, fetch: async (...args) => f.fetcher(...args) });
+      if (event === 'clock') { f.time.mono--; f.controller.fresh(); }
+      release.resolve(); await work;
+      expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false);
+      expect(f.writeInputs).toHaveLength(stage === 'write-response' ? 1 : 0);
+      const calls = f.createKey.mock.calls.length, originals = [...f.values.entries()];
+      f.current.value = f.bootstrap; f.time.mono = 100; await f.controller.refreshAndSaveNewText();
+      expect(f.createKey).toHaveBeenCalledTimes(calls); expect([...f.values.entries()]).toEqual(originals);
+      if (stage === 'write-token' || stage === 'write-response') expect(f.values.size).toBe(1);
+    });
+  it.each(['edit', 'selection', 'owner'] as const)('the first storage barrier stops dispatch after %s and retains its exact original', async event => {
+    const f = await acknowledged();
+    vi.spyOn(f.storage, 'setItem').mockImplementation((key, value) => {
+      f.values.set(key, value);
+      if (event === 'edit') f.controller.edit({ text: 'Changed at the storage barrier.' });
+      if (event === 'selection') f.controller.startNew('draft');
+      if (event === 'owner') { f.current.value = null; f.controller.current(); }
+    });
+    await f.controller.refreshAndSaveNewText(); expect(f.writeInputs).toHaveLength(0); expect(f.values.size).toBe(1);
+    expect(f.createKey).toHaveBeenCalledOnce(); expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false);
+    const original = [...f.values.entries()]; f.current.value = f.bootstrap; await f.controller.refreshAndSaveNewText();
+    expect([...f.values.entries()]).toEqual(original); expect(f.createKey).toHaveBeenCalledOnce();
+  });
+  it('blocks broad same-target originals even after expired rows disappear', async () => {
+    const f = await acknowledged();
+    const request = parseFinancialPolicyWriteRequest({ kind: 'save_document', responsibilityId: f.bootstrap.responsibilityId, id: 'mandate_doc', key: 'other_original_key_001',
+      route: financialPolicyHttpRoute({ kind: 'save_document', responsibilityId: f.bootstrap.responsibilityId, id: 'mandate_doc' }),
+      input: { schemaVersion: 1, previous: null, organizationEpoch: 2, purpose: 'financial_mandate', text: 'Other exact original.' } });
+    const original = await createFinancialPolicyAttempt({ ...financialPolicyLocalScope(f.bootstrap), actorId: 'other_actor', apiBase: 'https://other.example.test' }, request);
+    storeFinancialPolicyReference(f.storage, original.reference); const saved = [...f.values.entries()];
+    f.time.wall += 45000; f.time.mono += 45000; f.controller.expireDisplay(); expect(f.controller.getSnapshot().rows).toEqual([]);
+    const calls = f.fetcher.mock.calls.length; await f.controller.refreshAndSaveNewText();
+    expect(f.fetcher).toHaveBeenCalledTimes(calls); expect(f.createKey).not.toHaveBeenCalled(); expect([...f.values.entries()]).toEqual(saved);
+    expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false);
+  });
+  it('a direct save after acknowledgement invalidates the new intent and preserves its receipt/original', async () => {
+    const f = await acknowledged(); await f.controller.save();
+    expect(f.writeInputs).toHaveLength(1); expect(f.controller.getSnapshot().receipt).not.toBeNull();
+    expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false); const saved = [...f.values.entries()];
+    await f.controller.refreshAndSaveNewText(); expect(f.writeInputs).toHaveLength(1); expect([...f.values.entries()]).toEqual(saved);
+  });
+  it('unknown dispatched outcome keeps exactly the original locator and never restores intent', async () => {
+    const f = await acknowledged(); f.state.writeUnknown = true; await f.controller.refreshAndSaveNewText();
+    expect(f.writeInputs).toHaveLength(1); expect(f.values.size).toBe(1); const original = [...f.values.entries()];
+    expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false); expect(f.controller.getSnapshot().message).toContain('unknown');
+    await f.controller.refreshAndSaveNewText(); await f.controller.acknowledgeNewText();
+    expect(f.writeInputs).toHaveLength(1); expect(f.createKey).toHaveBeenCalledOnce(); expect([...f.values.entries()]).toEqual(original);
+  });
+  it.each(['refresh', 'prepare', 'continue', 'hide', 'edit'] as const)('the separate %s path invalidates prior acknowledgement', async path => {
+    const f = await acknowledged();
+    if (path === 'refresh') await f.controller.refresh(); if (path === 'prepare') await f.controller.prepare();
+    if (path === 'continue') await f.controller.continueOriginalSave(); if (path === 'hide') f.controller.suspend();
+    if (path === 'edit') f.controller.edit({ text: f.controller.getSnapshot().buffer.text });
+    expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false); expect(f.writeInputs).toHaveLength(0);
+  });
+  it('does not expose the new gesture for a revision or draft', async () => {
+    const f = await fixture({ id: 'document_a', version: 1, kind: 'document' }); await f.controller.refresh();
+    f.controller.edit({ text: 'Revision text.' }); await f.controller.acknowledgeNewText(); await f.controller.refreshAndSaveNewText();
+    expect(f.createKey).not.toHaveBeenCalled(); expect(f.controller.getSnapshot().newTextAcknowledged).toBe(false);
+    const draft = await fixture(); await draft.controller.refresh(); draft.controller.startNew('draft');
+    await draft.controller.acknowledgeNewText(); await draft.controller.refreshAndSaveNewText(); expect(draft.createKey).not.toHaveBeenCalled();
+  });
+});
 describe('native authoring original-key closure', () => {
   async function unresolved(f: Awaited<ReturnType<typeof fixture>>) {
     await f.prepareDocument(); f.token.mockRejectedValueOnce(Error('token unavailable')); await f.controller.save();

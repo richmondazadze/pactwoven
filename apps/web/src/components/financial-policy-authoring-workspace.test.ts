@@ -18,7 +18,7 @@ const at = Date.parse('2026-11-15T00:00:00.000Z'), iso = (n: number) => new Date
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'private, no-store' } });
 const controllers: FinancialPolicyAuthoringController[] = [];
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
-function preparationExpiryBeforeDisplay() {
+function preparationExpiryBeforeDisplay(controller: FinancialPolicyAuthoringController) {
   vi.useFakeTimers();
   const scheduled = vi.spyOn(globalThis, 'setTimeout'), cancelled = vi.spyOn(globalThis, 'clearTimeout');
   return () => {
@@ -27,9 +27,12 @@ function preparationExpiryBeforeDisplay() {
       return result?.type === 'return' && typeof callback === 'function' &&
         !cancelled.mock.calls.some(([id]) => id === result.value) ? [{ callback: callback as () => void, delay }] : [];
     });
-    // After successful preparation, only the display and preparation expiry timers remain.
-    expect(live).toHaveLength(2);
-    return live[1]!.callback;
+    // The admission timer precedes actual expiry and must not substitute for it.
+    expect(live).toHaveLength(controller.initialSaveFresh() ? 3 : 2);
+    const preparation = live.filter(({ callback, delay }) => callback !== controller.expireDisplay &&
+      delay === controller.getSnapshot().preparation.preparation!.expiresAt - at);
+    expect(preparation).toHaveLength(1);
+    return preparation[0]!.callback;
   };
 }
 async function fixture(revision: { id: string; version: number; kind?: 'document' | 'draft' } | null = null) {
@@ -185,6 +188,97 @@ describe('native authoring controller with injected offline transport', () => {
     f.time.wall += 19000; f.time.mono += 19000; await vi.advanceTimersByTimeAsync(19000);
     expect(f.controller.getSnapshot()).toMatchObject({ context: null, review: null, buffer: { text } }); await f.controller.save(); expect(f.createKey).not.toHaveBeenCalled();
   });
+  it.each([11000, 10999])('refuses a new save with %i ms left before creating a key or storing an original', async remaining => {
+    const f = await fixture(); await f.prepareDocument(); const before = f.controller.getSnapshot(), tokens = f.token.mock.calls.length, calls = f.fetcher.mock.calls.length;
+    f.time.mono += 19000 - remaining; f.time.wall -= 1000;
+    expect(f.controller.initialSaveFresh()).toBe(false); expect(f.controller.fresh()).toBe(true); expect(f.controller.preparationFresh()).toBe(true);
+    await f.controller.save(); await f.controller.save();
+    expect(f.controller.getSnapshot()).toMatchObject({ buffer: before.buffer, context: before.context, review: before.review, saveNeedsRefresh: true, unsent: null });
+    expect(f.controller.getSnapshot().message).toMatch(/^Refresh checks before saving\./);
+    expect(f.createKey).not.toHaveBeenCalled(); expect(f.storage.setItem).not.toHaveBeenCalled(); expect(f.values.size).toBe(0);
+    expect(f.token).toHaveBeenCalledTimes(tokens); expect(f.fetcher).toHaveBeenCalledTimes(calls); expect(f.writeInputs).toHaveLength(0);
+  });
+  it('admits a new save with strictly more than eleven seconds left', async () => {
+    const f = await fixture(); await f.prepareDocument(); f.time.wall += 7999; f.time.mono += 7999;
+    expect(f.controller.initialSaveFresh()).toBe(true); await f.controller.save();
+    expect(f.createKey).toHaveBeenCalledOnce(); expect(f.values.size).toBe(1); expect(f.writeInputs).toHaveLength(1);
+  });
+  it('does not regain admission time when the wall clock rolls back during preparation', async () => {
+    const f = await fixture(); await f.controller.refresh(); f.editDocument(); f.controller.reviewDocument();
+    f.token.mockImplementationOnce(async () => { f.time.wall += 8000; return 'preparation_token'; });
+    const implement = f.fetcher.getMockImplementation()!;
+    f.fetcher.mockImplementationOnce(async (url, init) => { f.time.wall = at; return implement(url, init); });
+    await f.controller.prepare();
+    expect(f.controller.getSnapshot().preparation.preparation?.receivedAt).toBe(at + 8000);
+    const calls = f.fetcher.mock.calls.length, tokens = f.token.mock.calls.length;
+    expect(f.controller.initialSaveFresh()).toBe(false); await f.controller.save();
+    expect(f.controller.getSnapshot().message).toMatch(/^Refresh checks before saving\./);
+    expect(f.createKey).not.toHaveBeenCalled(); expect(f.values.size).toBe(0);
+    expect(f.fetcher).toHaveBeenCalledTimes(calls); expect(f.token).toHaveBeenCalledTimes(tokens);
+  });
+  it.each(['context', 'preparation', 'draft'] as const)('publishes disabled readiness exactly at the earliest %s margin without automatic I/O', async earliest => {
+    vi.useFakeTimers(); const f = await fixture();
+    if (earliest === 'preparation') f.state.prepChange = response => ({ ...response, observation: { observedAt: iso(at - 1000), expiresAt: iso(at + 15000) } });
+    await f.prepareDocument();
+    if (earliest === 'draft') {
+      await f.controller.save(); const receipt = f.controller.getSnapshot().receipt!;
+      f.controller.startNew('draft'); f.controller.useDocumentReceipt(receipt);
+      f.controller.edit({ dates: { startsLocal: '2026-11-14T00:00', expiresLocal: '2026-11-15T00:00:14', timeZone: 'UTC' } });
+      f.controller.reviewDraft(); await f.controller.prepare();
+    }
+    const delay = earliest === 'context' ? 8000 : earliest === 'preparation' ? 4000 : 3000;
+    const before = f.controller.getSnapshot(), calls = f.fetcher.mock.calls.length, tokens = f.token.mock.calls.length, keys = f.createKey.mock.calls.length, originals = [...f.values];
+    const observations: boolean[] = [], off = f.controller.subscribe(() => observations.push(f.controller.initialSaveFresh()));
+    f.time.mono += delay - 1; await vi.advanceTimersByTimeAsync(delay - 1);
+    expect(f.controller.initialSaveFresh()).toBe(true); expect(observations).toEqual([]);
+    f.time.mono += 1; await vi.advanceTimersByTimeAsync(1);
+    expect(observations).toEqual([false]); expect(f.controller.initialSaveFresh()).toBe(false);
+    expect(f.controller.getSnapshot()).toMatchObject({ saveNeedsRefresh: true, buffer: before.buffer, context: before.context, review: before.review, preparation: before.preparation });
+    expect(f.controller.fresh()).toBe(true); expect(f.controller.preparationFresh()).toBe(true);
+    expect(f.token).toHaveBeenCalledTimes(tokens); expect(f.fetcher).toHaveBeenCalledTimes(calls);
+    await f.controller.save(); expect(f.controller.getSnapshot().message).toMatch(/^Refresh checks before saving\./);
+    expect(f.createKey).toHaveBeenCalledTimes(keys); expect([...f.values]).toEqual(originals); off();
+  });
+  it('refuses first locator storage after slow hashing crosses the margin while retaining the selected text and record', async () => {
+    const f = await fixture(); await f.prepareDocument(); const before = f.controller.getSnapshot(), calls = f.fetcher.mock.calls.length, tokens = f.token.mock.calls.length;
+    const entered = deferred<void>(), release = deferred<void>(), digest = crypto.subtle.digest.bind(crypto.subtle);
+    vi.spyOn(crypto.subtle, 'digest').mockImplementationOnce(async (algorithm, bytes) => { entered.resolve(); await release.promise; return digest(algorithm, bytes); });
+    const pending = f.controller.save(); await entered.promise;
+    f.time.mono += 8000; release.resolve(); await pending;
+    expect(f.controller.getSnapshot()).toMatchObject({ buffer: before.buffer, context: before.context, saveNeedsRefresh: true, review: null, unsent: null });
+    expect(f.controller.getSnapshot().message).toMatch(/^Refresh checks before saving\./);
+    expect(f.createKey).toHaveBeenCalledOnce(); expect(f.storage.setItem).not.toHaveBeenCalled(); expect(f.values.size).toBe(0);
+    expect(f.token).toHaveBeenCalledTimes(tokens); expect(f.fetcher).toHaveBeenCalledTimes(calls); expect(f.writeInputs).toHaveLength(0);
+  });
+  it('keeps the qualified preparation clock for the second admission after rollback and slow hashing', async () => {
+    const f = await fixture(); await f.controller.refresh(); f.editDocument(); f.controller.reviewDocument();
+    f.token.mockImplementationOnce(async () => { f.time.wall += 4000; return 'preparation_token'; });
+    const implement = f.fetcher.getMockImplementation()!;
+    f.fetcher.mockImplementationOnce(async (url, init) => { f.time.wall = at; return implement(url, init); });
+    await f.controller.prepare(); expect(f.controller.initialSaveFresh()).toBe(true);
+    const entered = deferred<void>(), release = deferred<void>(), digest = crypto.subtle.digest.bind(crypto.subtle);
+    vi.spyOn(crypto.subtle, 'digest').mockImplementationOnce(async (algorithm, bytes) => { entered.resolve(); await release.promise; return digest(algorithm, bytes); });
+    const pending = f.controller.save(); await entered.promise; const calls = f.fetcher.mock.calls.length, tokens = f.token.mock.calls.length;
+    f.time.mono += 4000; release.resolve(); await pending;
+    expect(f.controller.getSnapshot().message).toMatch(/^Refresh checks before saving\./);
+    expect(f.storage.setItem).not.toHaveBeenCalled(); expect(f.values.size).toBe(0);
+    expect(f.fetcher).toHaveBeenCalledTimes(calls); expect(f.token).toHaveBeenCalledTimes(tokens);
+  });
+  it('keeps an in-flight save pending as the initial-admission timer crosses its threshold', async () => {
+    vi.useFakeTimers(); const f = await fixture(); await f.prepareDocument();
+    const entered = deferred<void>(), release = deferred<void>(), implement = f.fetcher.getMockImplementation()!;
+    f.fetcher.mockImplementationOnce(async (url, init) => { const response = await implement(url, init); entered.resolve(); await release.promise; return response; });
+    const pending = f.controller.save(); await entered.promise;
+    const originals = [...f.values], calls = f.fetcher.mock.calls.length, keys = f.createKey.mock.calls.length;
+    expect(f.controller.getSnapshot()).toMatchObject({ busy: true, saving: true });
+    f.time.mono += 8000; await vi.advanceTimersByTimeAsync(8000);
+    expect(f.controller.getSnapshot()).toMatchObject({ busy: true, saving: true, saveNeedsRefresh: true, unsent: null });
+    expect(f.controller.getSnapshot().message).toBe('Saving the exact reviewed configuration…');
+    await f.controller.save(); expect(f.fetcher).toHaveBeenCalledTimes(calls); expect(f.createKey).toHaveBeenCalledTimes(keys);
+    expect([...f.values]).toEqual(originals); release.resolve(); await pending;
+    expect(f.controller.getSnapshot()).toMatchObject({ busy: false, saving: false, saveNeedsRefresh: false, receipt: { kind: 'save_document' } });
+    expect(f.writeInputs).toHaveLength(1); expect([...f.values]).toEqual(originals);
+  });
   it.each(['hash', 'token'] as const)('preserves the same-scope draft when context expires during predispatch %s before timers run', async gap => {
     const f = await fixture(); await f.prepareDocument(); await f.controller.save();
     const receipt = f.controller.getSnapshot().receipt!;
@@ -224,7 +318,7 @@ describe('native authoring controller with injected offline transport', () => {
     expect(f.fetcher).toHaveBeenCalledTimes(calls); expect(f.writeInputs).toHaveLength(0); expect(f.values.size).toBe(0);
   });
   it('retains the exact draft when the preparation subscription encounters GET expiry before the display timer', async () => {
-    const f = await fixture(), expiry = preparationExpiryBeforeDisplay();
+    const f = await fixture(), expiry = preparationExpiryBeforeDisplay(f.controller);
     await f.prepareDocument(); await f.controller.save(); const receipt = f.controller.getSnapshot().receipt!;
     f.controller.startNew('draft'); f.controller.useDocumentReceipt(receipt);
     f.controller.edit({ dates: { startsLocal: '2026-11-18T15:00', expiresLocal: '2026-11-19T15:00', timeZone: 'UTC' } });
@@ -244,7 +338,7 @@ describe('native authoring controller with injected offline transport', () => {
     expect(f.createKey).toHaveBeenCalledOnce(); expect([...f.values.entries()]).toEqual(reminders);
   });
   it('clears preparation and local review while retaining valid GET context and edits on earlier preparation-only expiry', async () => {
-    const f = await fixture(), expiry = preparationExpiryBeforeDisplay();
+    const f = await fixture(), expiry = preparationExpiryBeforeDisplay(f.controller);
     f.state.prepChange = response => ({ ...response, observation: { observedAt: iso(at - 1000), expiresAt: iso(at + 2000) } });
     await f.prepareDocument(); const buffer = f.controller.getSnapshot().buffer, context = f.controller.getSnapshot().context;
     const expirePreparation = expiry(); f.time.wall += 2000; f.time.mono += 2000; expirePreparation();
@@ -256,7 +350,7 @@ describe('native authoring controller with injected offline transport', () => {
     await f.controller.save(); expect(f.createKey).not.toHaveBeenCalled(); expect(f.writeInputs).toHaveLength(0);
   });
   it.each(['hide', 'scope', 'adapter', 'denial'] as const)('does not preserve or restore buffers after %s when a preparation-expiry callback runs', async loss => {
-    const f = await fixture(), expiry = preparationExpiryBeforeDisplay(); await f.prepareDocument();
+    const f = await fixture(), expiry = preparationExpiryBeforeDisplay(f.controller); await f.prepareDocument();
     const expirePreparation = expiry();
     if (loss === 'hide') f.controller.suspend();
     if (loss === 'scope') f.current.value = null;
@@ -433,7 +527,7 @@ describe('native authoring controller with injected offline transport', () => {
   it.each(['edit', 'material-read', 'lookup', 'refresh', 'prepare', 'expiry', 'preparation-expiry', 'hide', 'owner', 'storage', 'reload'] as const)(
     'invalidates the known-unsent continuation after %s without changing its reminder or sending', async loss => {
       const f = await fixture();
-      if (loss === 'preparation-expiry') f.state.prepChange = response => ({ ...response, observation: { observedAt: iso(at - 1000), expiresAt: iso(at + 2000) } });
+      if (loss === 'preparation-expiry') f.state.prepChange = response => ({ ...response, observation: { observedAt: iso(at - 1000), expiresAt: iso(at + 12000) } });
       await f.prepareDocument(); f.token.mockRejectedValueOnce(Error('token unavailable')); await f.controller.save();
       const original = f.controller.getSnapshot().unsent!, stored = [...f.values.entries()]; expect(original).not.toBeNull();
       let current = f.controller;
@@ -443,7 +537,7 @@ describe('native authoring controller with injected offline transport', () => {
       if (loss === 'refresh') await current.refresh();
       if (loss === 'prepare') await current.prepare();
       if (loss === 'expiry') { f.time.wall += 19000; f.time.mono += 19000; }
-      if (loss === 'preparation-expiry') { f.time.wall += 2000; f.time.mono += 2000; }
+      if (loss === 'preparation-expiry') { f.time.wall += 12000; f.time.mono += 12000; }
       if (loss === 'hide') { current.suspend(); current.activate(); }
       if (loss === 'owner') {
         f.current.value = { ...f.bootstrap, actorId: 'replacement_actor' };
@@ -749,7 +843,7 @@ describe('first verified financial context opens local editing', () => {
     expect(f.writeInputs).toHaveLength(0);
   });
   it.each(['display', 'preparation-subscription'] as const)('retains opened local edits after later GET expiry via %s', async mode => {
-    const f = await fixture(), expiry = preparationExpiryBeforeDisplay(); await f.prepareDocument();
+    const f = await fixture(), expiry = preparationExpiryBeforeDisplay(f.controller); await f.prepareDocument();
     f.controller.edit({ text: 'Locally retained mandate', dates: { timeZone: 'UTC', startsLocal: '2026-11-18T15:00', expiresLocal: '2026-11-19T15:00' } });
     f.controller.reviewDocument(); await f.controller.prepare(); const before = f.controller.getSnapshot(), expirePreparation = expiry(), calls = f.fetcher.mock.calls.length;
     f.time.wall += 19000; f.time.mono += 19000;
@@ -769,7 +863,7 @@ describe('first verified financial context opens local editing', () => {
     expect(renderEditor(f)).toContain('Exact full financial mandate'); expect(f.writeInputs).toHaveLength(0); expect(f.createKey).not.toHaveBeenCalled();
   });
   it('retains the opened editor and valid context after earlier preparation-only expiry', async () => {
-    const f = await fixture(), expiry = preparationExpiryBeforeDisplay();
+    const f = await fixture(), expiry = preparationExpiryBeforeDisplay(f.controller);
     f.state.prepChange = response => ({ ...response, observation: { observedAt: iso(at - 1000), expiresAt: iso(at + 2000) } });
     await f.prepareDocument(); const before = f.controller.getSnapshot(), expirePreparation = expiry();
     f.time.wall += 2000; f.time.mono += 2000; expirePreparation();

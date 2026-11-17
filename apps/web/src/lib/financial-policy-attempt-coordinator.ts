@@ -12,10 +12,12 @@ import { createFinancialPolicyWriteTransport, parseFinancialPolicyWriteRequest, 
 import { getApiBase } from './config';
 import { FINANCIAL_POLICY_TRANSPORT_DEADLINE_MS } from './financial-policy-transport';
 
+export const FINANCIAL_POLICY_INITIAL_SAVE_MARGIN_MS = FINANCIAL_POLICY_TRANSPORT_DEADLINE_MS + 1_000;
+
 /** Installed only by a separately reviewed preparation client. No wire schema or native fallback lives here. */
 export type FinancialPolicyPreparationVerifier = Readonly<{
   capture: (review: Readonly<{ request: FinancialPolicyWriteRequest; bootstrap: FinancialPolicyBootstrap;
-    observation: FinancialPolicyObservation }>) => Readonly<{ expiresAt: number; assertCurrent: () => void }>;
+    observation: FinancialPolicyObservation }>) => Readonly<{ expiresAt: number; assertCurrent: () => void; now: () => number }>;
 }>;
 export type FinancialPolicyAttemptCoordinatorAdapters = Omit<FinancialPolicyWriteTransportAdapters, 'claim'> & {
   memory: FinancialPolicyMemory; storage: () => FinancialPolicyStorage | null;
@@ -25,7 +27,7 @@ declare const gestureBrand: unique symbol;
 export type FinancialPolicyWriteGesture = Readonly<{ [gestureBrand]: true }>;
 export class FinancialPolicyWriteAttemptError extends FinancialPolicyClientError {
   constructor(code: FinancialPolicyClientError['code'], readonly outcome: 'not-dispatched' | 'unknown',
-    readonly reason: 'token-unavailable' | null = null) { super(code); }
+    readonly reason: 'token-unavailable' | 'refresh-checks' | null = null) { super(code); }
 }
 export type FinancialPolicyAttemptStatus = Readonly<{
   state: 'idle' | 'unavailable' | 'preparing' | 'unsent' | 'unknown' | 'recorded'; reference: FinancialPolicyReference | null;
@@ -33,7 +35,7 @@ export type FinancialPolicyAttemptStatus = Readonly<{
 type Entry = {
   request: FinancialPolicyWriteRequest; bootstrap: FinancialPolicyBootstrap; observation: FinancialPolicyObservation;
   generation: number; controller: AbortController; storage: FinancialPolicyStorage; now: () => number;
-  preparation: ReturnType<FinancialPolicyPreparationVerifier['capture']>; assertion: () => void; expiresAt: number;
+  preparation: ReturnType<FinancialPolicyPreparationVerifier['capture']>; assertion: () => void; preparationNow: () => number; expiresAt: number;
   attempt: FinancialPolicyAttempt | null; dispatched: boolean; phase: 'preparing' | 'unsent' | 'unknown' | 'recorded';
   stored: boolean; operation: { controller: AbortController; guard: () => void } | null;
 };
@@ -123,7 +125,7 @@ export function createFinancialPolicyAttemptCoordinator(adapters: FinancialPolic
       throw new FinancialPolicyClientError('scope');
     try { if (storageSource() !== entry.storage) throw storageError(); }
     catch { invalidate(); throw storageError(); }
-    if (entry.preparation.assertCurrent !== entry.assertion || entry.preparation.expiresAt !== entry.expiresAt ||
+    if (entry.preparation.assertCurrent !== entry.assertion || entry.preparation.now !== entry.preparationNow || entry.preparation.expiresAt !== entry.expiresAt ||
       entry.now() >= entry.expiresAt || entry.request.kind === 'save_draft' && Date.parse(entry.request.input.draft.expiresAt) <= entry.now())
       throw new FinancialPolicyClientError('expired');
     try { entry.assertion(); } catch { throw new FinancialPolicyClientError('expired'); }
@@ -143,9 +145,11 @@ export function createFinancialPolicyAttemptCoordinator(adapters: FinancialPolic
     if (!preparation || !capture) throw new FinancialPolicyClientError('unavailable');
     try {
       const value = capture(freezeFinancial({ request, bootstrap, observation }));
-      if (!value || typeof value.assertCurrent !== 'function' || !Number.isFinite(value.expiresAt) ||
+      if (!value || typeof value.assertCurrent !== 'function' || typeof value.now !== 'function' || !Number.isFinite(value.expiresAt) ||
         value.expiresAt > observation.expiresAt || value.expiresAt <= wall()) throw new FinancialPolicyClientError('unavailable');
-      value.assertCurrent(); return value;
+      value.assertCurrent(); const now = value.now();
+      if (!Number.isFinite(now) || now < 0) throw new FinancialPolicyClientError('unavailable');
+      return value;
     } catch { throw new FinancialPolicyClientError('unavailable'); }
   }
   function gesture(entry: Entry): FinancialPolicyWriteGesture {
@@ -191,8 +195,8 @@ export function createFinancialPolicyAttemptCoordinator(adapters: FinancialPolic
       const asserted = assertionFor(request, bootstrap, observation); let storage: FinancialPolicyStorage | null;
       try { storage = storageSource(); } catch { throw storageError(); } if (!storage) throw storageError();
       const entry: Entry = { request, bootstrap, observation, generation, controller: new AbortController(), storage,
-        now: createFinancialPolicyClock(wall(), monotonic(), wall, monotonic), preparation: asserted, assertion: asserted.assertCurrent,
-        expiresAt: asserted.expiresAt, attempt: null, dispatched: false, phase: 'preparing', stored: false, operation: null };
+        now: createFinancialPolicyClock(observation.receivedAt, observation.receivedMonotonic, wall, monotonic), preparation: asserted, assertion: asserted.assertCurrent,
+        preparationNow: asserted.now, expiresAt: asserted.expiresAt, attempt: null, dispatched: false, phase: 'preparing', stored: false, operation: null };
       // Reservation and conflict checks are synchronous, before hashing, provider waits or storage writes.
       entries.add(entry);
       try { check(entry); barrier(entry, false); check(entry); return gesture(entry); }
@@ -218,6 +222,12 @@ export function createFinancialPolicyAttemptCoordinator(adapters: FinancialPolic
           const original = await interrupted(createFinancialPolicyAttempt(financialPolicyLocalScope(entry.bootstrap), entry.request), controller.signal); guard();
           entry.attempt = original; barrier(entry, false);
           await interrupted(memory.retain(original), controller.signal); guard(); barrier(entry, false);
+          const deadline = Math.min(entry.observation.expiresAt, entry.expiresAt,
+            entry.request.kind === 'save_draft' ? Date.parse(entry.request.input.draft.expiresAt) : Infinity);
+          const preparedNow = entry.preparationNow();
+          if (!Number.isFinite(preparedNow) || preparedNow < 0) throw new FinancialPolicyClientError('expired');
+          if (deadline - Math.max(entry.now(), preparedNow) <= FINANCIAL_POLICY_INITIAL_SAVE_MARGIN_MS)
+            throw new FinancialPolicyWriteAttemptError('unavailable', 'not-dispatched', 'refresh-checks');
           storeFinancialPolicyReference(entry.storage, original.reference);
           assertFinancialPolicyReference(entry.storage, original.reference);
           entry.stored = true; entry.phase = 'unsent';
@@ -231,11 +241,11 @@ export function createFinancialPolicyAttemptCoordinator(adapters: FinancialPolic
       } catch (error) {
         if (entries.has(entry)) {
           if (entry.dispatched) entry.phase = 'unknown'; else if (entry.attempt) entry.phase = 'unsent';
-          if (controller.signal.aborted && !entry.stored) invalidate();
+          if (!entry.stored && (controller.signal.aborted || error instanceof FinancialPolicyWriteAttemptError && error.reason === 'refresh-checks')) invalidate();
           else { try { check(entry); } catch { invalidate(); } }
         }
         throw new FinancialPolicyWriteAttemptError(error instanceof FinancialPolicyClientError ? error.code : 'unconfirmed',
-          entry.dispatched ? 'unknown' : 'not-dispatched', error instanceof FinancialPolicyWriteTokenError ? error.reason : null);
+          entry.dispatched ? 'unknown' : 'not-dispatched', error instanceof FinancialPolicyWriteTokenError || error instanceof FinancialPolicyWriteAttemptError ? error.reason : null);
       } finally {
         clearTimeout(timer); entry.controller.signal.removeEventListener('abort', abort); controller.abort(); entry.operation = null;
         if (active === entry) active = null;
@@ -250,7 +260,7 @@ export function createFinancialPolicyAttemptCoordinator(adapters: FinancialPolic
         !financialSame(memory.original(reference), entry.attempt)) throw new FinancialPolicyClientError('unconfirmed');
       check(entry); barrier(entry, true);
       const asserted = assertionFor(entry.request, bootstrap, observation);
-      entry.preparation = asserted; entry.assertion = asserted.assertCurrent; entry.expiresAt = asserted.expiresAt;
+      entry.preparation = asserted; entry.assertion = asserted.assertCurrent; entry.preparationNow = asserted.now; entry.expiresAt = asserted.expiresAt;
       check(entry); return gesture(entry);
     },
     /** No network, mutation or settlement. The accepted GET lifetime still requires its own gesture. */

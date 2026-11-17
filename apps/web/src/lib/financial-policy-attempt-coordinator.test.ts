@@ -42,7 +42,7 @@ async function fixture(responsibility = false, withPreparation = true) {
   const capture = vi.fn<FinancialPolicyPreparationVerifier['capture']>(review => {
     if (!policy.allowed || policy.originalOptionalMaterial) throw Error('Synthetic blocked preparation');
     const exactRequest = review.request, exactObservation = review.observation;
-    return { expiresAt: policy.expiresAt, assertCurrent() {
+    return { expiresAt: policy.expiresAt, now: () => Math.max(time.wall, at + time.mono - 100), assertCurrent() {
       if (!policy.allowed || policy.originalOptionalMaterial || review.request !== exactRequest || lifetime.observation() !== exactObservation)
         throw Error('Synthetic preparation no longer current');
     } };
@@ -94,11 +94,13 @@ describe('financial policy attempt coordination', () => {
     await expect(f.coordinator.send(f.lifetime.authorize('read', {}) as never)).rejects.toMatchObject({ outcome: 'not-dispatched' });
     expect(f.getToken).not.toHaveBeenCalled(); expect(f.fetcher).not.toHaveBeenCalled(); expect(f.values.size).toBe(0);
   });
-  it.each(['boolean', 'missing-assertion', 'expired', 'unbounded', 'throws'])(
+  it.each(['boolean', 'missing-assertion', 'missing-clock', 'invalid-clock', 'negative-clock', 'expired', 'unbounded', 'throws'])(
     'rejects a %s preparation port result before any write-side I/O', async mode => {
       const f = await fixture();
       if (mode === 'boolean') f.capture.mockReturnValueOnce(true as never);
       if (mode === 'missing-assertion') f.capture.mockReturnValueOnce({ expiresAt: at + 1000 } as never);
+      if (mode === 'missing-clock') f.capture.mockReturnValueOnce({ expiresAt: at + 19000, assertCurrent() {} } as never);
+      if (mode === 'invalid-clock' || mode === 'negative-clock') f.capture.mockReturnValueOnce({ expiresAt: at + 19000, assertCurrent() {}, now: () => mode === 'invalid-clock' ? NaN : -1 });
       if (mode === 'expired') f.policy.expiresAt = at;
       if (mode === 'unbounded') f.policy.expiresAt = at + 20001;
       if (mode === 'throws') f.capture.mockImplementationOnce(() => { throw Error('private preparation source'); });
@@ -129,6 +131,48 @@ describe('financial policy attempt coordination', () => {
     expect(f.coordinator.status()).toEqual({ state: 'recorded', reference: result.reference });
     await expect(f.coordinator.send(gesture)).rejects.toMatchObject({ outcome: 'not-dispatched' }); expect(f.fetcher).toHaveBeenCalledOnce();
     expect(() => f.coordinator.review(request)).toThrow(); expect(f.values.size).toBe(1);
+  });
+  it.each(['context', 'preparation', 'draft'] as const)('requires more than eleven seconds before storing against the earliest %s deadline', async earliest => {
+    const f = await fixture(true), request = structuredClone(earliest === 'draft' ? f.draft() : f.make());
+    if (earliest === 'context') { f.time.wall -= 1000; f.time.mono += 8000; }
+    if (earliest === 'preparation') f.policy.expiresAt = at + 11000;
+    if (request.kind === 'save_draft') request.input.draft.expiresAt = iso(at + 11000);
+    const store = vi.spyOn(f.storage, 'setItem');
+    await expect(f.send(request)).rejects.toMatchObject({ code: 'unavailable', outcome: 'not-dispatched', reason: 'refresh-checks' });
+    expect(store).not.toHaveBeenCalled(); expect(f.values.size).toBe(0); expect(f.getToken).not.toHaveBeenCalled(); expect(f.fetcher).not.toHaveBeenCalled();
+    expect(f.coordinator.status().reference).toBeNull();
+  });
+  it('stores and sends with eleven seconds plus one millisecond remaining', async () => {
+    const f = await fixture(); f.time.mono += 7999;
+    const result = await f.send(); expect(f.values.size).toBe(1); expect(f.fetcher).toHaveBeenCalledOnce(); expect(result.receipt.kind).toBe('save_document');
+  });
+  it.each(['attempt', 'retention'] as const)('rechecks the admission margin after slow %s hashing and creates no stored original', async phase => {
+    const f = await fixture(), request = f.make(), expected = await createFinancialPolicyAttempt(financialPolicyLocalScope(f.bootstrap), request);
+    const entered = deferred<void>(), release = deferred<void>(), digest = crypto.subtle.digest.bind(crypto.subtle); let requestHashes = 0;
+    vi.spyOn(crypto.subtle, 'digest').mockImplementation(async (algorithm, data) => {
+      if (new TextDecoder().decode(data as ArrayBuffer).includes('financial-policy-http-request:v1') && ++requestHashes === (phase === 'attempt' ? 1 : 2)) {
+        entered.resolve(); await release.promise;
+      }
+      return digest(algorithm, data);
+    });
+    const store = vi.spyOn(f.storage, 'setItem'), pending = f.send(request).catch(error => error); await entered.promise;
+    f.time.mono += 8000; f.time.wall -= 1000; release.resolve();
+    expect(await pending).toMatchObject({ code: 'unavailable', outcome: 'not-dispatched', reason: 'refresh-checks' });
+    expect(store).not.toHaveBeenCalled(); expect(f.values.size).toBe(0); expect(f.getToken).not.toHaveBeenCalled(); expect(f.fetcher).not.toHaveBeenCalled();
+    expect(f.memory.original(expected.reference)).toBeNull(); expect(f.coordinator.status().reference).toBeNull();
+    expect(() => f.coordinator.continueUnsent(expected.reference)).toThrow();
+  });
+  it.each(['identity', 'non-finite', 'negative'] as const)('rejects a %s preparation clock change during hashing before storing', async failure => {
+    const f = await fixture(), capture = f.capture.getMockImplementation()!, reading = { now: at };
+    const asserted = { ...capture({ request: f.make(), bootstrap: f.bootstrap, observation: f.lifetime.observation() }), now: () => reading.now };
+    f.capture.mockReturnValueOnce(asserted);
+    const entered = deferred<void>(), release = deferred<void>(), digest = crypto.subtle.digest.bind(crypto.subtle);
+    vi.spyOn(crypto.subtle, 'digest').mockImplementationOnce(async (algorithm, bytes) => { entered.resolve(); await release.promise; return digest(algorithm, bytes); });
+    const pending = f.send().catch(error => error); await entered.promise;
+    if (failure === 'identity') asserted.now = () => at;
+    else reading.now = failure === 'negative' ? -1 : NaN;
+    release.resolve(); expect(await pending).toMatchObject({ outcome: 'not-dispatched', code: 'expired' });
+    expect(f.values.size).toBe(0); expect(f.getToken).not.toHaveBeenCalled(); expect(f.fetcher).not.toHaveBeenCalled();
   });
   it('requires a separate gesture for an incomplete draft after saving text and permits configuration warnings', async () => {
     const f = await fixture(true); await f.send(); expect(f.fetcher).toHaveBeenCalledOnce();
@@ -167,6 +211,13 @@ describe('financial policy attempt coordination', () => {
     const continuation = f.coordinator.continueUnsent(reference); const result = await f.coordinator.send(continuation);
     expect(result.reference).toEqual(reference); expect([...f.values]).toEqual(bytes); expect(f.fetcher).toHaveBeenCalledOnce();
     expect(() => f.coordinator.continueUnsent(reference)).toThrow(); expect(() => f.coordinator.review(f.make('other', 'original_policy_001'))).toThrow();
+  });
+  it('continues a stored original below the new-save margin without rewriting its locator', async () => {
+    const f = await fixture(); f.getToken.mockRejectedValueOnce(Error('token unavailable')); await f.send().catch(() => {});
+    const reference = f.coordinator.status().reference!, originals = [...f.values], store = vi.spyOn(f.storage, 'setItem');
+    f.time.mono += 10000;
+    const result = await f.coordinator.send(f.coordinator.continueUnsent(reference));
+    expect(result.reference).toEqual(reference); expect([...f.values]).toEqual(originals); expect(store).not.toHaveBeenCalled(); expect(f.fetcher).toHaveBeenCalledOnce();
   });
   it('cannot infer unsent history from a reference-only reload or delete a not-recorded reminder', async () => {
     const f = await fixture(); f.getToken.mockRejectedValueOnce(Error('unavailable')); await f.send().catch(() => {});

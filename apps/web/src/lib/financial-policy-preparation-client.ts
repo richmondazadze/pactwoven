@@ -129,7 +129,8 @@ export function createFinancialPolicyPreparationClient(adapters: FinancialPolicy
           if (generation !== owner || installed() !== prepared || active) throw new FinancialPolicyClientError('expired');
           if (request.kind === 'save_draft' && Date.parse(request.input.draft.expiresAt) <= valueNow!()) throw new FinancialPolicyClientError('expired');
         };
-        assertCurrent(); return Object.freeze({ expiresAt: prepared.expiresAt, assertCurrent });
+        const now = () => { assertCurrent(); return valueNow!(); };
+        assertCurrent(); return Object.freeze({ expiresAt: prepared.expiresAt, assertCurrent, now });
       } catch (error) { throw safeFailure(error); }
     },
   });

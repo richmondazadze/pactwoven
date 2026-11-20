@@ -1,7 +1,8 @@
-# Founder policy: documentation and engineering records remain local.
+# Documentation and engineering records remain local except the public root README.
 *.[mM][dD]
 *.[mM][dD][xX]
 *.[mM][aA][rR][kK][dD][oO][wW][nN]
+!/README.md
 docs/
 documentation/
 evidence/

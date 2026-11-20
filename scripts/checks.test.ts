@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync, linkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, symlinkSync, linkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -384,7 +384,36 @@ describe('dependency and import boundaries', () => {
   });
 });
 
-describe('code-only publication', () => {
+describe('publication policy', () => {
+  it('allows normal Git staging of the public root README while keeping other documentation local', () => {
+    const root = repository();
+    write(root, '.gitignore', readFileSync(new URL('../.gitignore', import.meta.url), 'utf8'));
+    write(root, 'README.md', '# Pactwoven\nPublic project documentation.\n');
+    for (const file of ['README.mdx', 'apps/web/README.md', 'docs/README.md', 'AGENTS.md']) {
+      write(root, file, '# Local documentation\n');
+      expect(inspectPath(file)).not.toBeNull();
+      expect(git(root, ['check-ignore', '--', file]).trim()).toBe(file);
+    }
+    for (const file of ['readme.md', 'README.MD']) expect(inspectPath(file)).not.toBeNull();
+    expect(inspectPath('README.md')).toBeNull();
+    git(root, ['add', '--', 'README.md']);
+    for (const tracked of [false, true]) {
+      expect(checkPublication({ root, tracked })).toMatchObject({ count: 1, findings: [] });
+    }
+  });
+
+  it('continues inspecting the public README for credentials in staged and tracked modes', () => {
+    const root = repository();
+    const synthetic = 'gh' + 'p_' + 'R'.repeat(36);
+    write(root, 'README.md', `# Pactwoven\n${synthetic}\n`);
+    git(root, ['add', '--', 'README.md']);
+    for (const tracked of [false, true]) {
+      const result = checkPublication({ root, tracked });
+      expect(result.findings).toContainEqual({ file: 'README.md', rule: 'GitHub token' });
+      expect(JSON.stringify(result)).not.toContain(synthetic);
+    }
+  });
+
   it('admits only the reviewed dependency patch path', () => {
     expect(inspectPath('packages/security-patches/picomatch-4.0.7.patch')).toBeNull();
     expect(inspectPath('packages/security-patches/picomatch-LICENSE')).toBeNull();

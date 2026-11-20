@@ -18,6 +18,7 @@ const rootFiles = new Set([
   '.gitignore', '.gitattributes', '.node-version', '.nvmrc', '.npmrc', '.dockerignore',
   'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', 'Dockerfile',
   'Makefile', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'Anchor.toml',
+  'README.md',
 ]);
 const codeRoots = new Set(['apps', 'services', 'packages', 'programs', 'scripts', 'infra', 'tests']);
 
@@ -34,7 +35,8 @@ export function inspectPath(file) {
   const lower = parts.map((part) => part.toLowerCase());
   const name = lower.at(-1);
   if (lower.slice(0, -1).some((part) => forbiddenDirectories.has(part))) return 'local, documentation, secret, or generated directory';
-  if (/\.(?:md|mdx|markdown|rst|adoc|docx?|pdf|rtf|odt|pptx?|xlsx?|csv|tsv|log|bak|tmp|tsbuildinfo)$/i.test(name)) return 'documentation, evidence, or generated artifact';
+  // The public root README is the only documentation exception.
+  if (file !== 'README.md' && /\.(?:md|mdx|markdown|rst|adoc|docx?|pdf|rtf|odt|pptx?|xlsx?|csv|tsv|log|bak|tmp|tsbuildinfo)$/i.test(name)) return 'documentation, evidence, or generated artifact';
   if (/^(?:\.env(?:\.|$)|\.envrc(?:\.|$)|\.dev\.vars(?:\.|$)|dotenv(?:\.|$))/.test(name)
     || /\.env(?:\.|$)/.test(name)
     || /^(?:env|environment)[._-](?:example|sample|template|local|development|production|staging)(?:[._-]|$)/.test(name)) return 'environment file (including examples)';

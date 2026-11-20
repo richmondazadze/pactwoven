@@ -9,6 +9,7 @@ import { demoActionLabels, demoAgentFocus, demoExactAmount, demoPaymentActionLab
 import { Icon, type IconName } from './icon';
 import { ReadingRegion } from './readable-content';
 import './demo-workspace.css';
+import './ux7-advice.css';
 
 const stageIcons: Record<DemoWorkspaceTarget, IconName> = { plan: 'split-route', team: 'connected-nodes', result: 'document-signature' };
 const displayTime = (time: string) => new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(time));
@@ -113,11 +114,11 @@ export function AgentActivityWorkspace({ activity, observing = true, result, res
 
 export function DemoWorkspaceResult({ result,actions }: { result: NonNullable<NativeAgentWork['result']>;actions?:ReactNode }) {
   const preview = demoTextPreview(result.summary);
-  return <section className="demo-workspace-result" aria-label="Your result"><div className="demo-workspace-result-heading"><Icon name="circle-check" size={24}/><div><p className="demo-workspace-eyebrow">Your result</p><h3>{result.title}</h3></div></div>
+  return <section className="demo-workspace-result ux7-advice-result" aria-label="Your result"><div className="demo-workspace-result-heading"><Icon name="circle-check" size={24}/><div><p className="demo-workspace-eyebrow">Your result</p><h3>{result.title}</h3></div></div>
     <p className="demo-workspace-result-summary">{preview.text}</p>
     {actions}
     {preview.shortened && <details className="demo-workspace-result-detail"><summary>Read full summary<Icon name="chevron-down" size={16}/></summary><ReadingRegion label="Full summary"><div className="readable-text">{result.summary}</div></ReadingRegion></details>}
-    {result.artifacts.map(artifact => <details key={artifact.id} className="demo-workspace-result-detail"><summary>{artifact.title}<Icon name="chevron-down" size={16}/></summary><ReadingRegion label={artifact.title}><div className="readable-text">{artifact.text}</div></ReadingRegion></details>)}
+    {result.artifacts.length > 0 && <div className="ux7-advice-documents"><h4>Saved documents</h4>{result.artifacts.map(artifact => <details key={artifact.id} className="demo-workspace-result-detail"><summary><Icon name="document-signature" size={20}/><span>{artifact.title}</span><Icon name="chevron-down" size={16}/></summary><ReadingRegion label={artifact.title}><div className="readable-text">{artifact.text}</div></ReadingRegion></details>)}</div>}
   </section>;
 }
 

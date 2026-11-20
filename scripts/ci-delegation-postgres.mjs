@@ -39,7 +39,7 @@ async function run(files, variables) {
 try {
   const directory = new URL('../packages/db/migrations/', import.meta.url);
   const files = (await readdir(directory)).filter(name => /^\d{4}_[a-z0-9_]+\.sql$/.test(name)).sort();
-  if (files.length !== 44 || files.at(-1) !== '0044_paid_tool_dispatch.sql') throw Error('Review the delegation upgrade sequence.');
+  if (files.length !== 49 || files.at(-1) !== '0049_native_work_execution.sql') throw Error('Review the delegation upgrade sequence.');
   const existing = await admin.query("SELECT 1 FROM pg_database WHERE datname IN ('pactwoven_native_delegation_ci','pactwoven_native_memory_ci','pactwoven_native_work_intent_ci','pactwoven_native_agent_work_list_ci','pactwoven_native_memory_instructions_ci')");
   if (existing.rowCount) throw Error('Refusing a reused delegation fixture.');
   await admin.query('CREATE DATABASE pactwoven_native_delegation_ci');

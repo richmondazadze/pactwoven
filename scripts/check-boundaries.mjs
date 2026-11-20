@@ -10,8 +10,13 @@ import { inspectSupplyChain } from './check-publication.mjs';
 export const allowedGraph = Object.freeze({
   'apps/web': ['packages/contracts'],
   'services/api': ['packages/contracts', 'packages/domain', 'packages/db', 'packages/observability'],
-  'services/coordinator': ['packages/contracts', 'packages/domain', 'packages/adapters'],
+  // Coordinator composition uses a native-task-only database role; no financial grants.
+  'services/coordinator': ['packages/contracts', 'packages/domain', 'packages/adapters', 'packages/db', 'services/connectors'],
   'services/connectors': ['packages/contracts', 'packages/adapters'],
+  // Separate server deployment; web never imports this composition or its secrets.
+  'services/native-host': ['services/coordinator', 'packages/contracts', 'packages/db', 'packages/service-identity'],
+  'services/native-api': ['services/api', 'packages/contracts', 'packages/db', 'packages/service-identity'],
+  'packages/service-identity': [],
   'services/signer': ['packages/contracts', 'programs/pactwoven'],
   'packages/contracts': [],
   'packages/domain': ['packages/contracts'],

@@ -50,7 +50,9 @@ function checkStatus(meta: SolanaJsonObject, status: 'succeeded' | 'failed'): vo
 /** Structural RPC evidence only. This never establishes transfer or CPI success. */
 export function decodeSolanaTransactionEvidence(value: SolanaJsonValue, expectedSignature: string): SolanaTransactionEvidence {
   canonicalSolanaIdentity(expectedSignature, 64);
-  const result = solanaJsonObject(value, ['slot', 'blockTime', 'version', 'transaction', 'meta'], ['slot', 'version', 'transaction']);
+  const result = solanaJsonObject(value, ['slot', 'blockTime', 'version', 'transaction', 'meta', 'transactionIndex'], ['slot', 'version', 'transaction']);
+  // Optional provider metadata; it never establishes transfer or finality.
+  if (result.transactionIndex !== undefined) solanaSmallInteger(result.transactionIndex, Number.MAX_SAFE_INTEGER);
   const version = result.version === 'legacy' ? 'legacy' : isSolanaJsonNumber(result.version) && result.version.lexeme === '0' ? 0 : rejectSolana('UNSUPPORTED_VERSION');
   const transaction = solanaJsonObject(result.transaction, ['signatures', 'message']);
   const signatures = solanaJsonArray(transaction.signatures, 255).map(signature => canonicalSolanaIdentity(solanaJsonString(signature, 88), 64));

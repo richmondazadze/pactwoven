@@ -1,0 +1,74 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm build",
+  "regions": [
+    "iad1"
+  ],
+  "functions": {
+    "api/index.mjs": {
+      "maxDuration": 60
+    },
+    "api/consume.mjs": {
+      "maxDuration": 300,
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "pactwoven-native-advice-v1",
+          "retryAfterSeconds": 30,
+          "maxConcurrency": 1,
+          "maxDeliveries": 8
+        }
+      ]
+    },
+    "api/consume-delegated.mjs": {
+      "maxDuration": 300,
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "pactwoven-delegated-advice-v1",
+          "retryAfterSeconds": 30,
+          "maxConcurrency": 2,
+          "maxDeliveries": 8
+        }
+      ]
+    },
+    "api/recover.mjs": {
+      "maxDuration": 60,
+      "experimentalTriggers": [
+        {
+          "type": "schedule/v1beta"
+        }
+      ]
+    },
+    "api/consume-paid.mjs": {
+      "maxDuration": 300,
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "pactwoven-paid-computation-v1",
+          "retryAfterSeconds": 30,
+          "maxConcurrency": 1,
+          "maxDeliveries": 8
+        }
+      ]
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/health",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/internal/nudge",
+      "destination": "/api/index"
+    }
+  ],
+  "schedules": {
+    "native-recovery": {
+      "schedule": "*/15 * * * *",
+      "function": "api/recover"
+    }
+  }
+}

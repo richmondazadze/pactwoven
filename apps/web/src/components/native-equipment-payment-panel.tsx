@@ -12,6 +12,9 @@ import { useNativePaidToolControl,useNativePaidToolRead } from './native-paid-to
 import { useNativePaidEquipment } from './native-paid-equipment-hooks';
 import {useNativePaidHistory} from './native-paid-history-hooks';
 import { RecordedEquipmentContributors,useNativePaidContributors } from './native-paid-contributors';
+import { SandboxReservationRun } from './sandbox-reservation-run';
+import { paidEquipmentSelection } from '../lib/native-paid-equipment';
+import { paidHistoryRecord } from '../lib/native-paid-history';
 import { NativePaidToolReceipt } from './native-paid-tool-receipt';
 import { useWorkspace } from './workspace-provider';
 import { ActionLabel, Alert, LoadingState } from './ui';
@@ -67,6 +70,7 @@ function EquipmentPanel({siteId,rootTaskId,workState,workControlVersion,evidence
   const receipt=useNativePaidToolRead(siteId,rootTaskId,operationId??'none',Boolean(operationId)&&observing),controls=useNativePaidToolControl(siteId,rootTaskId,operationId??'none');
   const equipment=useNativePaidEquipment(siteId,rootTaskId,revisionKey,receipt.purchase,observing&&!receipt.error&&evidenceAvailable);
   const history=useNativePaidHistory(siteId,rootTaskId,revisionKey,receipt.purchase,observing&&!receipt.error&&Boolean(receipt.purchase?.state==='completed'&&(!evidenceAvailable||receipt.purchase.resultApplicability!=='current')));
+  const sandboxSelection=receipt.purchase?(paidHistoryRecord(receipt.purchase,history.data)?.equipment??(evidenceAvailable?paidEquipmentSelection(receipt.purchase,equipment.data):null)):null;
   const quote=discovery.data?.quote??null,review=reviewVisible?attempt?.review??null:null;
   const quoteCurrent=Boolean(quote&&discovery.data?.state==='awaiting_review'&&(!attempt||JSON.stringify(quote)===JSON.stringify(attempt.quote)));
   const deadline=review?.confirmBy??quote?.reviewBy;
@@ -155,6 +159,7 @@ function EquipmentPanel({siteId,rootTaskId,workState,workControlVersion,evidence
       </footer>
     </EquipmentPaymentDialog>
     {operationId&&(receipt.purchase?<NativePaidToolReceipt view={receipt.purchase} resultUnavailable={!evidenceAvailable||receipt.purchase.resultApplicability!=='current'} history={history.data} historyLoading={history.enabled&&!history.data&&!history.error} equipment={equipment.data} equipmentLoading={equipment.enabled&&!equipment.data&&!equipment.error} equipmentUnavailable={Boolean(equipment.error)} onRefreshEquipment={equipment.enabled?()=>void equipment.refetch():undefined} observing={observing&&!receipt.error} pending={controls.busy} onAction={async action=>{if(action.action==='check'){await refresh();return;}if(!receipt.purchase||action.version!==receipt.purchase.version||action.operationId!==receipt.purchase.operationId)throw new RequestError('REVIEW_CHANGED','Refresh this receipt.');await controls.act(receipt.purchase,action.action);await refresh();}}/>:<Alert title={receipt.error?'Original purchase needs checking':'Loading the original purchase'} tone="blue">{receipt.error?<p>This receipt could not be refreshed. Check the same purchase again.</p>:<LoadingState variant="compact" announce={false} active={observing} label="Checking recorded payment and delivery"/>}<button className="button secondary" disabled={!observing||receipt.isFetching} onClick={()=>void receipt.refetch()}>Refresh original receipt</button></Alert>)}
+    {receipt.purchase?.state==='completed'&&receipt.purchase.transaction?.state==='finalized'&&sandboxSelection?.status==='feasible'&&!receipt.error&&<SandboxReservationRun key={`${operationId}:${sandboxSelection.requestHash}`} items={sandboxSelection.items} budgetMinor={sandboxSelection.budgetMinor} enabled={observing&&!controls.busy}/>}
     {operationId&&controls.hasPending&&<Alert title="Check the original payment control" tone="blue"><p>A previous cancellation or revocation needs confirmation.</p><button className="button secondary" disabled={!observing||controls.busy} onClick={()=>void controls.recover().then(refresh).catch(()=>{})}>Check saved payment control</button></Alert>}
     {operationId&&controls.error!==null&&<p role="alert">The payment control could not be confirmed. Keep and check the original request before making another change.</p>}
   </section>;

@@ -5,6 +5,7 @@ import type { NativeWorkTeamActivity } from '../../../../packages/contracts/src/
 import { currentTeamActivity } from '../lib/native-work-team-activity';
 import { canObserveAgentWork } from './native-agent-work-hooks';
 import './native-work-team-activity.css';
+import { PendingMark } from './async-feedback';
 
 /** Pointers identify leased workers, never simulated clicks or browser actions. */
 export function NativeWorkTeamActivityPanel({ activity, work, observing }: {
@@ -25,7 +26,7 @@ export function NativeWorkTeamActivityPanel({ activity, work, observing }: {
     <header><div><p className="demo-workspace-eyebrow">Your team now</p><h2 id={heading}>Specialists at work</h2></div><span>Coordinator waiting for the team</span></header>
     <ul aria-label="Current specialist activity">{current.agents.map(agent => <li key={agent.id} data-state={agent.state}>
       <span className="native-team-pointer" aria-hidden="true">{agent.state === 'working' ? <svg viewBox="0 0 24 28" width="18" height="21" fill="currentColor"><path d="M2 1 21 15 12 17 8 25Z" stroke="white" strokeWidth="2" strokeLinejoin="round"/></svg> : <span className="native-team-wait-dot"/>}</span>
-      <div><strong>{agent.label}</strong><span>{agent.state === 'working' ? 'Working' : 'Waiting to start'}</span></div>
+      <div><strong>{agent.label}</strong><span className="native-team-state">{agent.state === 'working' && <PendingMark pending/>}{agent.state === 'working' ? 'Working' : 'Waiting to start'}</span></div>
     </li>)}</ul>
     <p className="agent-work-caption">Pointers identify specialists currently working on their assignments.</p>
   </section>;

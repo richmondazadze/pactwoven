@@ -9,7 +9,7 @@ import { inboxPageSchema, inboxPath, inboxRequestPath, inboxScanCopy } from '../
 import { useAgentWorkBinding } from './native-agent-work-hooks';
 import { useNativeTaskObservation } from './native-task-hooks';
 import { useWorkspace } from './workspace-provider';
-import { Alert, EmptyState, LoadingState, PageHeading, StatusBadge } from './ui';
+import { ActionLabel, Alert, EmptyState, LoadingState, PageHeading, StatusBadge } from './ui';
 import { Icon } from './icon';
 import '../app/native-tasks.css';
 
@@ -44,11 +44,11 @@ function InboxItems({ siteId }: { siteId: string }) {
   const last = data?.pages.at(-1), complete = last?.scanComplete === true, busy = query.isFetching || !observing;
   const cursorConflict = Boolean(last?.nextCursor && !query.hasNextPage);
   return <section className="native-work-panel" aria-labelledby={heading}><div className="native-panel-heading"><div><h2 id={heading}>Needs your attention</h2><p>Current review requests from the agent team.</p></div>
-    <button className="button secondary" disabled={busy} onClick={() => void client.resetQueries({ queryKey: key, exact: true })}>Refresh inbox</button></div>
+    <button className="button secondary" disabled={busy} onClick={() => void client.resetQueries({ queryKey: key, exact: true })}><ActionLabel pending={query.isFetching && !query.isFetchingNextPage} label={query.isFetching && !query.isFetchingNextPage ? 'Refreshing…' : 'Refresh inbox'} reserve={['Refreshing…','Refresh inbox']}/></button></div>
     {!observing && <Alert title="Updates are paused" tone="blue"><p>Reconnect and return to this tab to refresh your inbox. Your team’s permitted background work can continue.</p></Alert>}
     {(query.error || cursorConflict) && <Alert title="Inbox needs checking" tone="red"><p>{cursorConflict ? 'The next page could not be verified. Refresh the inbox before continuing.' : agentWorkError(query.error)}</p></Alert>}
     {data && query.error && <p>Showing the last checked work. Refresh for current status.</p>}
-    {!data && !query.error && <LoadingState label={observing ? 'Checking your work' : 'Waiting for a connection'}/>}
+    {!data && !query.error && <LoadingState variant="list" active={observing} label={observing ? 'Checking your work' : 'Waiting for a connection'}/>}
     {data && <>
       {items.length === 0 ? <EmptyState icon="circle-check" title={complete ? 'No review requests found.' : 'No review requests on this page.'}>
         {inboxScanCopy(0, complete, data.pageParams[0] === undefined)}</EmptyState>
@@ -57,7 +57,7 @@ function InboxItems({ siteId }: { siteId: string }) {
           <StatusBadge tone="amber">Needs review</StatusBadge><Icon name="arrow-right" className="native-task-row-arrow" size={18}/></Link></li>)}</ul>}
       <div className="native-work-footer"><p role="status" aria-live="polite">{query.isFetchingNextPage ? 'Checking more work…' : inboxScanCopy(items.length, complete, data.pageParams[0] === undefined)}</p>
         {query.hasNextPage && <button className="button secondary" disabled={busy} onClick={() => void query.fetchNextPage({ cancelRefetch: false })}>
-          {query.isFetchingNextPage ? 'Checking more work…' : 'Check more work'}</button>}</div>
+          <ActionLabel pending={query.isFetchingNextPage} label={query.isFetchingNextPage ? 'Checking more work…' : 'Check more work'} reserve={['Checking more work…','Check more work']}/></button>}</div>
     </>}
   </section>;
 }

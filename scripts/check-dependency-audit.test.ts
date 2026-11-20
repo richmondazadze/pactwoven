@@ -155,9 +155,15 @@ describe('live-audit data cannot become a blanket exception', () => {
     (v: any) => { v.newScope = true; },
     (v: any) => { v.title = 'changed scope'; },
   ])('requires review for a changed advisory scope %#', mutate => { const value = audit(); mutate(value.advisories['1247710']); expect(() => validateMitigationScope(parseAudit(value))).toThrow(); });
-  it('rejects disappearance instead of treating a missing record as patched', () => {
+  it('rejects a missing advisory with an inconsistent failing exit status', () => {
     const value: any = audit(); value.advisories = {}; value.metadata.vulnerabilities.high = 0;
     expect(() => validateMitigationScope(parseAudit(value))).toThrow();
+  });
+  it('accepts a consistent clean report without claiming an upstream fix', () => {
+    const value: any = audit(); value.advisories = {}; value.metadata.vulnerabilities.high = 0;
+    const parsed = parseAuditResult(result(JSON.stringify(value), 0));
+    expect(validateMitigationScope(parsed)).toMatchObject({ advisory: null, version: '4.0.7', reported: false });
+    expect(validateMitigationScope(parsed).paths).toHaveLength(11);
   });
   it.each(['high', 'critical'])('rejects another %s advisory', severity => {
     const value: any = audit(); value.advisories['1247711'] = { ...value.advisories['1247710'], id: 1247711, github_advisory_id: 'GHSA-aaaa-bbbb-cccc', severity };

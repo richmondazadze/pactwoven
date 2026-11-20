@@ -99,8 +99,8 @@ function run(command, args, cwd, timeout = 30_000, maxBuffer = MAX_BYTES) {
 }
 
 export function parseAuditResult(result) {
-  // This temporary gate requires the known high advisory to remain visibly reported.
-  const audit = strictJson(validateProcessResult(result, 1));
+  // A successful clean response and a reported high finding have different exit codes.
+  const audit = strictJson(validateProcessResult(result, result?.status === 0 ? 0 : 1));
   need(object(audit) && sameSet(Object.keys(audit), ['advisories', 'metadata']) && object(audit.advisories) && object(audit.metadata), 'Unknown audit document shape.', 2);
   const counts = Object.fromEntries(SEVERITIES.map(s => [s, 0]));
   const ids = new Set(), ghsas = new Set();
@@ -126,10 +126,15 @@ export function parseAuditResult(result) {
   for (const s of SEVERITIES) need(Number.isSafeInteger(audit.metadata.vulnerabilities[s]) && audit.metadata.vulnerabilities[s] === counts[s], 'Advisory and severity totals disagree.', 2);
   for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'totalDependencies']) need(Number.isSafeInteger(audit.metadata[field]) && audit.metadata[field] >= 0, 'Invalid dependency totals.', 2);
   need(audit.metadata.totalDependencies > 0 && ['dependencies', 'devDependencies', 'optionalDependencies'].every(k => audit.metadata[k] <= audit.metadata.totalDependencies), 'Inconsistent dependency totals.', 2);
+  need(result.status === (counts.high + counts.critical > 0 ? 1 : 0), 'Audit exit status disagrees with severity totals.', 2);
   return audit;
 }
 
 export function validateMitigationScope(audit) {
+  // A clean registry report does not remove the pinned local mitigation or
+  // establish that the previously reported vulnerability is patched upstream.
+  if (Object.keys(audit.advisories).length === 0 && SEVERITIES.every(s => audit.metadata.vulnerabilities[s] === 0))
+    return { advisory: null, version: '4.0.7', paths: [...PATHS], reported: false };
   const target = audit.advisories['1247710'];
   const expected = {
     id: 1247710, title: 'picomatch vulnerable to ReDoS through single-branch repeated extglobs',
@@ -143,7 +148,7 @@ export function validateMitigationScope(audit) {
   const finding = target.findings[0];
   need(sameSet(Object.keys(finding), ['version', 'paths', 'dev', 'optional', 'bundled']) && finding.version === '4.0.7' && finding.dev === false && finding.optional === false && finding.bundled === false && sameSet(finding.paths, PATHS), 'Reviewed dependency path/version scope changed.');
   need(Object.values(audit.advisories).every(a => a.github_advisory_id === ADVISORY || !['high', 'critical'].includes(a.severity)), 'Another high or critical advisory blocks release.');
-  return { advisory: ADVISORY, version: '4.0.7', paths: [...PATHS] };
+  return { advisory: ADVISORY, version: '4.0.7', paths: [...PATHS], reported: true };
 }
 
 export function validateLockEvidence({ workspaceText, lockText, installedLockText, patchBytes, nextConfigBytes, manifestText }) {
@@ -418,7 +423,8 @@ export function checkDependencyAudit() {
   verifyInstalledGraph(root, local.lock, local.listed, local.listedLock);
   need(regularFile(path.join(root, 'pnpm-lock.yaml')).equals(regularFile(path.join(root, 'node_modules/.pnpm/lock.yaml'))), 'Installed lock changed during the gate.');
   return {
-    status: 'reported-mitigated', message: '1 high advisory remains reported by pnpm; the exact verified local Picomatch patch mitigates the reviewed external dependency scope. Repeated plus/star extglobs are treated literally.',
+    status: scope.reported ? 'reported-mitigated' : 'no-advisories-reported',
+    message: scope.reported ? '1 high advisory remains reported by pnpm; the exact verified local Picomatch patch mitigates the reviewed external dependency scope. Repeated plus/star extglobs are treated literally.' : 'The current registry audit reports no advisories. The pinned Picomatch mitigation, installed-graph checks and bounded probes remain required; this does not establish an upstream fix.',
     ...scope, patchSha256: PATCH_SHA, commit: after.head,
     installedCopies: local.installed.copies, boundedProbeChecks: local.probes.checks,
     residual: RESIDUAL, rawAudit: audit,

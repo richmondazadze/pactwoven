@@ -16,6 +16,24 @@ const valid = () => ({
 });
 
 describe('development environment boundary', () => {
+  it('requires native task access on the same protected database with a separate login', () => {
+    const named = (name: string) => fixtureDatabaseUrl(`postgresql://${name}@127.0.0.1:55439/pactwoven_dev`);
+    const values = { ...valid(), PROVISIONER_DATABASE_URL: named('provisioner'), ACCESS_DATABASE_URL: named('access'),
+      MANDATE_DATABASE_URL: named('mandate'), CUSTODY_SETUP_WRITER_DATABASE_URL: named('custody_writer'),
+      CUSTODY_SETUP_VERIFIER_DATABASE_URL: named('custody_verifier'), FINANCIAL_POLICY_AUTHORIZER_DATABASE_URL: named('financial_authorizer'),
+      FINANCIAL_POLICY_VERIFIER_DATABASE_URL: named('financial_verifier') };
+    expect(readDevelopmentConfig({ ...values, NATIVE_TASK_API_DATABASE_URL: named('native_api') }).credentials?.nativeTaskDatabaseUrl).toBe(named('native_api'));
+    expect(readDevelopmentConfig(valid()).credentials).not.toHaveProperty('nativeTaskDatabaseUrl');
+    for (const value of ['', named('runtim%65'), named('provisioner'), named('access'), named('mandate'), named('custody_writer'),
+      named('custody_verifier'), named('financial_authorizer'), named('financial_verifier'),
+      named('native_api').replace(':55439', ':55440'), named('native_api') + '?options=role%3Downer']) {
+      expect(() => readDevelopmentConfig({ ...values, NATIVE_TASK_API_DATABASE_URL: value })).toThrow(ConfigurationError);
+    }
+    expect(() => readDevelopmentConfig({ NATIVE_TASK_API_DATABASE_URL: named('native_api') })).toThrow(ConfigurationError);
+    const hosted = (name: string) => fixtureDatabaseUrl(`postgresql://${name}@ep-fixture.aws.neon.tech/pactwoven_dev?sslmode=verify-full`);
+    expect(readDevelopmentConfig({ ...valid(), DATABASE_URL: hosted('runtime'), NATIVE_TASK_API_DATABASE_URL: hosted('native_api') }).credentials?.nativeTaskDatabaseUrl).toBe(hosted('native_api'));
+    expect(() => readDevelopmentConfig({ ...valid(), DATABASE_URL: hosted('runtime'), NATIVE_TASK_API_DATABASE_URL: hosted('native_api').replace('verify-full', 'require') })).toThrow(ConfigurationError);
+  });
   it('requires the complete financial pair on the same database with distinct capability identities', () => {
     const named = (name: string) => fixtureDatabaseUrl(`postgresql://${name}@127.0.0.1:55439/pactwoven_dev`);
     const values = { ...valid(), PROVISIONER_DATABASE_URL: named('provisioner'), ACCESS_DATABASE_URL: named('access'),

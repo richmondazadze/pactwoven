@@ -5,8 +5,12 @@ export class RequestError extends Error {
   constructor(public readonly code: string, message: string, public readonly status = 0, public readonly correlationId?: string, public readonly fields?: Record<string, string[]>) { super(message); this.name = 'RequestError'; }
 }
 export type TokenSource = () => Promise<string | null>;
-export async function apiRequest<T>(path: string, schema: z.ZodType<T>, getToken: TokenSource, options: { signal?: AbortSignal; body?: unknown; idempotencyKey?: string; beforeDispatch?: () => undefined } = {}): Promise<T> {
-  const base = getApiBase();
+export type ApiRequestOptions = { signal?: AbortSignal; body?: unknown; idempotencyKey?: string; beforeDispatch?: () => undefined };
+export function apiRequest<T>(path: string, schema: z.ZodType<T>, getToken: TokenSource, options: ApiRequestOptions = {}): Promise<T> {
+  return requestApiAtBase(getApiBase(), path, schema, getToken, options);
+}
+// Shared authenticated transport. Callers choose only a validated configured base.
+export async function requestApiAtBase<T>(base: string | null, path: string, schema: z.ZodType<T>, getToken: TokenSource, options: ApiRequestOptions = {}): Promise<T> {
   if (!base) throw new RequestError('API_NOT_CONFIGURED', 'The workspace service is not connected yet.');
   if (!path.startsWith('/v1/')) throw new RequestError('INVALID_PATH', 'This request is not supported.');
   options.signal?.throwIfAborted();

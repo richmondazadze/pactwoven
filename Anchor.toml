@@ -1,0 +1,18 @@
+[toolchain]
+anchor_version = "1.2.2"
+solana_version = "4.1.2"
+
+[features]
+# Hash-derived PDAs are supplied explicitly; onchain seed validation is unchanged.
+resolution = false
+skip-lint = false
+
+[programs.localnet]
+pactwoven = "5UaivPxV8oQypy5mxmQCzvZXHVSMkPsZ2TKJvszyebVG"
+
+[provider]
+cluster = "Localnet"
+wallet = ".local/chain0/local-payer.json"
+
+[workspace]
+members = ["programs/pactwoven"]

@@ -1,0 +1,33 @@
+[package]
+name = "pactwoven"
+version = "0.1.0"
+description = "Pactwoven initialization-only custody program"
+edition = "2021"
+rust-version = "1.95"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "pactwoven"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+anchor-debug = ["anchor-lang/anchor-debug", "anchor-spl/anchor-debug"]
+custom-heap = []
+custom-panic = []
+# Upstream IDL trait generation requires these host-only external type definitions.
+# The normal SBF build does not enable idl-build or token_2022.
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "anchor-spl/token_2022"]
+
+[dependencies]
+anchor-lang = { version = "=1.2.2", default-features = false, features = ["solana-v3"] }
+anchor-spl = { version = "=1.2.2", default-features = false, features = ["solana-v3", "token"] }
+solana-sha256-hasher = { version = "=3.0.0", features = ["sha2"] }
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ['cfg(target_os, values("solana"))']

@@ -1,0 +1,126 @@
+/* Marketing motion extends the shared timing curve and feedback/panel tokens. */
+.marketing{--mk-reveal:1100ms;--mk-stagger:80ms;--mk-travel:40px;--mk-scene-ease:cubic-bezier(.37,0,.63,1);--mk-hero:1300ms;--mk-scroll-response:180ms}
+.mk-header-depth{position:absolute;inset:0;pointer-events:none;box-shadow:0 6px 24px -18px #15376166;opacity:0}
+.mk-reading-progress{position:absolute;inset:auto 0 -1px;height:2px;background:var(--blue);transform:scaleX(0);transform-origin:left;pointer-events:none}
+.mk-header-inner{position:relative}
+.mk-footer-bottom{justify-content:space-between}
+.mk-process-thread>span{transform-origin:left center}
+.mk-tool-integrations-grid{overflow:clip}
+.mk-button,.mk-text-link,.mk-footer nav a,.mk-announcement a,.mk-sign-in{position:relative}
+.mk-text-link::after,.mk-footer nav a::after,.mk-sign-in::after{content:'';position:absolute;left:0;right:0;bottom:-1px;height:1px;background:currentColor;transform:scaleX(0);transform-origin:left;transition:transform var(--panel) var(--ease)}
+.mk-footer nav a::after,.mk-sign-in::after{bottom:3px}
+.mk-announcement a>.icon,.mk-case-card>span>.icon,.mk-case-card>.icon,.mk-feature-icon>.icon,.mk-demo-follow>.icon,.mk-demo-play>.icon,.mk-menu-button>.icon,.mk-menu-close>.icon{transition:transform var(--panel) var(--ease),opacity var(--feedback) var(--ease)}
+.mk-case-card{position:relative;isolation:isolate;transition:transform var(--panel) var(--ease),border-color var(--feedback) var(--ease),background-color var(--feedback) var(--ease)}
+.mk-case-card::before{content:'';position:absolute;inset:0;border-radius:inherit;box-shadow:0 16px 32px -24px #155eef66;opacity:0;transition:opacity var(--panel) var(--ease);pointer-events:none;z-index:-1}
+.mk-feature,.mk-status-card{position:relative;isolation:isolate}
+.mk-feature::after,.mk-status-card::after{content:'';position:absolute;inset:0;z-index:-1;border-radius:inherit;background:#edf4ff;opacity:0;transition:opacity var(--panel) var(--ease);pointer-events:none}
+.mk-feature-icon{transition:background-color var(--panel) var(--ease)}
+.mk-explorer-tabs>button::after{content:'';position:absolute;inset:auto 0 -1px;height:2px;background:var(--blue);transform:scaleX(0);transform-origin:left;transition:transform var(--panel) var(--ease)}
+.mk-explorer-tabs>button[aria-selected=true]::after{transform:scaleX(1)}
+.mk-demo-tabs button{position:relative}
+.mk-demo-tabs button::after{content:'';position:absolute;left:8px;right:8px;bottom:2px;height:2px;border-radius:2px;background:var(--blue);transform:scaleX(0);transition:transform var(--panel) var(--ease)}
+.mk-demo-tabs button[aria-selected=true]::after{transform:scaleX(1)}
+.mk-menu-button,.mk-menu-close,.mk-demo-play,.mk-demo-follow{transition:background-color var(--feedback) var(--ease),border-color var(--feedback) var(--ease),color var(--feedback) var(--ease)}
+.mk-demo-follow{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;min-height:44px;margin-top:8px;background:#edf4ff;border:1px solid #c9dafa;border-radius:8px;color:#164dbe;font-size:11px}
+.mk-demo[data-following=true] .mk-agent-active{border-color:#7ea9f7;background:#edf4ff}
+.mk-map-connectors::after{content:'';position:absolute;top:-1px;left:0;right:0;height:1px;background:var(--blue);transform:scaleX(0);transform-origin:center;transition:transform var(--panel) var(--ease)}
+.mk-demo[data-step="1"] .mk-map-connectors::after,.mk-demo[data-step="2"] .mk-map-connectors::after,.mk-demo[data-step="3"] .mk-map-connectors::after,.mk-demo[data-step="4"] .mk-map-connectors::after{transform:scaleX(1)}
+.mk-agent,.mk-coordinator{transition:border-color var(--panel) var(--ease),background-color var(--panel) var(--ease)}
+.mk-agent>.icon{transition:color var(--feedback) var(--ease)}
+.mk-journey-intro{max-width:640px;margin-bottom:40px}
+.mk-journey-layout{display:grid;grid-template-columns:1fr 1fr;gap:80px;align-items:start}
+.mk-journey-chapters{margin-top:0}
+.mk-journey-stage{min-width:0}
+.mk-journey-hint{font-size:11px;margin-bottom:14px}
+.mk-journey-step{position:relative}
+.mk-journey-step::before{content:'';position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--blue);transform:scaleX(0);transform-origin:left;transition:transform var(--panel) var(--ease)}
+.mk-journey-step .mk-step-number{transition:background-color var(--feedback) var(--ease),border-color var(--feedback) var(--ease),color var(--feedback) var(--ease)}
+.mk-journey-step[data-current=true]::before{transform:scaleX(1)}
+.mk-journey-step[data-current=true] .mk-step-number{background:var(--blue);border-color:var(--blue);color:#fff}
+.mk-mobile-panel nav a{transition:color var(--feedback) var(--ease),background-color var(--feedback) var(--ease)}
+@starting-style{.mk-menu-overlay{opacity:0}}
+.mk-menu-overlay{transition:opacity var(--panel) var(--ease)}
+.mk-menu-overlay[data-state=closed]{opacity:0}
+@media(min-width:1100px) and (min-height:780px) and (hover:hover) and (pointer:fine) and (prefers-reduced-motion:no-preference){
+  .mk-journey[data-guided=true] .mk-journey-stage{position:sticky;top:120px}
+  .mk-journey[data-guided=true] .mk-journey-step{min-height:56vh;align-content:center;padding-block:60px}
+  .mk-journey[data-guided=true] .mk-journey-step:first-child{padding-top:20px;min-height:44vh}
+}
+@media(max-width:1099px){.mk-journey-layout{gap:40px}}
+@media(max-width:760px){
+  .mk-journey-layout{grid-template-columns:1fr;gap:30px}
+  .mk-journey-intro{margin-bottom:24px}
+  .mk-process-thread>span{transform-origin:center top}
+  .mk-journey-hint{font-size:10px}
+}
+@media(hover:hover) and (pointer:fine){
+  .mk-text-link:hover::after,.mk-footer nav a:hover::after,.mk-sign-in:hover::after{transform:scaleX(1)}
+  .mk-sign-in:hover,.mk-announcement a:hover{color:var(--blue)}
+  .mk-announcement a:hover>.icon{transform:translateX(3px)}
+  .mk-button:hover>.icon,.mk-text-link:hover>.icon{transform:translateX(3px)}
+  .mk-case-card:hover{transform:translateY(-3px)}
+  .mk-case-card:hover::before{opacity:1}
+  .mk-case-card:hover>span>.icon{transform:translateX(4px)}
+  .mk-case-card:hover>.icon{transform:translateY(-2px)}
+  .mk-feature:hover::after,.mk-status-card:hover::after{opacity:.5}
+  .mk-feature:hover .mk-feature-icon{background:#e2edff}
+  .mk-feature:hover .mk-feature-icon>.icon{transform:translateY(-2px)}
+  .mk-menu-button:hover,.mk-menu-close:hover{background:#edf4ff;border-color:#b8cdf0}
+  .mk-menu-button:hover>.icon{transform:translateY(-1px)}
+  .mk-menu-close:hover>.icon{transform:rotate(90deg)}
+  .mk-demo-follow:hover{background:#e3edff}
+  .mk-demo-follow:hover>.icon,.mk-demo-play:hover>.icon{transform:translateX(2px)}
+  .marketing .disclosure button:hover{color:var(--blue)}
+  .mk-mobile-panel nav a:hover{color:var(--blue);background:#f7f9ff}
+}
+/* Press feedback changes the affordance, never the control's dimensions. */
+.mk-button:active>.icon,.mk-text-link:active>.icon,.mk-demo-play:active>.icon{transform:translateX(1px)}
+.mk-case-card:active{transform:translateY(-1px)}
+.mk-menu-button:active,.mk-menu-close:active,.mk-demo-follow:active{background:#dce8ff}
+.marketing a:focus-visible,.marketing button:focus-visible,.mk-mobile-panel a:focus-visible,.mk-mobile-panel button:focus-visible{outline:2px solid var(--blue);outline-offset:5px}
+@media(prefers-reduced-motion:reduce){
+  .marketing *,.marketing *::before,.marketing *::after,.mk-mobile-panel *,.mk-menu-overlay{animation:none!important;transition:none!important}
+  .mk-case-card:hover,.mk-case-card:active,.marketing a:hover>.icon,.marketing button:hover>.icon,.mk-feature:hover .mk-feature-icon>.icon{transform:none}
+}
+html[data-motion=off] .marketing *::before,html[data-motion=off] .marketing *::after,html[data-motion=reduced] .marketing *::before,html[data-motion=reduced] .marketing *::after,html[data-input=keyboard] .marketing *::before,html[data-input=keyboard] .marketing *::after{animation:none!important;transition:none!important}
+html[data-motion=off] .mk-case-card:hover,html[data-motion=reduced] .mk-case-card:hover,html[data-input=keyboard] .mk-case-card:hover{transform:none}
+@media(forced-colors:active){.mk-reading-progress,.mk-journey-step::before,.mk-map-connectors::after{background:Highlight}.mk-case-card::before,.mk-feature::after,.mk-status-card::after{display:none}}
+/* Keep the pinned example's controls in view on ordinary laptop screens. */
+@media(min-width:1100px) and (hover:hover) and (pointer:fine){
+  .mk-journey .mk-demo{padding:16px}
+  .mk-journey .mk-demo-top{margin-bottom:12px}
+  .mk-journey .mk-demo-brief{padding:12px}
+  .mk-journey .mk-agent-map{padding:12px 8px 10px}
+  .mk-journey .mk-demo-detail{min-height:0;padding:14px 16px}
+  .mk-journey .mk-demo-view{min-height:90px}
+  .mk-journey .mk-demo-evidence{margin-top:10px;padding-top:8px}
+  .mk-journey .mk-demo-tabs{margin-top:8px}
+  .mk-journey .mk-demo-follow{margin-top:4px}
+}
+
+/* Scene pacing uses easeInOutSine; direct controls retain their feedback timing. */
+@media(prefers-reduced-motion:no-preference){
+  html:not([data-motion=off]):not([data-motion=reduced]):not([data-input=keyboard]) .mk-hero-copy>*{
+    animation:mk-hero-copy-in var(--mk-copy-duration,var(--mk-hero)) var(--mk-copy-delay,0ms) var(--mk-scene-ease) both;
+  }
+  .mk-hero-copy>.mk-kicker{--mk-copy-delay:40ms;--mk-copy-duration:1000ms}
+  .mk-hero-copy>h1{--mk-copy-delay:100ms}
+  .mk-hero-copy>.mk-lead{--mk-copy-delay:260ms;--mk-copy-duration:1150ms}
+  .mk-hero-copy>.mk-actions{--mk-copy-delay:400ms;--mk-copy-duration:1000ms}
+  .mk-hero-copy>.mk-hero-note{--mk-copy-delay:500ms;--mk-copy-duration:900ms}
+  html:not([data-motion=off]):not([data-motion=reduced]):not([data-input=keyboard]) :is(.mk-home-hero>.mk-demo,.mk-page-hero>.mk-evidence,.mk-page-hero>.mk-detail-summary){
+    animation:mk-hero-visual-in 1400ms 220ms var(--mk-scene-ease) both;
+  }
+  .marketing [data-reveal=pending]{opacity:0;transform:translate3d(0,var(--mk-travel),0)}
+}
+@keyframes mk-hero-copy-in{from{opacity:0;transform:translate3d(0,36px,0)}to{opacity:1;transform:none}}
+@keyframes mk-hero-visual-in{from{opacity:0;transform:translate3d(0,48px,0) scale(.975)}to{opacity:1;transform:none}}
+/* Focus, accessibility preferences and print never depend on a reveal trigger. */
+.marketing [data-reveal=pending]:focus-within{opacity:1!important;transform:none!important}
+html[data-input=keyboard] .marketing [data-reveal=pending],html[data-motion=off] .marketing [data-reveal=pending],html[data-motion=reduced] .marketing [data-reveal=pending]{opacity:1!important;transform:none!important}
+.marketing .mk-hero-copy:focus-within>*,.marketing .mk-home-hero>.mk-demo:focus-within{animation:none!important}
+@media(prefers-reduced-motion:reduce){.marketing [data-reveal=pending]{opacity:1!important;transform:none!important}}
+@media(print){.marketing *{animation:none!important;transition:none!important}.marketing [data-revealed],.marketing [data-reveal=pending]{opacity:1!important;transform:none!important}.mk-journey-stage{position:static!important}}
+@media(max-width:760px){.marketing{--mk-travel:28px}}
+/* A completed/interrupted entrance must not restart when input mode changes. */
+.marketing[data-hero-settled] .mk-hero-copy>*,.marketing[data-hero-settled] :is(.mk-home-hero>.mk-demo,.mk-page-hero>.mk-evidence,.mk-page-hero>.mk-detail-summary){animation:none!important}

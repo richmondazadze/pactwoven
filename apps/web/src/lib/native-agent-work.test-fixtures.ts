@@ -1,0 +1,7 @@
+import { NativeWorkIntentReviewSchema } from '../../../../packages/contracts/src/native-work-intent';
+import { NativeAgentWorkSchema } from '../../../../packages/contracts/src/native-agent-work';
+export const agentWorkInputFixture=()=>({siteId:'site_one',title:'Choose office chairs',prompt:'Compare the supplied office chair options.',selections:[],continuesAfterSignOut:true as const});
+export const agentWorkReviewFixture=()=>{const now=Date.now();return NativeWorkIntentReviewSchema.parse({id:'review_internal',token:'a'.repeat(64),preparedAt:new Date(now).toISOString(),confirmBy:new Date(now+300000).toISOString(),expiresAt:new Date(now+86400000).toISOString(),
+  body:{title:'Choose office chairs',prompt:'Compare the supplied office chair options.',siteName:'Chicago office',selectedNotes:[],allowedWork:['Research public sources','Draft advice'],continuesAfterSignOut:true,externalEffects:'forbidden'}});};
+export const agentWorkFixture=()=>NativeAgentWorkSchema.parse({id:'root_internal',title:'Choose office chairs',prompt:'Compare the supplied office chair options.',siteName:'Chicago office',state:'working',statusText:'The agent team is working',controlVersion:3,
+  updatedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+86400000).toISOString(),availableActions:['pause','cancel'],progress:{summary:'Comparing the provided descriptions.',historical:false,steps:[{id:'step_internal',title:'Review the supplied sources',state:'active'}]},result:null,evidenceUnavailable:false,continuesAfterSignOut:true,externalEffects:'forbidden'});

@@ -12,7 +12,12 @@ const authoredMigrationFiles = ['0001_foundation.sql', '0002_organization_bootst
   '0008_financial_authority_fences.sql', '0009_custody_setup_owner_bindings.sql', '0010_custody_setup_private_reads.sql',
   '0011_financial_policy_authority.sql', '0012_financial_policy_private_reads.sql', '0013_financial_policy_preparation.sql',
   '0014_supplier_identity_versions.sql', '0015_supplier_relationship_authority.sql', '0016_supplier_observer_resolution.sql',
-  '0017_managed_postgres_qualification.sql', '0018_bootstrap_site_read_grant.sql', '0019_financial_policy_request_fences.sql'];
+  '0017_managed_postgres_qualification.sql', '0018_bootstrap_site_read_grant.sql', '0019_financial_policy_request_fences.sql',
+  '0020_supplier_admission.sql', '0021_native_tasks.sql', '0022_native_dispatch.sql', '0023_native_task_search.sql', '0024_native_completion_freshness.sql',
+  '0025_native_provider_authority.sql', '0026_native_delegation.sql', '0027_native_memory.sql', '0028_native_memory_notes.sql',
+  '0029_native_delegation_root_lifecycle.sql', '0030_native_work_intent.sql', '0031_native_agent_work_list.sql',
+  '0032_native_communication.sql', '0033_native_google.sql', '0034_native_google_access.sql', '0035_native_google_discovery.sql', '0036_google_oauth_window.sql',
+  '0037_native_delegation_source_refresh.sql', '0038_native_delegation_bootstrap_policy.sql', '0039_native_work_instructions.sql', '0040_native_work_activity.sql', '0041_paid_tool_core.sql', '0042_paid_tool_root.sql', '0043_paid_tool_intent.sql', '0044_paid_tool_dispatch.sql', '0045_paid_tool_retained_contributors.sql', '0046_paid_tool_settlement_wait.sql', '0047_paid_tool_root_revalidation.sql', '0048_paid_tool_completed_history.sql', '0049_native_work_execution.sql'];
 function fixtureDatabaseUrl(source: string): string {
   const url = new URL(source);
   url.password = 'fixture';
@@ -139,10 +144,10 @@ describe('development migration validation', () => {
     await expect(loadMigrations(gap)).rejects.toMatchObject({ code: 'MIGRATION_ORDER_INVALID' });
     await expect(loadMigrations(duplicate)).rejects.toMatchObject({ code: 'MIGRATION_ORDER_INVALID' });
   });
-  it('loads the exact nineteen authored migrations including original request fences without a database connection', async () => {
+  it('loads the exact authored migrations through native tasks without a database connection', async () => {
     const migrations = await loadMigrations();
     expect(migrations.map(migration => migration.filename)).toEqual(authoredMigrationFiles);
-    expect(migrations.map(migration => migration.number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+    expect(migrations.map(migration => migration.number)).toEqual(Array.from({ length: authoredMigrationFiles.length }, (_, index) => index + 1));
     for (const migration of migrations) {
       expect(migration.checksum).toMatch(/^[a-f0-9]{64}$/);
       expect(migration.statements.length).toBeGreaterThan(0);

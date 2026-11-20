@@ -10,8 +10,22 @@ import { inspectSupplyChain } from './check-publication.mjs';
 export const allowedGraph = Object.freeze({
   'apps/web': ['packages/contracts'],
   'services/api': ['packages/contracts', 'packages/domain', 'packages/db', 'packages/observability'],
-  'services/coordinator': ['packages/contracts', 'packages/domain', 'packages/adapters'],
+  // Coordinator composition uses a native-task-only database role; no financial grants.
+  'services/coordinator': ['packages/contracts', 'packages/domain', 'packages/adapters', 'packages/db', 'services/connectors'],
   'services/connectors': ['packages/contracts', 'packages/adapters'],
+  // Separate server deployment; web never imports this composition or its secrets.
+  'services/native-host': ['services/coordinator', 'packages/contracts', 'packages/db', 'packages/service-identity'],
+  // Foreground Google OAuth and explicit event reads use private connector
+  // transport/vault code; no connector capability is added to the web bundle.
+  'services/native-api': ['services/api', 'services/connectors', 'packages/contracts', 'packages/db', 'packages/service-identity'],
+  // Isolated browser substrate; no application or financial-service imports.
+  'services/browser-tools': [],
+  // Private evidence qualification. Public API composition uses an explicit port;
+  // transport credentials never enter the deterministic adapter package.
+  'services/financial-qualification': ['packages/contracts', 'packages/domain', 'packages/adapters', 'packages/db', 'programs/pactwoven'],
+  // Private persistence facade. No public composition, transport or signer edge.
+  'services/financial-execution': ['packages/contracts', 'packages/domain', 'packages/db'],
+  'packages/service-identity': [],
   'services/signer': ['packages/contracts', 'programs/pactwoven'],
   'packages/contracts': [],
   'packages/domain': ['packages/contracts'],

@@ -76,7 +76,7 @@ function EquipmentPanel({siteId,rootTaskId,workState,workControlVersion,evidence
   useEffect(()=>{onStageChange?.(revisionKey,stage);return()=>onStageChange?.(revisionKey,null);},[revisionKey,stage,onStageChange]);
   const contributors=useNativePaidContributors(siteId,rootTaskId,revisionKey,workControlVersion,quote,stage==='quote_ready');
   useEffect(()=>{if(dialogOpen&&reviewVisible)reviewHeading.current?.focus();},[reviewVisible,attempt?.review?.reviewHash]);
-  useEffect(()=>{if(typeof IntersectionObserver==='undefined'){setPanelInView(true);return;}const observer=new IntersectionObserver(([entry])=>setPanelInView(entry?.isIntersecting??false));if(panelRef.current)observer.observe(panelRef.current);return()=>observer.disconnect();},[discovery.data?.state,ready]);
+  useEffect(()=>{if(typeof IntersectionObserver==='undefined'){setPanelInView(true);return;}const observer=new IntersectionObserver(([entry])=>setPanelInView(entry?.isIntersecting??false));const taskViewport=panelRef.current?.closest('.agent-work-page')??panelRef.current;if(taskViewport)observer.observe(taskViewport);return()=>observer.disconnect();},[discovery.data?.state,ready]);
   const dialogIdentity=quote?paymentDialogIdentity(JSON.stringify(binding.scope),rootTaskId,quote):null;
   useEffect(()=>{try{const saved=readPaidQuoteAttempt(sessionStorage,binding.scope,rootTaskId);pending.current=saved;setAttempt(saved);}catch(e){setError(e);setBlocked(true);}setReady(true);return()=>controller.current?.abort();},[]);
   useEffect(()=>{if(lastDialogRevision.current!==revisionKey){lastDialogRevision.current=revisionKey;setConsent(false);setReviewVisible(false);setRetry(false);setDialogOpen(false);}},[revisionKey]);

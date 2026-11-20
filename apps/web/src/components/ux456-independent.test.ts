@@ -12,7 +12,7 @@ import { NativeEquipmentPaymentPanel } from './native-equipment-payment-panel';
 
 // Execute the real controller and storage/review helpers, with network/query and
 // React lifecycle boundaries simulated. Real browser focus/layout is qualified separately.
-const h=vi.hoisted(()=>({frame:null as any,activityQuery:null as any,binding:null as any,discovery:null as any,online:true,inView:true,observer:null as any,
+const h=vi.hoisted(()=>({frame:null as any,activityQuery:null as any,binding:null as any,discovery:null as any,online:true,inView:true,panelInView:null as boolean|null,workspaceElement:null as any,observedTargets:[] as any[],observer:null as any,
   review:vi.fn(),send:vi.fn(),recover:vi.fn(),events:null as any,windowEvents:null as any}));
 vi.mock('react',async original=>({...await original<any>(),
   useId:()=> 'independent-id',
@@ -39,16 +39,16 @@ const mounted:any[]=[];
 function mount(overrides:Record<string,unknown>={}){
   let props:any={siteId:'hidden-site',rootTaskId:'hidden-task',workState:'waiting',workControlVersion:1,evidenceAvailable:true,revisionKey:'revision-one',observing:true,canAuthorize:true,...overrides};
   const frame={cursor:0,cells:[]as any[],effects:[]as any[],dirty:false};let tree:any;
-  function render(){for(let round=0;round<20;round++){frame.cursor=0;frame.effects=[];frame.dirty=false;h.frame=frame;const child=NativeEquipmentPaymentPanel(props);tree=(child.type as (props:any)=>ReactElement)(child.props);for(const n of elements(tree)){if(n.props.ref&&typeof n.props.ref==='object')n.props.ref.current={focus:vi.fn(),isConnected:true,disabled:n.props.disabled??false};}frame.effects.forEach(f=>f());if(!frame.dirty)return tree;}throw Error('Unsettled controller');}
+  function render(){for(let round=0;round<20;round++){frame.cursor=0;frame.effects=[];frame.dirty=false;h.frame=frame;const child=NativeEquipmentPaymentPanel(props);tree=(child.type as (props:any)=>ReactElement)(child.props);for(const n of elements(tree)){if(n.props.ref&&typeof n.props.ref==='object')n.props.ref.current={focus:vi.fn(),isConnected:true,disabled:n.props.disabled??false,closest:(selector:string)=>selector==='.agent-work-page'?h.workspaceElement:null};}frame.effects.forEach(f=>f());if(!frame.dirty)return tree;}throw Error('Unsettled controller');}
   const view={render,get tree(){return tree;},get dialog(){return elements(tree).find(n=>n.type==='PaymentDialog');},patch:(next:any)=>{props={...props,...next};render();},button:(label:string)=>{const n=elements(tree).find(n=>n.type==='button'&&text(n)===label);if(!n)throw Error(`Missing ${label}`);return n;},input:()=>elements(tree).find(n=>n.type==='input'&&n.props.type==='checkbox'),unmount:()=>{for(const c of frame.cells)c?.cleanup?.();}};mounted.push(view);render();return view;
 }
 async function settle(view:any){for(let n=0;n<10;n++){await Promise.resolve();view.render();}}
 let store:ReturnType<typeof storage>;
 beforeEach(()=>{
   vi.useFakeTimers();vi.setSystemTime(new Date('2026-11-20T05:00:00Z'));vi.stubEnv('NEXT_PUBLIC_API_BASE_URL','https://api.example.test');
-  store=storage();h.online=true;h.inView=true;h.events=new EventTarget();h.windowEvents=new EventTarget();
+  store=storage();h.online=true;h.inView=true;h.panelInView=null;h.workspaceElement={tag:'task-workspace'};h.observedTargets=[];h.events=new EventTarget();h.windowEvents=new EventTarget();
   vi.stubGlobal('sessionStorage',store);vi.stubGlobal('document',h.events);vi.stubGlobal('window',Object.assign(h.windowEvents,{setTimeout,clearTimeout}));
-  vi.stubGlobal('IntersectionObserver',class{constructor(callback:any){h.observer=callback;}observe(){h.observer([{isIntersecting:h.inView}]);}disconnect(){}});
+  vi.stubGlobal('IntersectionObserver',class{constructor(callback:any){h.observer=callback;}observe(target:any){h.observedTargets.push(target);h.observer([{isIntersecting:target===h.workspaceElement?h.inView:h.panelInView??h.inView}]);}disconnect(){}});
   const quote=paidQuoteFixture();h.discovery={data:{state:'awaiting_review',quote,operationId:null},error:null,refetch:vi.fn()};
   const scope={apiBase:'https://api.example.test',environment:'development',organizationId:'hidden-org',actorId:'operator',sessionId:'session',siteId:'hidden-site'};
   h.binding={scope,current:()=>scope,getToken:vi.fn(),controller:{current:new AbortController()},live:{current:true}};
@@ -64,6 +64,12 @@ describe('independent exact-payment controller regression',()=>{
   });
   it.each([{canAuthorize:false},{observing:false},{evidenceAvailable:false},{workState:'paused'},{workState:'cancelled'},{workState:'completed'}])('does not auto-open outside actionable current authority: %j',props=>{
     const view=mount(props);expect(view.dialog.props.open).toBe(false);expect(h.review).not.toHaveBeenCalled();expect(h.send).not.toHaveBeenCalled();
+  });
+  it('prompts from the visible task workspace even when the payment panel is below the fold',()=>{
+    h.panelInView=false;const view=mount();expect(h.observedTargets.at(-1)).toBe(h.workspaceElement);expect(view.dialog.props.open).toBe(true);expect(h.review).not.toHaveBeenCalled();expect(h.send).not.toHaveBeenCalled();
+  });
+  it('does not prompt while the entire task workspace is outside the viewport',()=>{
+    h.inView=false;h.panelInView=false;const view=mount();expect(h.observedTargets.at(-1)).toBe(h.workspaceElement);expect(view.dialog.props.open).toBe(false);expect(h.review).not.toHaveBeenCalled();expect(h.send).not.toHaveBeenCalled();
   });
   it('does not auto-open offscreen or offline; entering view opens once',()=>{
     h.inView=false;const view=mount();expect(view.dialog.props.open).toBe(false);h.observer([{isIntersecting:true}]);view.render();expect(view.dialog.props.open).toBe(true);

@@ -63,8 +63,8 @@ function AgentFocus({ activity, observing, now, board }: {
   })}</div>;
 }
 
-export function AgentActivityWorkspace({ activity, observing = true, result, resultUnavailable = false, resultActions }: {
-  activity: NativeWorkActivity; observing?: boolean; result?: NativeAgentWork['result']; resultUnavailable?: boolean;resultActions?:ReactNode;
+export function AgentActivityWorkspace({ activity, observing = true, result, resultUnavailable = false, resultActions, detailsOnly = false }: {
+  activity: NativeWorkActivity; observing?: boolean; result?: NativeAgentWork['result']; resultUnavailable?: boolean;resultActions?:ReactNode; detailsOnly?: boolean;
 }) {
   const heading = useId(), board = useRef<HTMLDivElement>(null), previous = useRef<NativeWorkActivity | undefined>(undefined);
   const until = new Date(Math.min(Date.parse(activity.freshUntil), Date.parse(activity.expiresAt), result?.evidenceValidUntil ? Date.parse(result.evidenceValidUntil) : Infinity)).toISOString();
@@ -78,18 +78,18 @@ export function AgentActivityWorkspace({ activity, observing = true, result, res
   }, [activity, current]);
   const actions = unavailable ? [] : activity.actions;
   const needsAttention = actions.find(action => action.state === 'needs_review');
-  return <section className="demo-workspace" aria-labelledby={heading} data-observing={current}>
-    <div className="demo-workspace-heading"><div><p className="demo-workspace-eyebrow">Your agent team</p><h2 id={heading}>Work, as it happens</h2></div>
+  return <section className="demo-workspace" aria-labelledby={detailsOnly ? undefined : heading} aria-label={detailsOnly ? "Saved result and activity" : undefined} data-observing={current}>
+    {!detailsOnly && <><div className="demo-workspace-heading"><div><p className="demo-workspace-eyebrow">Your agent team</p><h2 id={heading}>Work, as it happens</h2></div>
       <span className="demo-workspace-observation"><span aria-hidden="true"/>{current ? 'Latest recorded activity' : 'Saved activity'}</span></div>
-    <p className="demo-workspace-caption">{unavailable ? 'Earlier activity needs review before it can be shown.' : current ? 'Agent pointers show the team’s recorded focus.' : !observation.observing ? 'Live observation is paused. Showing the last available activity.' : 'Showing the last available recorded activity.'}</p>
+    <p className="demo-workspace-caption">{unavailable ? 'Earlier activity needs review before it can be shown.' : current ? 'Agent pointers show the team’s recorded focus.' : !observation.observing ? 'Live observation is paused. Showing the last available activity.' : 'Showing the last available recorded activity.'}</p></>}
     <p className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</p>
     {needsAttention && <div className="demo-workspace-attention"><Icon name="triangle-alert"/><div><strong>Needs your attention</strong><p>{needsAttention.label}</p></div></div>}
-    {!unavailable && activity.agents.length > 0 && <ul className="demo-workspace-agents" aria-label="Agents assigned to this work">{activity.agents.map(agent => {
+    {!detailsOnly && !unavailable && activity.agents.length > 0 && <ul className="demo-workspace-agents" aria-label="Agents assigned to this work">{activity.agents.map(agent => {
       const assigned = actions.filter(action => action.actorId === agent.id);
       const active = assigned.find(action => action.state === 'active') ?? assigned.at(-1);
       return <li key={agent.id}><span className="demo-workspace-avatar" aria-hidden="true"><Icon name={agent.role === 'coordinator' ? 'connected-nodes' : 'layers'} size={18}/></span><div><strong>{agent.label}</strong><span>{active ? demoActionLabels[active.state] : 'Assigned'}</span></div></li>;
     })}</ul>}
-    <div className="demo-workspace-board" ref={board}>
+    {!detailsOnly && <div className="demo-workspace-board" ref={board}>
       <AgentFocus activity={activity} observing={current} now={observation.now} board={board}/>
       {demoWorkspaceStages.map(stage => {
         const stageActions = actions.filter(action => action.target === stage.id);
@@ -101,7 +101,7 @@ export function AgentActivityWorkspace({ activity, observing = true, result, res
           </li>)}</ol> : <p className="demo-workspace-stage-empty">{unavailable ? 'Activity unavailable' : stage.empty}</p>}
         </section>;
       })}
-    </div>
+    </div>}
     {result && !resultUnavailable && !unavailable && (!result.evidenceValidUntil || observation.now < Date.parse(result.evidenceValidUntil)) && <DemoWorkspaceResult result={result} actions={resultActions}/>}
     {actions.length > 0 && <details className="demo-workspace-history"><summary>Activity details <span>{actions.length} recorded {actions.length === 1 ? 'action' : 'actions'}</span></summary>
       <ReadingRegion label="Recorded activity"><ol>{[...actions].sort((a,b) => (b.recordedAt ? Date.parse(b.recordedAt) : 0) - (a.recordedAt ? Date.parse(a.recordedAt) : 0)).map(action => <li key={action.id}>

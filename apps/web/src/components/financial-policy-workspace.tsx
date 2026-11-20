@@ -16,6 +16,8 @@ import { createFinancialPolicyTransport, type FinancialPolicyTransportAdapters }
 import { createFinancialPolicyClosureClient, FinancialPolicyClosureAttemptError, type FinancialPolicyClosureReview } from '../lib/financial-policy-closure-client';
 import { FinancialPolicyRecoveryPanel, type FinancialPolicyRecoveryRow } from './financial-policy-recovery-panel';
 import { financialPolicyClosureHeadingId } from './financial-policy-closure-review';
+import { VerificationDetails } from './verification-details';
+import { financialRecordName } from '../lib/financial-presentation';
 import { FinancialPolicyReview, FinancialPolicyDocumentText, financialPolicyCollectionPath, financialPolicyVersionPath, financialPolicyLabel } from './financial-policy-review';
 import { ActionLabel, Alert, ButtonLink, LoadingState, PageHeading, Panel, StatusBadge } from './ui';
 import { useMotion } from './motion';
@@ -227,12 +229,16 @@ function ContextSummary({ context }: { context: FinancialPolicyHttpContext }) {
     <div className="financial-policy-status"><StatusBadge tone="blue">Configuration only</StatusBadge><span>{context.configurationVisibility === 'references_only' ? 'References visible to Operations' : 'Full configuration review'}</span></div>
     <p className="review-note">This saves configuration. It does not authorize spending or make funds available.</p>
     <dl className="financial-policy-facts"><div><dt>Current accepted configuration</dt><dd>{context.control?.accepted
-      ? context.configurationVisibility === 'full' ? <ButtonLink href={financialPolicyVersionPath(null, context.control.accepted)} secondary>{context.control.accepted.id} · version {context.control.accepted.version}</ButtonLink>
-        : `${context.control.accepted.id} · version ${context.control.accepted.version}` : context.control ? 'None accepted' : 'Unavailable'}</dd></div>
-      <div><dt>Balance and exposure</dt><dd>Unavailable</dd></div><div><dt>Budget control</dt><dd>{context.control ? `Generation ${context.control.generation}` : 'Unavailable'}</dd></div>
+      ? context.configurationVisibility === 'full' ? <ButtonLink href={financialPolicyVersionPath(null, context.control.accepted)} secondary>Budget configuration · version {context.control.accepted.version}</ButtonLink>
+        : `Budget configuration · version ${context.control.accepted.version}` : context.control ? 'None accepted' : 'Unavailable'}</dd></div>
+      <div><dt>Balance and exposure</dt><dd>Unavailable</dd></div>
       <div><dt>Observation expires</dt><dd>{context.observation.expiresAt} UTC</dd></div></dl>
-    {context.asset && <dl className="financial-policy-facts"><div><dt>Configuration asset</dt><dd>Solana devnet · 6 decimals<code>{context.asset.pin.key}</code></dd></div>
-      <div><dt>Mint</dt><dd><code>{context.asset.mint}</code></dd></div><div><dt>Token program</dt><dd><code>{context.asset.tokenProgram}</code></dd></div><div><dt>Network genesis</dt><dd><code>{context.asset.genesis}</code></dd></div></dl>}
+    {context.asset && <><p className="review-note">Configuration asset: USDC on Solana devnet.</p><VerificationDetails label="Configuration verification"><dl className="financial-policy-facts">
+      <div><dt>Asset reference</dt><dd>{context.asset.pin.key} · version {context.asset.pin.version}<code>{context.asset.pin.recordHash}</code></dd></div>
+      <div><dt>Asset precision</dt><dd>{context.asset.decimals} decimals</dd></div>
+      <div><dt>Budget control generation</dt><dd>{context.control?.generation ?? 'Unavailable'}</dd></div>
+      {context.control?.accepted && <div><dt>Accepted record reference</dt><dd>{context.control.accepted.id}<code>{context.control.accepted.recordHash}</code></dd></div>}
+      <div><dt>Mint</dt><dd><code>{context.asset.mint}</code></dd></div><div><dt>Token program</dt><dd><code>{context.asset.tokenProgram}</code></dd></div><div><dt>Network genesis</dt><dd><code>{context.asset.genesis}</code></dd></div></dl></VerificationDetails></>}
     <h3>Configuration blockers</h3><ul>{context.blockers.map(blocker => <li key={blocker}>{financialPolicyLabel(blocker)}</li>)}</ul>
     {context.documents.map(document => <FinancialPolicyDocumentText key={`${document.reference.id}:${document.reference.version}`} document={document}/>)}
   </Panel>;
@@ -281,15 +287,15 @@ export function FinancialPolicyWorkspaceView({ target = null, ...props }: Financ
     </Panel>
     {context && <>
       {!target && <ContextSummary context={context}/>}
-      {target ? <Panel title={`Exact record ${target.id}`} action={<button type="button" className="button secondary" disabled={view.busy} onClick={() => void controller.read(target)}>
+      {target ? <Panel title="Selected policy record" action={<button type="button" className="button secondary" disabled={view.busy} onClick={() => void controller.read(target)}>
         <ActionLabel label={view.busy ? 'Reading version…' : `Read version ${target.version}`} reserve={['Reading version…', `Read version ${target.version}`]}/></button>}>
-        {view.record ? <FinancialPolicyReview response={view.record}/> : <p className="review-note">Read this exact version explicitly. No latest-version substitution is made.</p>}</Panel>
+        <VerificationDetails label="Selected record reference"><dl><div><dt>Record</dt><dd>{target.id} · version {target.version}</dd></div></dl></VerificationDetails>{view.record ? <FinancialPolicyReview response={view.record} context={context}/> : <p className="review-note">Read this exact version explicitly. No latest-version substitution is made.</p>}</Panel>
         : <><Panel title="Configuration records" action={<button type="button" className="button secondary" disabled={view.busy} onClick={() => void controller.index()}>
           Read first record page</button>}>
           {view.index ? <><div className="financial-policy-record-list">{view.index.items.map(({ policy }) => <article className="financial-policy-record-row" key={policy.reference.id}>
-            <div><h3>{policy.record.id}</h3><p>Version {policy.reference.version} · {financialPolicyLabel(policy.projection.state)}</p>
+            <div><h3>{financialRecordName(policy.record)}</h3><p>Version {policy.reference.version} · {financialPolicyLabel(policy.projection.state)}</p><p className="review-note">Recorded {policy.record.createdAt}</p>
               <p className="review-note">{policy.projection.currentRecord ? 'Current record version' : 'Historical record version'}{policy.record.kind === 'governance' && ` · ${policy.budgetConfiguration?.currentBudgetConfiguration ? 'Current accepted configuration' : 'Not the current accepted configuration'}`}</p></div>
-            <ButtonLink href={financialPolicyVersionPath(props.bootstrap.responsibilityId, policy.reference)} secondary>Read version {policy.reference.version}</ButtonLink>
+            <VerificationDetails label="Record reference"><dl><div><dt>Record</dt><dd>{policy.record.id}</dd></div><div><dt>Recorded at</dt><dd>{policy.record.createdAt}</dd></div></dl></VerificationDetails><ButtonLink href={financialPolicyVersionPath(props.bootstrap.responsibilityId, policy.reference)} secondary>Read version {policy.reference.version}</ButtonLink>
           </article>)}</div>{view.index.items.length === 0 && <p className="financial-policy-empty">No records returned for this page.</p>}
             {view.index.nextId && <button type="button" className="button secondary" disabled={view.busy} onClick={() => void controller.index(view.index!.nextId)}>Read next record page</button>}</>
             : <p className="review-note">Load a page explicitly to inspect saved configuration records.</p>}</Panel>

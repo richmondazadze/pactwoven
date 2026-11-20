@@ -1,2 +1,8 @@
-import { redirect } from 'next/navigation';
-export default function WorkspacePage() { redirect('/app/responsibilities'); }
+import type { Metadata } from 'next';
+import { WorkspaceOverview } from '@/components/workspace-overview';
+
+export const metadata: Metadata = { title: 'Overview' };
+
+export default function WorkspacePage() {
+  return <WorkspaceOverview />;
+}

@@ -1,0 +1,14 @@
+import {z} from 'zod';
+import {IdSchema,InstantSchema} from './core';
+import {HashSchema} from './financial';
+export const PaidToolDispatchTargetSchema=z.strictObject({operationId:IdSchema,generation:z.number().int().positive().max(Number.MAX_SAFE_INTEGER)});
+export const PaidToolDispatchSelectorSchema=PaidToolDispatchTargetSchema.extend({leaseToken:z.uuid()});
+export const PaidToolDispatchClaimSchema=z.strictObject({limit:z.number().int().min(1).max(20),leaseMs:z.number().int().min(1000).max(60000)});
+export const PaidToolDispatchItemSchema=z.strictObject({target:PaidToolDispatchTargetSchema,dispatchToken:z.uuid(),delaySeconds:z.number().int().min(0).max(60)});
+export const PaidToolDispatchLeaseSchema=z.strictObject({leaseMs:z.number().int().min(1000).max(120000)});
+export const PaidToolDispatchFinishSchema=z.strictObject({nextWakeAfterMs:z.number().int().min(1000).max(60000).nullable(),disposition:z.enum(['advanced','waiting','parked','complete'])});
+export const PaidToolDispatchRecoverSchema=z.strictObject({limit:z.number().int().min(1).max(100)});
+export type PaidToolDispatchTarget=z.infer<typeof PaidToolDispatchTargetSchema>;
+export type PaidToolDispatchSelector=z.infer<typeof PaidToolDispatchSelectorSchema>;
+export const PaidToolRpcCaptureSchema=z.strictObject({reference:IdSchema,method:z.enum(['getGenesisHash','getMultipleAccounts','getBlockHeight','getLatestBlockhash','getFeeForMessage','simulateTransaction','sendTransaction','getSignatureStatuses','getTransaction']),requestPayload:z.string().min(1).max(8192),requestHash:HashSchema,observedAt:InstantSchema,payloadHex:z.string().max(262144).regex(/^(?:[a-f0-9]{2})*$/),sha256:HashSchema});
+export type PaidToolRpcCapture=z.infer<typeof PaidToolRpcCaptureSchema>;

@@ -19,6 +19,13 @@ describe('preparation-specific review meaning', () => {
     expect(html).toContain('mandate_doc'); expect(html).toContain(hash); expect(html).toContain('Reviewable');
     expect(html).toContain('creates no policy record'); expect(html).not.toContain('<button'); expect(html).toContain('No spending authority');
   });
+  it('keeps check expiry and current scope visible while reference counters are expandable', () => {
+    const html = renderToStaticMarkup(createElement(FinancialPolicyPreparationReview, { response: FinancialPolicyPreparationResponseSchema.parse(response()) }));
+    const main = html.replace(/<details\b[^>]*>[\s\S]*?<\/details>/g, '');
+    for (const text of ['Check expires', '2026-11-15T00:00:20.000Z', 'responsibility_a', 'site_a', 'Current checked responsibility basis', 'Trust unavailable']) expect(main).toContain(text);
+    expect(main).not.toContain(hash); expect(main).not.toContain('mandate_doc');
+    expect(html).toContain(hash); expect(html).toContain('mandate_doc'); expect(html).toContain('<summary>Preparation references');
+  });
   it('keeps changed and opaque target outcomes distinct and never substitutes a latest version', () => {
     const changed = { ...response(), target: { state: 'changed', latestReference: { id: 'mandate_doc', version: 3, recordHash: hash }, record: null, historicalDocuments: [] },
       decision: { action: 'save_document', state: 'blocked', reasons: ['PREDECESSOR_CHANGED'], requiredAuthentication: null } };

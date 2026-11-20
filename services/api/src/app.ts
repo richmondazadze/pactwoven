@@ -1,9 +1,10 @@
+import { isNativePaidQuoteRoute, registerNativePaidQuoteRoutes, type NativePaidQuoteGateway } from './native-paid-quote-routes';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { CreateResponsibilityCommandSchema, OrganizationBootstrapCommandSchema, IdempotencyKeySchema, IdSchema, PageQuerySchema, SCHEMA_VERSION, type AccessRecoveryGateway, type MandateGateway, type Session } from '@pactwoven/contracts';
 import type { FoundationRepository, OrganizationProvisioner, VerifiedIdentity } from '@pactwoven/db';
 import { DomainError } from '@pactwoven/domain';
-import type { IdentityVerifier } from './auth.js';
+import type { IdentityVerifier, ClerkIdentityObservation } from './auth.js';
 import type { AccessGateway } from './access-service.js';
 import { registerAccessRoutes } from './access-routes.js';
 import { registerMandateRoutes } from './mandate-routes.js';
@@ -20,11 +21,35 @@ import { registerFinancialPolicyClosureRoutes } from './financial-policy-closure
 import type { FinancialPolicyClosureGateway } from './financial-policy-closure-service.js';
 import { registerSupplierRelationshipRoutes } from './supplier-relationship-routes.js';
 import type { SupplierRelationshipHttpGateway } from '@pactwoven/contracts';
+import type { NativeTaskRepository, NativeMemoryNotesRepository } from '@pactwoven/contracts';
+import { registerNativeTaskRoutes } from './native-task-routes.js';
+import { registerNativeMemoryRoutes } from './native-memory-routes.js';
+import { isNativePaidWorkIntentRoute, registerNativePaidWorkIntentRoutes, type NativePaidWorkIntentRepository, type NativePaidWorkPolicy } from './native-paid-work-intent-routes';
+import { isNativePaidToolHttpRoute, registerNativePaidToolRoutes, type NativePaidToolHumanRepository } from './native-paid-tool-routes';
+import { registerNativeWorkIntentRoutes } from './native-work-intent-routes.js';
+import type { NativeWorkIntentRepository } from '../../../packages/contracts/src/native-work-intent';
+import { registerNativeAgentWorkRoutes, type NativeAgentWorkRepository } from './native-agent-work-routes.js';
+import { registerNativeWorkActivityRoutes, type NativeWorkActivityRepository } from './native-work-activity-routes.js';
+import { isNativeWorkActivityHttpRoute } from '../../../packages/contracts/src/native-work-activity';
+import { isNativeVoiceHttpRoute, VOICE_MAX_REQUEST_BYTES } from '../../../packages/contracts/src/native-voice';
+import { registerNativeVoiceRoutes } from './native-voice-routes';
+import type { NativeVoiceGateway } from './native-voice-service';
+import { registerNativeAgentAttentionRoutes } from './native-agent-attention-routes.js';
+import type { NativeAgentWorkListRepository } from '../../../packages/contracts/src/native-agent-work';
+import type { NativeWorkConversationRepository } from '../../../packages/contracts/src/native-work-conversation';
+import { registerNativeAgentConversationRoutes } from './native-agent-conversation-routes';
+import { isNativeAgentConversationRoute, readNativeAgentInstructionJson } from './native-agent-conversation-http';
+import { isNativeGoogleHttpRoute } from '../../../packages/contracts/src/native-google-http';
+import { registerNativeGoogleRoutes } from './native-google-routes';
+import { registerNativeGoogleDiscoveryRoutes } from './native-google-discovery-routes';
+import type { NativeGoogleGateway } from './native-google-service';
+import type { NativeGoogleDiscoveryGateway } from './native-google-discovery-service';
 
 export type AppDependencies = {
   repository?: FoundationRepository;
   provisioner?: OrganizationProvisioner;
   verifyIdentity?: IdentityVerifier;
+  verifyObservedIdentity?: (token: string) => Promise<ClerkIdentityObservation>;
   accessGateway?: AccessGateway;
   mandateGateway?: MandateGateway;
   accessRecoveryGateway?: AccessRecoveryGateway;
@@ -34,19 +59,36 @@ export type AppDependencies = {
   financialPolicyPreparationGateway?: FinancialPolicyPreparationGateway;
   financialPolicyClosureGateway?: FinancialPolicyClosureGateway;
   supplierRelationshipGateway?: SupplierRelationshipHttpGateway;
+  nativeTaskRepository?: NativeTaskRepository;
+  nativeMemoryNotesRepository?: NativeMemoryNotesRepository;
+  nativeWorkIntentRepository?: NativeWorkIntentRepository;
+  nativePaidWorkIntentRepository?: NativePaidWorkIntentRepository;
+  nativePaidWorkPolicy?: NativePaidWorkPolicy;
+  nativePaidWorkOrganizationId?: string;
+  nativePaidQuoteGateway?: NativePaidQuoteGateway;
+  nativePaidToolHumanRepository?: NativePaidToolHumanRepository;
+  nativeTaskProvenance?: Pick<NativeWorkIntentRepository, 'provenance'>;
+  nativeAgentWorkRepository?: NativeAgentWorkRepository;
+  nativeWorkActivityRepository?: NativeWorkActivityRepository;
+  nativeVoiceGateway?: NativeVoiceGateway;
+  nativeAgentWorkListRepository?: NativeAgentWorkListRepository;
+  nativeWorkConversationRepository?: NativeWorkConversationRepository;
+  nativeGoogleGateway?: NativeGoogleGateway;
+  nativeGoogleDiscoveryGateway?: NativeGoogleDiscoveryGateway;
   allowedOrigins: readonly string[];
 };
-export type ApiEnv = { Variables: { session: Session; identity: VerifiedIdentity; correlationId: string; requestBody: unknown } };
+export type ApiEnv = { Variables: { session: Session; identity: VerifiedIdentity; identityObservation?: ClerkIdentityObservation;
+  correlationId: string; requestBody: unknown } };
 const allowedRequestHeaders = ['authorization', 'content-type', 'idempotency-key', 'x-correlation-id'];
 const maximumBodyBytes = 64 * 1024;
 const bodyDeadlineMilliseconds = 5_000;
 
-async function readJson(request: Request): Promise<unknown> {
+async function readJson(request: Request, bodyLimit = maximumBodyBytes): Promise<unknown> {
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type') ?? '')) {
     throw new DomainError('UNSUPPORTED_MEDIA_TYPE', 415, 'Send a JSON request body.');
   }
   const contentLength = request.headers.get('content-length');
-  if (contentLength && (!/^\d+$/.test(contentLength) || Number(contentLength) > maximumBodyBytes)) {
+  if (contentLength && (!/^\d+$/.test(contentLength) || Number(contentLength) > bodyLimit)) {
     throw new DomainError('BODY_TOO_LARGE', 413, 'The request body exceeds the allowed size.');
   }
   const reader = request.body?.getReader();
@@ -63,7 +105,7 @@ async function readJson(request: Request): Promise<unknown> {
       const chunk = await Promise.race([reader.read(), deadline]);
       if (chunk.done) break;
       bytes += chunk.value.byteLength;
-      if (bytes > maximumBodyBytes) {
+      if (bytes > bodyLimit) {
         throw new DomainError('BODY_TOO_LARGE', 413, 'The request body exceeds the allowed size.');
       }
       text += decoder.decode(chunk.value, { stream: true });
@@ -77,8 +119,9 @@ async function readJson(request: Request): Promise<unknown> {
   } finally { clearTimeout(timer!); reader.releaseLock(); }
 }
 
-export function createApp(dependencies: AppDependencies) {
+export function createApp(dependencies: AppDependencies, options: { surface?: 'workspace' | 'native' } = {}) {
   const app = new Hono<ApiEnv>();
+  const workspace = options.surface !== 'native';
   const origins = new Set(dependencies.allowedOrigins);
   if (origins.has('*')) throw new Error('A wildcard API origin is not allowed.');
 
@@ -112,18 +155,37 @@ export function createApp(dependencies: AppDependencies) {
     await next();
   });
 
-  app.get('/health', c => c.json({ service: 'pactwoven-api', status: 'alive', schemaVersion: SCHEMA_VERSION }));
+  app.get('/health', c => c.json({ service: workspace ? 'pactwoven-api' : 'pactwoven-native-api', status: 'alive', schemaVersion: SCHEMA_VERSION }));
+
+  if (!workspace) app.use('*', async (c, next) => {
+    const path = new URL(c.req.url).pathname;
+    if (!/^\/v1\/tasks(?:\/[A-Za-z0-9_-]+(?:\/(?:control|messages|continuation))?)?$/.test(path) &&
+      !/^\/v1\/memory(?:\/(?:operations\/)?[A-Za-z0-9_-]+)?$/.test(path) &&
+      !/^\/v1\/agent-work(?:\/(?:[A-Za-z0-9_-]+(?:\/(?:control|controls\/[A-Za-z0-9_-]+))?|operations\/[A-Za-z0-9_-]+))?$/.test(path) &&
+      !isNativeAgentConversationRoute(path, c.req.method) &&
+      !isNativeWorkActivityHttpRoute(path, c.req.method) &&
+      !isNativeVoiceHttpRoute(path, c.req.method) &&
+      !isNativePaidWorkIntentRoute(path, c.req.method) &&
+      !isNativePaidToolHttpRoute(path, c.req.method) &&
+      !isNativePaidQuoteRoute(path, c.req.method) &&
+      !isNativeGoogleHttpRoute(path, c.req.method)) {
+      throw new DomainError('NOT_FOUND', 404, 'Resource not found.');
+    }
+    await next();
+  });
 
   // Financial routes parse immutable selectors and bounded write bodies before
   // their own identity observation. Writes pass reserved read targets onward.
+  if (workspace) {
   registerFinancialPolicyClosureRoutes(app, dependencies.financialPolicyClosureGateway);
   registerFinancialPolicyPreparationRoutes(app, dependencies.financialPolicyPreparationGateway);
   registerFinancialPolicyWriteRoutes(app, dependencies.financialPolicyWriteGateway);
   registerFinancialPolicyRoutes(app, dependencies.financialPolicyGateway, dependencies.financialPolicyClosureGateway);
   registerSupplierRelationshipRoutes(app, dependencies.supplierRelationshipGateway);
+  }
 
   app.use('/v1/*', async (c, next) => {
-    if (!dependencies.verifyIdentity) {
+    if (!dependencies.verifyIdentity && !dependencies.verifyObservedIdentity) {
       throw new DomainError('SETUP_REQUIRED', 503, 'Development identity and database access are not configured.');
     }
     const authorization = c.req.header('Authorization') ?? '';
@@ -133,15 +195,20 @@ export function createApp(dependencies: AppDependencies) {
     // upload must not preserve a session/member authorization that has expired.
     if (c.req.method === 'POST') {
       const custodyLimit = custodySetupBodyLimit(c.req.method, new URL(c.req.url).pathname);
-      c.set('requestBody', custodyLimit === undefined
-        ? await readJson(c.req.raw)
-        : await readCustodySetupJson(c.req.raw, custodyLimit));
+      c.set('requestBody', isNativeAgentConversationRoute(new URL(c.req.url).pathname, 'POST')
+        ? await readNativeAgentInstructionJson(c.req.raw)
+        : custodyLimit !== undefined
+          ? await readCustodySetupJson(c.req.raw, custodyLimit)
+          : await readJson(c.req.raw, new URL(c.req.url).pathname === '/v1/voice/transcribe' ? VOICE_MAX_REQUEST_BYTES : maximumBodyBytes));
     }
-    const identity = await dependencies.verifyIdentity(token);
+    const observed = dependencies.verifyObservedIdentity ? await dependencies.verifyObservedIdentity(token) : undefined;
+    const identity = observed ? observed.identity : await dependencies.verifyIdentity!(token);
+    if (observed) c.set('identityObservation', observed);
     c.set('identity', identity);
     await next();
   });
 
+  if (workspace) {
   app.post('/v1/organizations/bootstrap', async c => {
     if (!dependencies.provisioner) throw new DomainError('SETUP_REQUIRED', 503, 'Organization setup is not configured.');
     const identity = c.get('identity');
@@ -157,6 +224,7 @@ export function createApp(dependencies: AppDependencies) {
   registerAccessRecoveryRoutes(app, dependencies.accessRecoveryGateway);
   registerMandateRoutes(app, dependencies.mandateGateway);
   registerCustodySetupRoutes(app, dependencies.custodySetupGateway);
+  }
 
   app.use('/v1/*', async (c, next) => {
     if (!dependencies.repository) throw new DomainError('SETUP_REQUIRED', 503, 'Development database access is not configured.');
@@ -165,6 +233,20 @@ export function createApp(dependencies: AppDependencies) {
     await next();
   });
 
+  registerNativeTaskRoutes(app, dependencies.nativeTaskRepository, dependencies.nativeTaskProvenance);
+  registerNativeMemoryRoutes(app, dependencies.nativeMemoryNotesRepository);
+  registerNativeWorkIntentRoutes(app, dependencies.nativeWorkIntentRepository);
+  registerNativePaidWorkIntentRoutes(app, dependencies.nativePaidWorkIntentRepository, dependencies.nativePaidWorkPolicy, dependencies.nativePaidWorkOrganizationId);
+  registerNativePaidToolRoutes(app, dependencies.nativePaidToolHumanRepository);
+  registerNativePaidQuoteRoutes(app, dependencies.nativePaidQuoteGateway);
+  registerNativeAgentAttentionRoutes(app, dependencies.nativeAgentWorkListRepository);
+  registerNativeAgentWorkRoutes(app, dependencies.nativeAgentWorkRepository, dependencies.nativeAgentWorkListRepository);
+  registerNativeWorkActivityRoutes(app, dependencies.nativeWorkActivityRepository);
+  registerNativeVoiceRoutes(app, dependencies.nativeVoiceGateway, dependencies.nativeAgentWorkRepository);
+  registerNativeAgentConversationRoutes(app, dependencies.nativeWorkConversationRepository);
+  if (dependencies.nativeGoogleGateway) registerNativeGoogleRoutes(app, dependencies.nativeGoogleGateway);
+  if (dependencies.nativeGoogleDiscoveryGateway) registerNativeGoogleDiscoveryRoutes(app, dependencies.nativeGoogleDiscoveryGateway);
+  if (workspace) {
   app.get('/v1/session', c => c.json(c.get('session')));
   app.get('/v1/responsibilities', async c => {
     const query = PageQuerySchema.parse(c.req.query());
@@ -181,6 +263,7 @@ export function createApp(dependencies: AppDependencies) {
     c.header('Location', `/v1/responsibilities/${encodeURIComponent(operation.aggregateId)}`);
     return c.json(operation, 201);
   });
+  }
 
   app.notFound(c => c.json({ error: { code: 'NOT_FOUND', message: 'Resource not found.', correlationId: c.get('correlationId') } }, 404));
   app.onError((error, c) => {

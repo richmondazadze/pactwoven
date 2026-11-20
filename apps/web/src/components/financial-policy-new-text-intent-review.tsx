@@ -1,5 +1,7 @@
 'use client';
 import type { FinancialPolicyHttpContext, FinancialPolicyPreparationResponse } from '@pactwoven/contracts';
+import { VerificationDetails } from './verification-details';
+import { accessRoleLabels } from '../lib/presentation';
 import { ActionLabel, Disclosure, Panel } from './ui';
 
 /** Only local authored text survives expiry here. The opaque comparison digest never enters the view. */
@@ -29,12 +31,12 @@ export function FinancialPolicyNewTextIntentReview({ text, targetId, context, pr
       : saving ? 'The separate save action is checking current material. It will send at most one save if every check passes.'
         : 'Acknowledgment requires current checked material and is separate from saving. An edit removes it.'}</p>
     {acknowledged && <section className="financial-authoring-local-review" aria-label="Acknowledged unsent local text">
-      <h3>Your acknowledged text</h3><p className="review-note">Chosen record: <code>{targetId}</code></p>
+      <h3>Your acknowledged text</h3><VerificationDetails label="Unsent record reference"><dl><div><dt>Chosen record</dt><dd>{targetId}</dd></div></dl></VerificationDetails>
       <p className="financial-policy-text">{text}</p>
     </section>}
     {context && preparation && <section aria-label="Current checked access for this text">
       <h3>Current checked access</h3>
-      <p>Current role: {context.scope.roles.join(', ')}. Read access covers {context.scope.siteIds.length} site{context.scope.siteIds.length === 1 ? '' : 's'}; action access covers {context.scope.actionSiteIds.length}.</p>
+      <p>Current role: {context.scope.roles.map(role => accessRoleLabels[role]).join(', ')}. Read access covers {context.scope.siteIds.length} site{context.scope.siteIds.length === 1 ? '' : 's'}; action access covers {context.scope.actionSiteIds.length}.</p>
       <Disclosure title="Exact access references">
       <dl className="financial-policy-facts">
         <div><dt>Environment</dt><dd>{context.scope.environment}</dd></div>

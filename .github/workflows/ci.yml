@@ -49,8 +49,12 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Generate Next route declarations
         run: pnpm --filter @pactwoven/web exec next typegen
+      - name: Build native Node entry points
+        run: pnpm --filter @pactwoven/native-host --filter @pactwoven/native-api build
       - name: Check import and dependency boundaries
         run: pnpm check:boundaries
+      - name: Check reviewed chain build inputs
+        run: node scripts/check-chain-build.mjs
       - name: Audit dependencies
         run: node scripts/check-dependency-audit.mjs
       - name: Check types
@@ -133,3 +137,81 @@ jobs:
           SUPPLIER_CI_FIXTURE: ${{ matrix.fixture }}
           CI_POSTGRES_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
         run: node scripts/ci-supplier-postgres.mjs
+
+  native-postgres:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17.11-bookworm@sha256:665dc7b37ac52a17e298511414c21d23ffa4e6a6ef6225b3e5d59c7afb35e994
+        env:
+          POSTGRES_USER: pactwoven_native_admin
+          POSTGRES_DB: pactwoven_native_test
+          POSTGRES_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        ports:
+          - 127.0.0.1:55447:5432
+        options: >-
+          --health-cmd "pg_isready -U pactwoven_native_admin -d pactwoven_native_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.22.1
+          package-manager-cache: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.25.0
+          run_install: false
+      - name: Install frozen dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify native task durability and isolation
+        env:
+          CI_POSTGRES_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: node scripts/ci-native-postgres.mjs
+
+  delegation-postgres:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17.11-bookworm@sha256:665dc7b37ac52a17e298511414c21d23ffa4e6a6ef6225b3e5d59c7afb35e994
+        env:
+          POSTGRES_USER: pactwoven_native_admin
+          POSTGRES_DB: pactwoven_native_test
+          POSTGRES_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        ports:
+          - 127.0.0.1:55448:5432
+        options: >-
+          --health-cmd "pg_isready -U pactwoven_native_admin -d pactwoven_native_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.22.1
+          package-manager-cache: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.25.0
+          run_install: false
+      - name: Install frozen dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify delegation and memory forward upgrade
+        env:
+          CI_POSTGRES_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: node scripts/ci-delegation-postgres.mjs

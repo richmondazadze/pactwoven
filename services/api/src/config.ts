@@ -46,7 +46,8 @@ export function readDevelopmentConfig(values: EnvironmentValues) {
     const custodyConfigured = values.CUSTODY_SETUP_WRITER_DATABASE_URL !== undefined || values.CUSTODY_SETUP_VERIFIER_DATABASE_URL !== undefined;
     const financialConfigured = values.FINANCIAL_POLICY_AUTHORIZER_DATABASE_URL !== undefined || values.FINANCIAL_POLICY_VERIFIER_DATABASE_URL !== undefined;
     const supplierConfigured = values.SUPPLIER_RELATIONSHIP_LANES !== undefined;
-    if (bindings.every(value => !value) && !values.PROVISIONER_DATABASE_URL && !values.ACCESS_DATABASE_URL && !values.MANDATE_DATABASE_URL && !custodyConfigured && !financialConfigured && !supplierConfigured) {
+    const nativeTaskConfigured = values.NATIVE_TASK_API_DATABASE_URL !== undefined;
+    if (bindings.every(value => !value) && !values.PROVISIONER_DATABASE_URL && !values.ACCESS_DATABASE_URL && !values.MANDATE_DATABASE_URL && !custodyConfigured && !financialConfigured && !supplierConfigured && !nativeTaskConfigured) {
       return { environment, port, allowedOrigins, credentials: null };
     }
     const databaseUrl = z.string().min(1).parse(values.DATABASE_URL);
@@ -114,9 +115,21 @@ export function readDevelopmentConfig(values: EnvironmentValues) {
       }
       financialPolicy = { authorizerDatabaseUrl: authorizer.href, verifierDatabaseUrl: verifier.href };
     }
+    let nativeTaskDatabaseUrl: string | undefined;
+    if (nativeTaskConfigured) {
+      const native = developmentDatabase(z.string().min(1).parse(values.NATIVE_TASK_API_DATABASE_URL));
+      const existingUsers = new Set([database.href, provisionerDatabaseUrl, accessDatabaseUrl, mandateDatabaseUrl,
+        custodySetup?.writerDatabaseUrl, custodySetup?.verifierDatabaseUrl,
+        financialPolicy?.authorizerDatabaseUrl, financialPolicy?.verifierDatabaseUrl]
+        .filter((value): value is string => Boolean(value)).map(value => decodeURIComponent(new URL(value).username)));
+      if (native.host !== database.host || native.pathname !== database.pathname || existingUsers.has(decodeURIComponent(native.username))) {
+        throw new ConfigurationError();
+      }
+      nativeTaskDatabaseUrl = native.href;
+    }
     return { environment, port, allowedOrigins, credentials: { databaseUrl: database.href, secretKey, issuer, publishableKey,
       ...(provisionerDatabaseUrl ? { provisionerDatabaseUrl } : {}), ...(accessDatabaseUrl ? { accessDatabaseUrl } : {}),
       ...(mandateDatabaseUrl ? { mandateDatabaseUrl } : {}), ...(custodySetup ? { custodySetup } : {}),
-      ...(financialPolicy ? { financialPolicy } : {}) } };
+      ...(financialPolicy ? { financialPolicy } : {}), ...(nativeTaskDatabaseUrl ? { nativeTaskDatabaseUrl } : {}) } };
   } catch { throw new ConfigurationError(); }
 }

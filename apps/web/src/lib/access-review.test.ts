@@ -57,7 +57,7 @@ describe('member access review boundaries',()=>{
   it('keeps revoked-grant inspection read-only without claiming authority from retained roles or sites',()=>{
     const revoked={...member,status:'revoked' as const,roles:['finance' as const],actionSiteIds:['site_action']};
     const html=renderToStaticMarkup(createElement(RevokedMemberReview,{member:revoked,sites:session.sites}));
-    for(const text of ['Revoked access is read-only','cannot be revised or restored in this flow','subject_one','membership_one','Recorded roles','finance','Recorded action sites','site_action','None from this revoked grant'])expect(html).toContain(text);
+    for(const text of ['Revoked access is read-only','cannot be revised or restored in this flow','subject_one','membership_one','Recorded roles','Finance','Recorded action sites','site_action','None from this revoked grant'])expect(html).toContain(text);
     for(const forbidden of ['<form','<input','<button','Verify identity','Submit access change','All organization sites'])expect(html).not.toContain(forbidden);
     for(const kind of ['revise','revoke'] as const)expect(()=>buildAccessIntent({kind,member:revoked},accessScopeOf(revoked),'Already revoked',8)).toThrow('cannot be revised or restored');
   });

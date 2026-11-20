@@ -1,0 +1,22 @@
+{
+  "name": "@pactwoven/native-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "pnpm typecheck && node ../../scripts/build-native-host.mjs native-api"
+  },
+  "dependencies": {
+    "@pactwoven/connectors": "workspace:*",
+    "@pactwoven/service-identity": "workspace:*",
+    "jose": "5.10.0",
+    "@pactwoven/api": "workspace:*",
+    "@pactwoven/contracts": "workspace:*",
+    "@pactwoven/db": "workspace:*",
+    "@vercel/functions": "3.11.3",
+    "zod": "4.6.7",
+    "pg": "8.23.1",
+    "@clerk/backend": "3.29.0"
+  }
+}

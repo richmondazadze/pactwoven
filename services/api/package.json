@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": { "./native-host": "./src/native-host.ts" },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit",

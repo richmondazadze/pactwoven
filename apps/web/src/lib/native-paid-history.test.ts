@@ -1,0 +1,24 @@
+import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
+import {NativePaidHistoryResponseSchema} from '../../../../packages/contracts/src/native-paid-history';
+import {paidToolFixture} from './native-paid-tool.test-fixtures';
+import {paidHistoryFixture} from './native-paid-history.test-fixtures';
+import {paidHistoryRecord,readPaidHistory} from './native-paid-history';
+import {agentWorkScope} from './native-agent-work';
+import {nativeSessionFixture} from './native-tasks.test-fixtures';
+const scope=()=>agentWorkScope(nativeSessionFixture(),'site_one');
+beforeEach(()=>vi.stubEnv('NEXT_PUBLIC_NATIVE_API_BASE_URL','http://localhost:3108'));
+afterEach(()=>{vi.unstubAllEnvs();vi.unstubAllGlobals();});
+describe('independent saved public-result binding',()=>{
+ it('accepts historical output after freshness expires without reclassifying it as current',()=>{const record=paidHistoryFixture();expect(paidHistoryRecord({...paidToolFixture(),resultApplicability:'unavailable',delivery:null},record)).toEqual(record);expect(record.kind==='recorded'&&record.authority).toBe('none');});
+ it.each(['site','organization','root','operation','revision','signature','amount','fee','slot','finality','catalogue','request','ids','capacity'])('withholds %s mismatch',key=>{const receipt=paidToolFixture(),record=paidHistoryFixture();if(record.kind!=='recorded')throw Error();
+  if(key==='site')record.scope.siteId='wrong';if(key==='organization')record.scope.organizationId='wrong';if(key==='root')record.rootTaskId='wrong';if(key==='operation')record.operationId='wrong';if(key==='revision')record.instructionRevision++;
+  if(key==='signature')record.payment.signature=record.payment.signature.replace(/^./,record.payment.signature[0]==='2'?'3':'2');if(key==='amount')record.payment.amountBaseUnits='20000';if(key==='fee')receipt.feePaid={baseUnits:'6000',decimals:9,symbol:'test SOL'};if(key==='slot')record.payment.slot='124';if(key==='finality')record.payment.finalizedAt='2026-11-19T16:00:01Z';
+  if(key==='catalogue')record.equipment.catalogueHash='f'.repeat(64);if(key==='request'){record.equipment.requestHash='f'.repeat(64);record.provenance.requestHash='f'.repeat(64);}if(key==='ids')record.equipment.items[0]!.id='wrong';if(key==='capacity')record.equipment.items[0]!.seats++;
+  expect(paidHistoryRecord(receipt,record)).toBeNull();
+ });
+ it('rejects authority/current/future-completion and unsafe source schema substitutions',()=>{const record=paidHistoryFixture();expect(NativePaidHistoryResponseSchema.safeParse({...record,authority:'execute'}).success).toBe(false);expect(NativePaidHistoryResponseSchema.safeParse({...record,freshness:'current'}).success).toBe(false);if(record.kind!=='recorded')throw Error();expect(NativePaidHistoryResponseSchema.safeParse({...record,completedAt:record.evidenceValidUntil}).success).toBe(false);record.provenance.sources[0]!.url='javascript:alert(1)';expect(paidHistoryRecord(paidToolFixture(),record)).toBeNull();});
+ it('does not use a pending payment or unavailable record as saved result',()=>{const record=paidHistoryFixture();expect(paidHistoryRecord({...paidToolFixture(),state:'payment_pending',delivery:null},record)).toBeNull();expect(paidHistoryRecord(paidToolFixture(),{kind:'unavailable',scope:record.scope,rootTaskId:record.rootTaskId,operationId:record.operationId,reason:'not_retained'})).toBeNull();});
+ it('uses only the original scoped GET and rejects session change after response',async()=>{const s=scope(),receipt={...paidToolFixture(),scope:{environment:'development' as const,organizationId:s.organizationId,siteId:s.siteId}},record={...paidHistoryFixture(),scope:receipt.scope};const fetch=vi.fn().mockResolvedValue(Response.json(record));vi.stubGlobal('fetch',fetch);expect(await readPaidHistory(receipt,s,async()=> 'test-only',()=>s,new AbortController().signal)).toEqual(record);expect(fetch).toHaveBeenCalledOnce();expect(fetch.mock.calls[0]![0]).toContain('/purchases/hidden-operation/history?siteId=site_one');expect(fetch.mock.calls[0]![1].method??'GET').toBe('GET');expect(fetch.mock.calls[0]![1].body).toBeUndefined();
+  const original={...s};fetch.mockImplementationOnce(async()=>{s.sessionId='changed';return Response.json(record);});await expect(readPaidHistory(receipt,original,async()=> 'test-only',()=>s,new AbortController().signal)).rejects.toThrow('workspace changed');
+ });
+});

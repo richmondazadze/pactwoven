@@ -1,0 +1,16 @@
+import { describe, expect, it, vi } from 'vitest';
+import { teamActivityFixture } from './native-work-team-activity.test-fixtures';
+import { currentTeamActivity, teamActivityMatchesWork } from './native-work-team-activity';
+describe('current team frontend authority and freshness',()=>{
+ it('accepts live same-root metadata despite historical progress',()=>{const {work,activity,at}=teamActivityFixture();work.progress!.historical=true;expect(currentTeamActivity(activity,work,true,at)).toEqual(activity);});
+ it.each(['paused','cancelled','completed','needs_review','working','queued'] as const)('withholds on %s control',state=>{const{work,activity,at}=teamActivityFixture();expect(currentTeamActivity(activity,{...work,state},true,at)).toBeUndefined();});
+ it('withholds exactly at lease expiry, while hidden, or after root permission ends',()=>{const{work,activity,at}=teamActivityFixture();expect(currentTeamActivity(activity,work,true,at+7000)).toBeUndefined();expect(currentTeamActivity(activity,work,false,at)).toBeUndefined();expect(currentTeamActivity(activity,{...work,expiresAt:work.updatedAt},true,at)).toBeUndefined();});
+ it('rejects a future observation or stale root revision',()=>{const{work,activity,at}=teamActivityFixture();expect(currentTeamActivity(activity,work,true,at-1)).toBeUndefined();expect(teamActivityMatchesWork({...activity,controlVersion:activity.controlVersion+1},work)).toBe(false);expect(teamActivityMatchesWork({...activity,rootTaskId:'other'},work)).toBe(false);expect(teamActivityMatchesWork({...activity,recordedAt:new Date(at-1).toISOString()},work)).toBe(false);});
+ it('never restores unavailable data',()=>{const{work,activity,at}=teamActivityFixture();expect(currentTeamActivity(activity,{...work,evidenceUnavailable:true},true,at)).toBeUndefined();expect(currentTeamActivity({...activity,status:'unavailable',validUntil:null,agents:[]},work,true,at)).toBeUndefined();});
+});
+
+it('dispatches the exact optional team GET through the shared path boundary',async()=>{
+ const{activity}=teamActivityFixture();const {nativeSessionFixture}=await import('./native-tasks.test-fixtures');const {agentWorkScope,agentWorkRequest}=await import('./native-agent-work');const {nativeWorkTeamActivitySchema}=await import('./native-work-team-activity');
+ vi.stubEnv('NEXT_PUBLIC_NATIVE_API_BASE_URL','http://localhost:3108');const scope=agentWorkScope(nativeSessionFixture(),'site_one');const fetch=vi.fn().mockResolvedValue(Response.json({scope:{environment:scope.environment,organizationId:scope.organizationId,siteId:scope.siteId},teamActivity:activity}));vi.stubGlobal('fetch',fetch);
+ try{await agentWorkRequest(`/v1/agent-work/${activity.rootTaskId}/team-activity?siteId=site_one`,nativeWorkTeamActivitySchema(scope,activity.rootTaskId),scope,async()=> 'test-only',()=>scope);expect(fetch).toHaveBeenCalledOnce();expect(fetch.mock.calls[0]![1].method??'GET').toBe('GET');expect(fetch.mock.calls[0]![1].body).toBeUndefined();await expect(agentWorkRequest(`/v1/agent-work/${activity.rootTaskId}/team-activity/execute?siteId=site_one`,nativeWorkTeamActivitySchema(scope,activity.rootTaskId),scope,async()=> 'test-only',()=>scope)).rejects.toThrow('not supported');}finally{vi.unstubAllEnvs();vi.unstubAllGlobals();}
+});

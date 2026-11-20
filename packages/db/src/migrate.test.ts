@@ -4,9 +4,20 @@ import { join } from 'node:path';
 import { TLSSocket } from 'node:tls';
 import { Socket, createServer } from 'node:net';
 import { once } from 'node:events';
-import { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { hasLoopbackMigrationTransport, hasVerifiedMigrationTls, loadMigrations, migrateDatabase, migrationPoolConfig, migrationStatements, runMigrationsFromEnvironment } from './migrate.js';
+const authoredMigrationFiles = ['0001_foundation.sql', '0002_organization_bootstrap.sql', '0003_identity_access.sql',
+  '0004_mandate_authority.sql', '0005_access_acceptance.sql', '0006_access_recovery_fences.sql', '0007_finance_provenance.sql',
+  '0008_financial_authority_fences.sql', '0009_custody_setup_owner_bindings.sql', '0010_custody_setup_private_reads.sql',
+  '0011_financial_policy_authority.sql', '0012_financial_policy_private_reads.sql', '0013_financial_policy_preparation.sql',
+  '0014_supplier_identity_versions.sql', '0015_supplier_relationship_authority.sql', '0016_supplier_observer_resolution.sql',
+  '0017_managed_postgres_qualification.sql', '0018_bootstrap_site_read_grant.sql', '0019_financial_policy_request_fences.sql',
+  '0020_supplier_admission.sql', '0021_native_tasks.sql', '0022_native_dispatch.sql', '0023_native_task_search.sql', '0024_native_completion_freshness.sql',
+  '0025_native_provider_authority.sql', '0026_native_delegation.sql', '0027_native_memory.sql', '0028_native_memory_notes.sql',
+  '0029_native_delegation_root_lifecycle.sql', '0030_native_work_intent.sql', '0031_native_agent_work_list.sql',
+  '0032_native_communication.sql', '0033_native_google.sql', '0034_native_google_access.sql', '0035_native_google_discovery.sql', '0036_google_oauth_window.sql',
+  '0037_native_delegation_source_refresh.sql', '0038_native_delegation_bootstrap_policy.sql', '0039_native_work_instructions.sql', '0040_native_work_activity.sql', '0041_paid_tool_core.sql', '0042_paid_tool_root.sql', '0043_paid_tool_intent.sql', '0044_paid_tool_dispatch.sql', '0045_paid_tool_retained_contributors.sql', '0046_paid_tool_settlement_wait.sql', '0047_paid_tool_root_revalidation.sql', '0048_paid_tool_completed_history.sql', '0049_native_work_execution.sql'];
 function fixtureDatabaseUrl(source: string): string {
   const url = new URL(source);
   url.password = 'fixture';
@@ -133,6 +144,15 @@ describe('development migration validation', () => {
     await expect(loadMigrations(gap)).rejects.toMatchObject({ code: 'MIGRATION_ORDER_INVALID' });
     await expect(loadMigrations(duplicate)).rejects.toMatchObject({ code: 'MIGRATION_ORDER_INVALID' });
   });
+  it('loads the exact authored migrations through native tasks without a database connection', async () => {
+    const migrations = await loadMigrations();
+    expect(migrations.map(migration => migration.filename)).toEqual(authoredMigrationFiles);
+    expect(migrations.map(migration => migration.number)).toEqual(Array.from({ length: authoredMigrationFiles.length }, (_, index) => index + 1));
+    for (const migration of migrations) {
+      expect(migration.checksum).toMatch(/^[a-f0-9]{64}$/);
+      expect(migration.statements.length).toBeGreaterThan(0);
+    }
+  });
 });
 
 const dbSuite = process.env.PACTWOVEN_RUN_MIGRATION_TESTS === '1' ? describe : describe.skip;
@@ -145,23 +165,38 @@ dbSuite('development migrations — dedicated real PostgreSQL database', () => {
     connectionString = (await readFile(file, 'utf8')).trim();
     const config = migrationPoolConfig(connectionString, 'pactwoven_migration_test');
     if (!['127.0.0.1', 'localhost', '::1'].includes(String(config.host))) throw new Error('Tests require the dedicated loopback database.');
-    admin = new Pool(config);
+    // Two competing writers plus an independent lock observer are required.
+    admin = new Pool({ ...config, max: 3 });
     expect((await admin.query('SELECT current_database()')).rows[0].current_database).toBe('pactwoven_migration_test');
+    // These cluster roles must be created only by this exclusive migration suite.
+    expect((await admin.query("SELECT rolname FROM pg_roles WHERE rolname IN ('pactwoven_supplier_owner','pactwoven_supplier_executor')")).rows).toEqual([]);
   });
   beforeEach(async () => {
     await admin.query('DROP SCHEMA IF EXISTS pactwoven CASCADE');
     await admin.query('DROP SCHEMA IF EXISTS pactwoven_migrations CASCADE');
+    // A schema reset does not remove roles created by migration 0015.
+    // DROP ROLE has no CASCADE, so unexpected dependencies stop the fixture.
+    await admin.query('DROP ROLE IF EXISTS pactwoven_supplier_executor, pactwoven_supplier_owner');
   });
   afterAll(async () => { await admin?.end(); });
 
+  async function seedVersionRows() {
+    await admin.query(`INSERT INTO pactwoven.organizations(environment,id,external_organization_id,name,created_at)
+      VALUES('simulation','version_a','external_version_a','Version A','2026-01-01T00:00:00Z'),
+            ('simulation','version_b','external_version_b','Version B','2026-01-02T00:00:00Z');
+      INSERT INTO pactwoven.memberships(environment,organization_id,actor_id,external_subject,roles,created_at)
+      VALUES('simulation','version_a','shared_actor','external_subject_a',ARRAY['owner'],'2026-01-03T00:00:00Z'),
+            ('simulation','version_b','shared_actor','external_subject_b',ARRAY['owner'],'2026-01-04T00:00:00Z')`);
+  }
+
   it('applies authored migrations once and leaves exact checksum history on retry', async () => {
+    const migrations = await loadMigrations();
     const first = await migrateDatabase(connectionString, 'pactwoven_migration_test');
-    expect(first.applied).toEqual(['0001_foundation.sql', '0002_organization_bootstrap.sql', '0003_identity_access.sql']);
+    expect(first.applied).toEqual(authoredMigrationFiles);
     const replay = await migrateDatabase(connectionString, 'pactwoven_migration_test');
     expect(replay).toEqual({ database: 'pactwoven_migration_test', applied: [], skipped: first.applied });
     const rows = await admin.query('SELECT number,filename,checksum FROM pactwoven_migrations.applied_migrations ORDER BY number');
-    expect(rows.rows).toHaveLength(3);
-    expect(rows.rows[0].checksum).toMatch(/^[a-f0-9]{64}$/);
+    expect(rows.rows).toEqual(migrations.map(({ number, filename, checksum }) => ({ number, filename, checksum })));
     expect((await admin.query("SELECT to_regprocedure('pactwoven.bootstrap_organization(text,text,text,text,text,text,text,text,text,text,text,text)') AS function")).rows[0].function).not.toBeNull();
   });
 
@@ -237,5 +272,143 @@ dbSuite('development migrations — dedicated real PostgreSQL database', () => {
       CREATE TABLE pactwoven_migrations.applied_migrations(number integer PRIMARY KEY, filename text, checksum text)`);
     await expect(migrateDatabase(connectionString, 'pactwoven_migration_test')).rejects.toMatchObject({ code: 'MIGRATION_UNJOURNALED_DATABASE' });
     expect((await admin.query("SELECT to_regclass('pactwoven.organizations') AS organizations")).rows[0].organizations).toBeNull();
+  });
+
+  it('adds organization version one without reconstructing history or changing identities, legacy grants or triggers', async () => {
+    const priorNames = authoredMigrationFiles.slice(0, 13);
+    const targetNames = authoredMigrationFiles.slice(0, 14);
+    const priorDirectory = await fixture(Object.fromEntries(await Promise.all(priorNames.map(async name =>
+      [name, await readFile(new URL(`../migrations/${name}`, import.meta.url), 'utf8')] as const))));
+    await migrateDatabase(connectionString, 'pactwoven_migration_test', priorDirectory);
+    await seedVersionRows();
+    await admin.query("UPDATE pactwoven.organizations SET authority_epoch=7 WHERE id='version_a'; UPDATE pactwoven.memberships SET row_version=9 WHERE organization_id='version_a'");
+    const organizationsBefore = (await admin.query('SELECT to_jsonb(o) AS body FROM pactwoven.organizations o ORDER BY environment,id')).rows;
+    const membershipsBefore = (await admin.query('SELECT to_jsonb(m) AS body FROM pactwoven.memberships m ORDER BY environment,organization_id,actor_id')).rows;
+    const legacyBefore = (await admin.query(`SELECT c.relname,c.relacl,c.relrowsecurity,c.relforcerowsecurity FROM pg_class c
+      JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pactwoven' AND c.relname IN ('organizations','memberships') ORDER BY c.relname`)).rows;
+    const rebindingBefore = (await admin.query("SELECT pg_get_functiondef('pactwoven.prevent_member_rebinding()'::regprocedure) AS definition")).rows[0];
+    const targetDirectory = await fixture(Object.fromEntries(await Promise.all(targetNames.map(async name =>
+      [name, await readFile(new URL(`../migrations/${name}`, import.meta.url), 'utf8')] as const))));
+    const upgraded = await migrateDatabase(connectionString, 'pactwoven_migration_test', targetDirectory);
+    expect(upgraded).toEqual({ database: 'pactwoven_migration_test', applied: ['0014_supplier_identity_versions.sql'], skipped: priorNames });
+    expect((await admin.query("SELECT to_jsonb(o)-'row_version' AS body FROM pactwoven.organizations o ORDER BY environment,id")).rows).toEqual(organizationsBefore);
+    expect((await admin.query('SELECT to_jsonb(m) AS body FROM pactwoven.memberships m ORDER BY environment,organization_id,actor_id')).rows).toEqual(membershipsBefore);
+    expect((await admin.query('SELECT row_version FROM pactwoven.organizations ORDER BY id')).rows).toEqual([{ row_version: 1 }, { row_version: 1 }]);
+    expect((await admin.query(`SELECT c.relname,c.relacl,c.relrowsecurity,c.relforcerowsecurity FROM pg_class c
+      JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pactwoven' AND c.relname IN ('organizations','memberships') ORDER BY c.relname`)).rows).toEqual(legacyBefore);
+    expect((await admin.query("SELECT pg_get_functiondef('pactwoven.prevent_member_rebinding()'::regprocedure) AS definition")).rows[0]).toEqual(rebindingBefore);
+    expect((await admin.query(`INSERT INTO pactwoven.organizations(environment,id,external_organization_id,name)
+      VALUES('simulation','version_new','external_version_new','New') RETURNING row_version`)).rows[0].row_version).toBe(1);
+  });
+
+  it('advances organization authority changes once and preserves cosmetic/no-op and explicit invalidation semantics', async () => {
+    await migrateDatabase(connectionString, 'pactwoven_migration_test');
+    await seedVersionRows();
+    const where = "WHERE environment='simulation' AND id='version_a'";
+    const update = async (set: string) => (await admin.query(`UPDATE pactwoven.organizations SET ${set} ${where} RETURNING row_version`)).rows[0].row_version;
+    expect(await update("status='suspended'")).toBe(2);
+    expect(await update("status='active',row_version=row_version+1")).toBe(3);
+    // The existing epoch policy is unchanged; any epoch change invalidates the row version once.
+    expect(await update('authority_epoch=7')).toBe(4);
+    expect(await update("external_organization_id='external_version_a_changed'")).toBe(5);
+    expect(await update("name='Renamed'")).toBe(5);
+    expect(await update('status=status,row_version=row_version,created_at=created_at')).toBe(5);
+    expect(await update('row_version=row_version+1')).toBe(6);
+    for (const set of ["environment='development'", "id='rebound'", "created_at=created_at+interval '1 second'"]) {
+      await expect(update(set)).rejects.toMatchObject({ code: 'PI001' });
+    }
+    expect((await admin.query(`SELECT row_version,authority_epoch,created_at::text AS created_at FROM pactwoven.organizations ${where}`)).rows[0])
+      .toMatchObject({ row_version: 6, authority_epoch: 7 });
+    expect((await admin.query("SELECT row_version FROM pactwoven.organizations WHERE id='version_b'")).rows[0].row_version).toBe(1);
+  });
+
+  it('versions membership authority changes and null-to-pinned binding once without changing rebinding or site-reissue behavior', async () => {
+    await migrateDatabase(connectionString, 'pactwoven_migration_test');
+    await seedVersionRows();
+    const where = "WHERE environment='simulation' AND organization_id='version_a' AND actor_id='shared_actor'";
+    const update = async (set: string) => (await admin.query(`UPDATE pactwoven.memberships SET ${set} ${where} RETURNING row_version`)).rows[0].row_version;
+    expect(await update("external_membership_id='pinned_version_a'")).toBe(2);
+    expect(await update("roles=ARRAY['owner','finance']")).toBe(3);
+    expect(await update("status='suspended',row_version=row_version+1")).toBe(4);
+    expect(await update("expires_at='2026-12-01T00:00:00Z'")).toBe(5);
+    expect(await update('expires_at=NULL')).toBe(6);
+    expect(await update("display_name='Display only'")).toBe(6);
+    expect(await update('roles=roles,expires_at=expires_at,row_version=row_version+1')).toBe(7);
+    expect(await update("status='revoked',row_version=row_version+1")).toBe(8);
+    expect(await update('row_version=row_version,roles=roles,created_at=created_at')).toBe(8);
+    for (const set of ["external_membership_id='rebound'", 'external_membership_id=NULL', "external_subject='rebound'", "grant_basis='owner_grant'",
+      "environment='development'", "organization_id='version_b'", "actor_id='rebound'"]) {
+      await expect(update(set)).rejects.toMatchObject({ code: 'PA001' });
+    }
+    await expect(update("created_at=created_at+interval '1 second'")).rejects.toMatchObject({ code: 'PI001' });
+    expect((await admin.query(`SELECT row_version,status,external_membership_id FROM pactwoven.memberships ${where}`)).rows[0])
+      .toEqual({ row_version: 8, status: 'revoked', external_membership_id: 'pinned_version_a' });
+    expect((await admin.query("SELECT row_version,external_membership_id FROM pactwoven.memberships WHERE organization_id='version_b' AND actor_id='shared_actor'")).rows[0])
+      .toEqual({ row_version: 1, external_membership_id: null });
+  });
+
+  it.each(['organizations', 'memberships'] as const)('rejects %s version regression, jumps, null and exhausted increments without partial authority changes', async table => {
+    await migrateDatabase(connectionString, 'pactwoven_migration_test');
+    await seedVersionRows();
+    const where = table === 'organizations' ? "WHERE environment='simulation' AND id='version_a'" :
+      "WHERE environment='simulation' AND organization_id='version_a' AND actor_id='shared_actor'";
+    await admin.query(`UPDATE pactwoven.${table} SET row_version=row_version+1 ${where}`);
+    for (const next of [null, -1, 0, 1, 4, 2147483647]) {
+      await expect(admin.query(`UPDATE pactwoven.${table} SET row_version=$1,status='suspended' ${where}`, [next])).rejects.toMatchObject({ code: 'PI001' });
+    }
+    expect((await admin.query(`SELECT row_version,status FROM pactwoven.${table} ${where}`)).rows[0]).toEqual({ row_version: 2, status: 'active' });
+    // Insert isolated boundary rows directly; do not bypass the guard by updating 2 -> MAX.
+    await admin.query(`INSERT INTO pactwoven.organizations(environment,id,external_organization_id,name,row_version)
+      VALUES('simulation','version_max','external_version_max','Boundary',2147483647);
+      INSERT INTO pactwoven.memberships(environment,organization_id,actor_id,external_subject,roles,row_version)
+      VALUES('simulation','version_max','max_actor','max_subject',ARRAY['owner'],2147483647)`);
+    const maxWhere = table === 'organizations' ? "WHERE environment='simulation' AND id='version_max'" :
+      "WHERE environment='simulation' AND organization_id='version_max' AND actor_id='max_actor'";
+    expect((await admin.query(`UPDATE pactwoven.${table} SET row_version=row_version ${maxWhere} RETURNING row_version`)).rows[0].row_version).toBe(2147483647);
+    await expect(admin.query(`UPDATE pactwoven.${table} SET status='suspended' ${maxWhere}`)).rejects.toMatchObject({ code: 'PI001' });
+    await expect(admin.query(`UPDATE pactwoven.${table} SET row_version=row_version+1 ${maxWhere}`)).rejects.toMatchObject({ code: '22003' });
+    expect((await admin.query(`SELECT row_version,status FROM pactwoven.${table} ${maxWhere}`)).rows[0]).toEqual({ row_version: 2147483647, status: 'active' });
+  });
+
+  it('serializes existing organization-first writers and rejects stale organization/member compare-and-swap after waiting', async () => {
+    await migrateDatabase(connectionString, 'pactwoven_migration_test');
+    await seedVersionRows();
+    let first: PoolClient | undefined, second: PoolClient | undefined;
+    let secondSettled = Promise.resolve();
+    try {
+      first = await admin.connect();
+      second = await admin.connect();
+      await first.query('BEGIN');
+      await first.query("SELECT 1 FROM pactwoven.organizations WHERE id='version_a' FOR UPDATE");
+      await first.query("UPDATE pactwoven.memberships SET roles=ARRAY['owner','finance'],row_version=row_version+1 WHERE organization_id='version_a' AND actor_id='shared_actor'");
+      await first.query("UPDATE pactwoven.organizations SET authority_epoch=authority_epoch+1 WHERE id='version_a'");
+      await second.query("BEGIN; SET LOCAL lock_timeout='5s'; SET LOCAL statement_timeout='8s'");
+      const secondPid = (await second.query('SELECT pg_backend_pid() AS pid')).rows[0].pid as number;
+      const waiting = second.query("SELECT row_version FROM pactwoven.organizations WHERE id='version_a' FOR UPDATE")
+        .then(value => ({ ok: true as const, value }), error => ({ ok: false as const, error }));
+      secondSettled = waiting.then(() => undefined);
+      let blocked = false;
+      const deadline = Date.now() + 3_000;
+      while (!blocked && Date.now() < deadline) {
+        blocked = (await admin.query('SELECT cardinality(pg_blocking_pids($1))>0 AS blocked', [secondPid])).rows[0].blocked === true;
+      }
+      expect(blocked).toBe(true);
+      await first.query('COMMIT');
+      const observed = await waiting;
+      if (!observed.ok) throw observed.error;
+      expect(observed.value.rows).toEqual([{ row_version: 2 }]);
+      expect((await second.query("UPDATE pactwoven.organizations SET status='suspended',row_version=2 WHERE id='version_a' AND row_version=1 RETURNING row_version")).rows).toEqual([]);
+      expect((await second.query("UPDATE pactwoven.memberships SET status='revoked',row_version=2 WHERE organization_id='version_a' AND actor_id='shared_actor' AND row_version=1 RETURNING row_version")).rows).toEqual([]);
+      expect((await second.query("UPDATE pactwoven.memberships SET status='suspended',row_version=row_version+1 WHERE organization_id='version_a' AND actor_id='shared_actor' AND row_version=2 RETURNING row_version")).rows)
+        .toEqual([{ row_version: 3 }]);
+      expect((await second.query("UPDATE pactwoven.organizations SET authority_epoch=authority_epoch+1 WHERE id='version_a' AND row_version=2 RETURNING row_version")).rows)
+        .toEqual([{ row_version: 3 }]);
+      await second.query('COMMIT');
+    } finally {
+      await first?.query('ROLLBACK').catch(() => undefined);
+      await secondSettled;
+      await second?.query('ROLLBACK').catch(() => undefined);
+      first?.release(); second?.release();
+    }
   });
 });

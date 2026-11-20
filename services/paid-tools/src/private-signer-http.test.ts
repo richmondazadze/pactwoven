@@ -1,0 +1,40 @@
+import {describe,it,expect,vi,afterEach} from 'vitest';
+import {createPrivateSignerHandler} from './private-signer-handler';
+import {createPrivateSignerClient} from './private-signer-client';
+import {paidSignerPath,paidSignerMaximumMilliseconds} from './private-signer-protocol';
+import {transferFixture,now} from './solana-fixtures.test-support';
+const input={schemaVersion:1,environment:'development',operationId:'operation',action:'prepare'};
+function fixture(){
+ const f=transferFixture(),r=f.intent,h='a'.repeat(64),at=now;
+ const result={snapshot:{operationId:'operation',version:4,status:'signed',approvedAt:at,revokedAt:null,payment:null,delivery:null,
+  review:{id:'review',organizationId:'org',siteId:'site',rootTaskId:'root',instructionRevision:0,quoteId:'quote',quoteHash:h,providerId:'equipment_optimizer_v1',amountBaseUnits:r.amountBaseUnits,maximumFeeLamports:r.maximumFeeLamports,sourceAccount:r.sourceAccount,sourceOwner:r.sourceOwner,feePayer:r.feePayer,destinationAccount:r.destinationAccount,destinationOwner:r.destinationOwner,mint:r.mint,tokenProgram:r.tokenProgram,genesis:r.genesis,expiresAt:r.validUntil,reviewHash:h},
+  message:{messageHash:f.wire.messageHash,messageBase64:'cHJpdmF0ZQ==',blockhash:r.blockhash,lastValidBlockHeight:r.lastValidBlockHeight,currentBlockHeight:'100',heightObservedAt:at,heightEvidenceRef:'height',heightEvidenceHash:h,feeLamports:r.feeLamports,sourceObservationId:'source',feeObservationId:'fee'},
+  attempt:{id:'attempt',messageHash:f.wire.messageHash,wireHash:f.wire.wireHash,signature:f.wire.signature,blockhash:r.blockhash,lastValidBlockHeight:r.lastValidBlockHeight}},
+  receipt:{commandKey:'key',commandHash:h,previousVersion:3,version:4,recordedAt:at,status:'signed'}};
+ const ports={verifyExecutor:vi.fn(async()=>true),signer:{prepareAndSign:vi.fn(async()=>result),recoverRetained:vi.fn(async()=>result)}};
+ const handler=createPrivateSignerHandler(ports);
+ const request=(body:unknown=input,headers:Record<string,string>={})=>new Request('https://signer.vercel.app'+paidSignerPath,{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify(body)});
+ return {ports,result,handler,request};
+}
+afterEach(()=>vi.useRealTimers());
+describe('isolated private signer boundary',()=>{
+ it('returns only exact persisted selector/status; never raw wire, receipt or key',async()=>{const f=fixture(),res=await f.handler(f.request());expect(res.status).toBe(200);expect(await res.json()).toEqual({...input,version:4,status:'signed'});expect(res.headers.get('cache-control')).toBe('private, no-store');expect(f.ports.signer.prepareAndSign).toHaveBeenCalledOnce();});
+ it('routes recovery exclusively to retained original recovery',async()=>{const f=fixture();expect((await f.handler(f.request({...input,action:'recover'}))).status).toBe(200);expect(f.ports.signer.prepareAndSign).not.toHaveBeenCalled();expect(f.ports.signer.recoverRetained).toHaveBeenCalledOnce();});
+ it('rejects browser origin before identity or signer',async()=>{const f=fixture();expect((await f.handler(f.request(input,{origin:'https://pactwoven.vercel.app'}))).status).toBe(403);expect(f.ports.verifyExecutor).not.toHaveBeenCalled();});
+ it('requires independently verified project identity',async()=>{const f=fixture();f.ports.verifyExecutor.mockResolvedValue(false);expect((await f.handler(f.request())).status).toBe(401);expect(f.ports.signer.prepareAndSign).not.toHaveBeenCalled();});
+ it.each([{...input,wire:'raw'},{...input,environment:'production'},{...input,action:'broadcast'},{...input,amountBaseUnits:'10000'}])('rejects supplied effect authority %j',async body=>{const f=fixture();expect((await f.handler(f.request(body))).status).toBe(422);expect(f.ports.signer.prepareAndSign).not.toHaveBeenCalled();});
+ it('rejects oversized body before signer',async()=>{const f=fixture();expect((await f.handler(f.request({...input,pad:'x'.repeat(2048)}))).status).toBe(503);expect(f.ports.signer.prepareAndSign).not.toHaveBeenCalled();});
+ it.each(['operation','status','version'])('rejects mismatched persisted %s without retrying',async field=>{const f=fixture();if(field==='operation')f.result.snapshot.operationId='other';if(field==='status')f.result.snapshot.status='submitting';if(field==='version')f.result.receipt.version=5;expect((await f.handler(f.request())).status).toBe(503);expect(f.ports.signer.prepareAndSign).toHaveBeenCalledOnce();});
+ it('retains unknown semantics and sanitizes thrown credential text',async()=>{const f=fixture();f.ports.signer.prepareAndSign.mockRejectedValue(Error('SECRET'));const response=await f.handler(f.request());expect(response.status).toBe(503);expect(await response.text()).not.toContain('SECRET');expect(f.ports.signer.prepareAndSign).toHaveBeenCalledOnce();});
+ it('bounds a stalled verifier and never signs',async()=>{vi.useFakeTimers();const f=fixture();f.ports.verifyExecutor.mockImplementation(()=>new Promise(()=>{}));const promise=f.handler(f.request());await vi.advanceTimersByTimeAsync(paidSignerMaximumMilliseconds);expect((await promise).status).toBe(503);expect(f.ports.signer.prepareAndSign).not.toHaveBeenCalled();});
+ it('bounds execution and signals cancellation without a replacement attempt',async()=>{vi.useFakeTimers();const f=fixture();let received:AbortSignal|undefined;f.ports.signer.prepareAndSign.mockImplementation((...args:any[])=>{received=args[1];return new Promise(()=>{});});const promise=f.handler(f.request());await vi.advanceTimersByTimeAsync(paidSignerMaximumMilliseconds);expect((await promise).status).toBe(503);expect(received?.aborted).toBe(true);expect(f.ports.signer.prepareAndSign).toHaveBeenCalledOnce();});
+});
+describe('keyless private signer client',()=>{
+ const signal=()=>new AbortController().signal;
+ it('calls pinned host with OIDC and no browser credentials or redirects',async()=>{const f=fixture(),send=vi.fn(async(url:any,init:any)=>f.handler(new Request(url,init))),token=vi.fn(async()=> 'header.payload.signature');const client=createPrivateSignerClient('https://signer.vercel.app',{token,fetch:send});expect(await client.prepareAndSign('operation',signal())).toEqual({...input,status:'signed',version:4});expect(send.mock.calls[0]?.[1]).toMatchObject({redirect:'error',credentials:'omit',cache:'no-store',headers:{Authorization:'Bearer header.payload.signature'}});});
+ it.each(['http://signer.vercel.app','https://signer.vercel.app.evil.test','https://signer.vercel.app/path','https://user@signer.vercel.app'])('rejects unpinned origin %s',origin=>expect(()=>createPrivateSignerClient(origin,{token:async()=>''})).toThrow());
+ it('never retries unknown transport',async()=>{const send=vi.fn(async()=>{throw Error('secret');}),client=createPrivateSignerClient('https://signer.vercel.app',{token:async()=> 'h.p.s',fetch:send});await expect(client.prepareAndSign('operation',signal())).rejects.toThrow('reconciliation');expect(send).toHaveBeenCalledOnce();});
+ it('rejects substituted operation and extra wire in response',async()=>{for(const body of [{...input,operationId:'other',status:'signed',version:4},{...input,status:'signed',version:4,wire:'secret'}]){const client=createPrivateSignerClient('https://signer.vercel.app',{token:async()=> 'h.p.s',fetch:async()=>Response.json(body)});await expect(client.prepareAndSign('operation',signal())).rejects.toThrow();}});
+ it('rejects pre-aborted calls without obtaining token',async()=>{const token=vi.fn(async()=> 'h.p.s'),client=createPrivateSignerClient('https://signer.vercel.app',{token}),c=new AbortController();c.abort();await expect(client.prepareAndSign('operation',c.signal)).rejects.toThrow();expect(token).not.toHaveBeenCalled();});
+ it('bounds stalled token acquisition',async()=>{vi.useFakeTimers();const send=vi.fn(),client=createPrivateSignerClient('https://signer.vercel.app',{token:()=>new Promise(()=>{}),fetch:send});const promise=expect(client.prepareAndSign('operation',signal())).rejects.toThrow();await vi.advanceTimersByTimeAsync(paidSignerMaximumMilliseconds);await promise;expect(send).not.toHaveBeenCalled();});
+});

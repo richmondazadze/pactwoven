@@ -1,0 +1,8 @@
+{
+  "name": "@pactwoven/paid-tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "typecheck": "tsc --noEmit", "test": "vitest run src" },
+  "dependencies": { "zod": "4.6.7" }
+}

@@ -1,12 +1,22 @@
 import { createClerkClient, verifyToken } from '@clerk/backend';
 import { TokenVerificationError } from '@clerk/backend/errors';
 import { z } from 'zod';
-import { DomainError } from '@pactwoven/domain';
-import { AccessMfaEvidenceSchema, type VerifiedIdentity, type VerifiedStepUpIdentity } from '@pactwoven/db';
+import { commandDigest, DomainError, mandateIntentHash } from '@pactwoven/domain';
+import { AccessMfaEvidenceSchema, MandateMfaEvidenceSchema, MandateVerificationRequestSchema,
+  AccessRecoveryMfaEvidenceSchema, AccessRecoveryVerificationRequestSchema,
+  type AccessRecoveryVerificationRequest, type VerifiedAccessRecoveryStepUpIdentity,
+  type MandateVerificationRequest, type VerifiedIdentity, type VerifiedStepUpIdentity, type VerifiedMandateStepUpIdentity } from '@pactwoven/db';
 
 export type IdentityVerifier = (token: string) => Promise<VerifiedIdentity>;
 export type StepUpIdentityVerifier = (token: string) => Promise<VerifiedStepUpIdentity>;
+export type MandateStepUpIdentityVerifier = (token: string, request: MandateVerificationRequest) => Promise<VerifiedMandateStepUpIdentity>;
+export type AccessRecoveryStepUpIdentityVerifier = (token: string, request: AccessRecoveryVerificationRequest) => Promise<VerifiedAccessRecoveryStepUpIdentity>;
 export type ClerkIdentityConfig = { secretKey: string; issuer: string; authorizedParties: string[]; jwtKey?: string };
+/** Server-only verified observation; domain purpose, local scope and freshness at effect remain mandatory. */
+export type ClerkIdentityObservation = {
+  identity: VerifiedIdentity;
+  observation: { issuer: string; tokenHash: string; tokenIssuedAt: string; observedAt: string; expiresAt: string };
+};
 type SessionObservation = {
   id: string; userId: string; status: string; expireAt: number; createdAt: number;
   lastActiveOrganizationId?: string | undefined; actor: Record<string, unknown> | null;
@@ -31,6 +41,7 @@ function createClerkVerification(
   sessionLookup?: (sessionId: string) => Promise<SessionObservation>,
   membershipLookup?: MembershipLookup,
 ) {
+  config = { ...config, authorizedParties: [...config.authorizedParties] };
   if (!config.secretKey || !config.issuer || config.authorizedParties.length === 0) {
     throw new DomainError('SETUP_REQUIRED', 503, 'Development identity is not configured.');
   }
@@ -106,25 +117,98 @@ export function createClerkIdentityVerifier(config: ClerkIdentityConfig, session
   return async token => (await verify(token)).identity;
 }
 
-export function createClerkStepUpVerifier(config: ClerkIdentityConfig, sessionLookup?: (sessionId: string) => Promise<SessionObservation>, membershipLookup?: MembershipLookup): StepUpIdentityVerifier {
+async function verifiedTokenHash(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/** This does not resolve internal roles, attest wallet possession or authorize an operation. */
+export function createClerkIdentityObservationVerifier(config: ClerkIdentityConfig, sessionLookup?: (sessionId: string) => Promise<SessionObservation>, membershipLookup?: MembershipLookup): (token: string) => Promise<ClerkIdentityObservation> {
+  const issuer = config.issuer;
   const verify = createClerkVerification(config, sessionLookup, membershipLookup);
   return async token => {
     const { identity, claims, session, observedAt } = await verify(token);
+    const expiresAt = Math.min(claims.exp * 1000, session.expireAt);
+    if (claims.iat === undefined || claims.iat < 0 || !Number.isSafeInteger(claims.iat * 1000) || claims.iat * 1000 > observedAt ||
+        !Number.isSafeInteger(expiresAt) || Number.isNaN(new Date(expiresAt).getTime())) {
+      throw new DomainError('AUTH_REQUIRED', 401, 'A signed session issue time is required.');
+    }
+    // A later session lookup must not refresh an older membership observation.
+    const completeObservationTime = Math.min(observedAt, Date.parse(identity.membershipObservedAt));
+    return { identity, observation: { issuer, tokenHash: await verifiedTokenHash(token),
+      tokenIssuedAt: new Date(claims.iat * 1000).toISOString(), observedAt: new Date(completeObservationTime).toISOString(),
+      expiresAt: new Date(expiresAt).toISOString(),
+    } };
+  };
+}
+
+/** Server-only signed-factor verification. Callers must bind exact purpose/request and preserve identity.membershipObservedAt for freshness. */
+export function createClerkFactorVerification(config: ClerkIdentityConfig, sessionLookup?: (sessionId: string) => Promise<SessionObservation>, membershipLookup?: MembershipLookup) {
+  const issuer = config.issuer;
+  const verify = createClerkVerification(config, sessionLookup, membershipLookup);
+  return async (token: string) => {
+    const { identity, claims, session, observedAt } = await verify(token);
     const factors = z.tuple([z.number().int().nonnegative().max(1_000_000), z.number().int().nonnegative().max(1_000_000)]).safeParse(claims.fva);
     if (!factors.success || claims.iat === undefined || claims.iat * 1000 > observedAt) {
-      throw new DomainError('STEP_UP_REQUIRED', 403, 'Verify both authentication factors before changing access.');
+      throw new DomainError('STEP_UP_REQUIRED', 403, 'Verify both authentication factors before continuing.');
     }
     const maximumAgeMs = 300_000;
     const verifiedAt = claims.iat * 1000 - (Math.max(...factors.data) + 1) * 60_000;
     const expiresAt = Math.min(claims.exp * 1000, session.expireAt, verifiedAt + maximumAgeMs);
     if (observedAt >= expiresAt) throw new DomainError('STEP_UP_REQUIRED', 403, 'Fresh verification of both factors is required.');
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
-    const tokenHash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
-    return { identity, evidence: AccessMfaEvidenceSchema.parse({ id: crypto.randomUUID(), purpose: 'member_access',
+    const tokenHash = await verifiedTokenHash(token);
+    return { identity, evidence: { id: crypto.randomUUID(),
       subject: identity.subject, externalOrganizationId: identity.externalOrganizationId, externalMembershipId: identity.externalMembershipId,
-      sessionId: identity.sessionId, issuer: config.issuer, tokenHash, tokenIssuedAt: new Date(claims.iat * 1000).toISOString(),
+      sessionId: identity.sessionId, issuer, tokenHash, tokenIssuedAt: new Date(claims.iat * 1000).toISOString(),
       firstFactorAgeMinutes: factors.data[0], secondFactorAgeMinutes: factors.data[1], verifiedAt: new Date(verifiedAt).toISOString(),
       observedAt: new Date(observedAt).toISOString(), expiresAt: new Date(expiresAt).toISOString(),
+    } };
+  };
+}
+
+export function createClerkStepUpVerifier(config: ClerkIdentityConfig, sessionLookup?: (sessionId: string) => Promise<SessionObservation>, membershipLookup?: MembershipLookup): StepUpIdentityVerifier {
+  const verify = createClerkFactorVerification(config, sessionLookup, membershipLookup);
+  return async token => {
+    const { identity, evidence } = await verify(token);
+    return { identity, evidence: AccessMfaEvidenceSchema.parse({ ...evidence, purpose: 'member_access' }) };
+  };
+}
+
+export function createClerkMandateStepUpVerifier(config: ClerkIdentityConfig, sessionLookup?: (sessionId: string) => Promise<SessionObservation>, membershipLookup?: MembershipLookup): MandateStepUpIdentityVerifier {
+  const verify = createClerkFactorVerification(config, sessionLookup, membershipLookup);
+  return async (token, input) => {
+    const parsed = MandateVerificationRequestSchema.safeParse(input);
+    if (!parsed.success) throw new DomainError('VALIDATION_FAILED', 422, 'An exact mandate authorization or resume request is required.');
+    // Parsing snapshots the intent before provider awaits; caller mutation cannot rebind verified evidence.
+    const request = parsed.data;
+    const { identity, evidence } = await verify(token);
+    const purpose = request.intent.action === 'AUTHORIZE' ? 'mandate_authorization' : 'mandate_control';
+    return { identity, evidence: MandateMfaEvidenceSchema.parse({ ...evidence, purpose,
+      intentHash: await mandateIntentHash(request.intent), requestNonce: request.nonce,
+      requestHash: await commandDigest({ schemaVersion: 1, purpose, request }),
+    }) };
+  };
+}
+
+/** A separate purpose built from genuine signed factors, never relabeled access evidence. */
+export function createClerkAccessRecoveryStepUpVerifier(config: ClerkIdentityConfig, sessionLookup?: (sessionId: string) => Promise<SessionObservation>, membershipLookup?: MembershipLookup): AccessRecoveryStepUpIdentityVerifier {
+  const verify = createClerkFactorVerification(config, sessionLookup, membershipLookup);
+  return async (token, input) => {
+    const parsed = AccessRecoveryVerificationRequestSchema.safeParse(input);
+    if (!parsed.success) throw new DomainError('VALIDATION_FAILED', 422, 'An exact access recovery close review is required.');
+    const request = parsed.data, { scope, intent } = request;
+    if (scope.environment !== intent.expectedEnvironment || scope.organizationId !== intent.expectedOrganizationId ||
+        scope.actorId !== intent.expectedActorId || scope.externalMembershipId !== intent.expectedExternalMembershipId) {
+      throw new DomainError('FORBIDDEN', 403, 'The current recovery reviewer must match the reviewed scope.');
+    }
+    const { identity, evidence } = await verify(token);
+    if (scope.externalOrganizationId !== identity.externalOrganizationId || scope.externalMembershipId !== identity.externalMembershipId) {
+      throw new DomainError('FORBIDDEN', 403, 'The verified organization membership changed during recovery review.');
+    }
+    const purpose = 'member_access_recovery_close' as const;
+    return { identity, evidence: AccessRecoveryMfaEvidenceSchema.parse({ ...evidence, purpose,
+      scope, kind: intent.kind, key: request.key, requestNonce: request.nonce,
+      intentHash: await commandDigest(intent), requestHash: await commandDigest({ schemaVersion: 1, purpose, request }),
     }) };
   };
 }

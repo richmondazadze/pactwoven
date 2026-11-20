@@ -1,0 +1,63 @@
+.google-settings { max-width: 1220px; }
+.google-settings > .alert { margin-bottom: 20px; }
+.google-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, 300px); gap: 24px; align-items: start; }
+.google-main { min-width: 0; display: grid; gap: 24px; }
+.google-settings .panel { margin: 0; }
+.google-settings .badge { text-transform: none; }
+.google-settings h3 { font-family: var(--font-geist), sans-serif; font-size: 16px; font-weight: 600; line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
+.google-settings p { max-width: 68ch; overflow-wrap: anywhere; }
+.google-account { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 24px; }
+.google-account p, .google-selected-event p, .google-permissions p { margin: 5px 0 0; color: #526071; font-size: 14px; line-height: 1.65; }
+.google-account-icon { display: grid; place-items: center; flex: 0 0 52px; height: 52px; color: #155eef; background: #eff5ff; border-radius: var(--radius-ui); }
+.google-account-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 16px; margin-top: 16px; border-top: 1px solid #e1e7ef; font-size: 14px; }
+.google-boundary { display: flex; align-items: flex-start; gap: 12px; color: #155eef; }
+.google-boundary svg { flex-shrink: 0; }
+.google-boundary p { margin: 0; color: #24344a; font-size: 14px; line-height: 1.7; }
+.google-steps { padding: 0 0 0 23px; margin: 24px 0; }
+.google-steps li { padding: 0 0 14px 6px; font-size: 14px; line-height: 1.65; color: #526071; }
+.google-steps li::marker { color: #155eef; font-weight: 600; }
+.google-intro { margin: 0 0 22px; font-size: 14px; line-height: 1.8; color: #526071; }
+.google-fields { display: grid; gap: 18px; margin-bottom: 24px; }
+.google-fields label { display: grid; gap: 9px; font-size: 14px; font-weight: 600; }
+.google-fields input, .google-fields select, .google-fields textarea { width: 100%; min-width: 0; min-height: 44px; border: 1px solid #c3cddb; border-radius: var(--radius-ui); padding: 11px 12px; background: #fff; color: #111318; font: inherit; font-weight: 400; line-height: 1.5; }
+.google-fields textarea { resize: vertical; }
+.google-fields .review-note { margin: -10px 0 0; }
+.google-selected-event { display: flex; gap: 16px; align-items: flex-start; padding: 18px; margin-bottom: 24px; background: #f5f8fc; border-left: 3px solid #155eef; border-radius: 0 var(--radius-ui) var(--radius-ui) 0; }
+.google-selected-event svg { color: #155eef; flex-shrink: 0; margin-top: 2px; }
+.google-review .panel-heading { align-items: flex-start; gap: 16px; }
+.google-review h2:focus { outline: none; }
+.google-settings .google-event-title { font-size: 24px; line-height: 1.35; }
+.google-review .review-key-values { margin: 24px 0; }
+.google-review dd { overflow-wrap: anywhere; }
+.google-permission-note { display: flex; align-items: flex-start; gap: 12px; padding: 18px; background: #eff5ff; color: #204680; font-size: 14px; line-height: 1.7; border-radius: var(--radius-ui); }
+.google-permission-note svg { flex-shrink: 0; margin-top: 3px; }
+.google-consent-check { display: flex; gap: 12px; align-items: flex-start; margin: 24px 0; font-size: 14px; line-height: 1.7; cursor: pointer; }
+.google-consent-check input { flex: 0 0 19px; width: 19px; height: 19px; margin-top: 3px; accent-color: #155eef; }
+.google-inline-status { margin-top: 20px; font-size: 14px; line-height: 1.7; }
+.google-permissions { list-style: none; padding: 0; margin: 0; }
+.google-permissions li { display: flex; gap: 24px; justify-content: space-between; align-items: flex-start; padding: 22px 0; border-bottom: 1px solid #e1e7ef; }
+.google-permissions li:first-child { padding-top: 0; }
+.google-permissions li:last-child { padding-bottom: 0; border: 0; }
+.google-permissions .badge { margin-top: 10px; }
+.google-permissions .button { flex-shrink: 0; }
+.google-working { display: flex; align-items: center; gap: 10px; color: #526071; font-size: 13px; margin: 20px 0; }
+.google-working span { width: 7px; height: 7px; border-radius: 50%; background: #155eef; }
+.google-settings .button { transition: background-color 160ms ease, border-color 160ms ease, transform 160ms ease; }
+.google-settings .button:active:not(:disabled) { transform: scale(.985); }
+.google-settings :is(input, select, textarea, button):focus-visible { outline: 3px solid #155eef; outline-offset: 3px; }
+.google-settings :disabled { cursor: not-allowed; }
+@media (max-width: 1050px) { .google-layout { grid-template-columns: minmax(0, 1fr); } .google-layout aside { max-width: none; } }
+@media (max-width: 600px) {
+  .google-main { gap: 16px; }
+  .google-account { gap: 12px; }
+  .google-account-icon { flex-basis: 40px; height: 40px; }
+  .google-account h3 { font-size: 14px; }
+  .google-review .panel-heading, .google-permissions li { flex-direction: column; }
+  .google-settings .actions, .google-settings .page-heading { align-items: stretch; }
+  .google-settings .actions .button { width: 100%; }
+  .google-settings .review-key-values > div { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .google-selected-event { padding: 14px; gap: 10px; }
+  .google-permission-note { padding: 14px; }
+}
+@media (prefers-reduced-motion: reduce) { .google-settings .button { transition: none; } .google-settings .button:active:not(:disabled) { transform: none; } }
+@media print { .google-settings .button, .google-consent-check { display: none; } }

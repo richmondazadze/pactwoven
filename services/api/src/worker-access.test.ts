@@ -154,7 +154,7 @@ describe('bound private access exchange', () => {
 
   it('returns only fixed safe messages for bound errors and rejects unbound or status-mismatched errors', async () => {
     for (const [code, status] of [['AUTH_REQUIRED', 401], ['FORBIDDEN', 403], ['STEP_UP_REQUIRED', 403], ['NOT_FOUND', 404],
-      ['VERSION_CONFLICT', 409], ['IDEMPOTENCY_CONFLICT', 409], ['VALIDATION_FAILED', 422], ['IDENTITY_UNAVAILABLE', 503]] as const) {
+      ['VERSION_CONFLICT', 409], ['IDEMPOTENCY_CONFLICT', 409], ['ACCESS_KEY_FENCED', 409], ['VALIDATION_FAILED', 422], ['IDENTITY_UNAVAILABLE', 503]] as const) {
       gateway.grant.mockRejectedValue(new DomainError(code, status, 'private-provider-details'));
       await expect(serviceAccessGateway({ fetch: fetchPrivate }, publicRequest(), issuer).grant(token, key, command, trace))
         .rejects.toMatchObject({ code, status, message: expect.not.stringContaining('private-provider-details') });
@@ -166,6 +166,14 @@ describe('bound private access exchange', () => {
     }
     const fetch = async () => Response.json({ error: { code: 'FORBIDDEN', message: 'private-detail' } }, { status: 403 });
     await expect(serviceAccessGateway({ fetch }, publicRequest(), issuer).grant(token, key, command, trace)).rejects.toMatchObject({ code: 'DURABLE_SERVICE_UNAVAILABLE' });
+  });
+
+  it('keeps a fenced legacy attempt as a safe error without inventing a receipt or checking another key', async () => {
+    gateway.grant.mockRejectedValue(new DomainError('ACCESS_KEY_FENCED', 409, 'private fence details'));
+    const fetch = vi.fn(fetchPrivate);
+    await expect(serviceAccessGateway({ fetch }, publicRequest(), issuer).grant(token, key, command, trace))
+      .rejects.toMatchObject({ code: 'ACCESS_KEY_FENCED', status: 409, message: expect.not.stringContaining('private fence details') });
+    expect(fetch).toHaveBeenCalledOnce(); expect(gateway.getOperation).not.toHaveBeenCalled();
   });
 
   it('bounds oversized and stalled service responses without retry or replacement command', async () => {

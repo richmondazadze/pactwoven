@@ -3,6 +3,8 @@ import { OrganizationBootstrapCommandSchema, IdempotencyKeySchema, OperationSche
   type Command, type Environment, type Operation, type OrganizationBootstrapPayload } from '@pactwoven/contracts';
 import { assertCreationVersion, commandDigest, DomainError } from '@pactwoven/domain';
 import { assertUnprivilegedPool, type VerifiedIdentity } from './repository.js';
+import { assertLegacyMandateIsolation } from './mandate-isolation.js';
+import { assertAccessRecoveryIsolation } from './access-recovery-isolation.js';
 
 export interface OrganizationProvisioner {
   bootstrapOrganization(identity: VerifiedIdentity, idempotencyKey: string,
@@ -11,18 +13,20 @@ export interface OrganizationProvisioner {
 
 export async function assertProvisionerPool(pool: Pool): Promise<void> {
   await assertUnprivilegedPool(pool);
+  await assertLegacyMandateIsolation(pool);
+  await assertAccessRecoveryIsolation(pool, 'bootstrap');
   const result = await pool.query<{ provisioner: boolean; runtime: boolean; table_access: boolean; access: boolean }>(`
-    SELECT pg_has_role(current_user,'pactwoven_provisioner','MEMBER') AS provisioner,
-      pg_has_role(current_user,'pactwoven_runtime','MEMBER') AS runtime,
-      (EXISTS(SELECT 1 FROM pg_roles r WHERE r.rolname='pactwoven_access_provisioner' AND pg_has_role(current_user,r.oid,'MEMBER'))
-        OR EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='pactwoven'
-          AND p.proname IN ('change_member_access','read_member_access','read_access_operation') AND has_function_privilege(current_user,p.oid,'EXECUTE'))) AS access,
-      EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'pactwoven' AND c.relkind IN ('r','p')
-          AND has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')) AS table_access
+    SELECT pg_catalog.pg_has_role(current_user,'pactwoven_provisioner','MEMBER') AS provisioner,
+      pg_catalog.pg_has_role(current_user,'pactwoven_runtime','MEMBER') AS runtime,
+      (EXISTS(SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) 'pactwoven_access_provisioner' AND pg_catalog.pg_has_role(current_user,r.oid,'MEMBER'))
+        OR EXISTS(SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace WHERE n.nspname OPERATOR(pg_catalog.=) 'pactwoven'
+          AND p.proname OPERATOR(pg_catalog.=) ANY (ARRAY['change_member_access','read_member_access','read_access_operation']::pg_catalog.name[]) AND pg_catalog.has_function_privilege(current_user,p.oid,'EXECUTE'))) AS access,
+      EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+        WHERE n.nspname OPERATOR(pg_catalog.=) 'pactwoven' AND c.relkind OPERATOR(pg_catalog.=) ANY (ARRAY['r','p']::pg_catalog."char"[])
+          AND pg_catalog.has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')) AS table_access
   `);
-  const role = result.rows[0];
-  if (!role?.provisioner || role.runtime || role.table_access || role.access) {
+  const role = Array.isArray(result?.rows) && result.rows.length === 1 ? result.rows[0] : undefined;
+  if (role?.provisioner !== true || role.runtime !== false || role.table_access !== false || role.access !== false) {
     throw new DomainError('UNSAFE_DATABASE_ROLE', 503, 'Organization setup requires the isolated, function-only provisioner role.');
   }
 }

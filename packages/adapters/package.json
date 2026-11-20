@@ -1,0 +1,20 @@
+{
+  "name": "@pactwoven/adapters",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@pactwoven/contracts": "workspace:*",
+    "@pactwoven/domain": "workspace:*",
+    "@solana/codecs-numbers": "8.6.0",
+    "@solana/codecs-strings": "8.6.0",
+    "jsonc-parser": "3.3.1"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

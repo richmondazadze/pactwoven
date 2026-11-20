@@ -2,3 +2,61 @@ export * from './repository.js';
 export * from './provisioner.js';
 export * from './schema.js';
 export * from './access-repository.js';
+export * from './mandate-evidence.js';
+export * from './mandate-schema.js';
+export * from './mandate-pool.js';
+export { PostgresMandateRepository } from './mandate-repository.js';
+export * from './access-recovery-schema.js';
+export { PostgresAccessRecoveryRepository } from './access-recovery-repository.js';
+export { assertAccessRecoveryReady, assertAccessRecoveryIsolation } from './access-recovery-isolation.js';
+export * from './finance-provenance-schema.js';
+export * from './financial-fences-schema.js';
+export { PostgresFinanceProvenanceRepository } from './finance-provenance-repository.js';
+export { assertFinanceProvenancePool, createFinanceProvenancePool } from './finance-provenance-pool.js';
+export type { CustodySetupRepository, CustodySetupCapability } from './custody-setup-schema.js';
+export { PostgresCustodySetupRepository } from './custody-setup-repository.js';
+export { PostgresCustodySetupAuthenticationRepository, verifyCustodyWalletEvidence } from './custody-setup-authentication-repository.js';
+export { CustodyIdentityEvidenceSchema, CustodyWalletEvidenceSchema, CustodyMfaEvidenceSchema, CustodyAuthEvidenceSchema } from './custody-setup-auth-evidence.js';
+export type { CustodyAuthEvidence } from './custody-setup-auth-evidence.js';
+export { CustodyReadObservationSchema, CustodyReadOwnerScopeSchema, CustodyPrivateRecordQuerySchema,
+  CustodyPrivateRecordSchema, CustodyOriginalOperationSchema } from './custody-setup-read-schema.js';
+export type { CustodyReadObservation, CustodyReadOwnerScope, CustodyPrivateRecordQuery,
+  CustodyPrivateRecord, CustodyOriginalOperation, CustodySetupReaders } from './custody-setup-read-schema.js';
+export { PostgresCustodySetupReaders } from './custody-setup-read-repository.js';
+export { createCustodySetupPool } from './custody-setup-pool.js';
+export type { FinancialPolicyRepository, FinancialAuthorityCapability } from './financial-policy-schema.js';
+export { PostgresFinancialPolicyRepository } from './financial-policy-repository.js';
+export { PostgresFinancialAuthenticationRepository } from './financial-authentication-repository.js';
+export { FinancialIdentityEvidenceSchema } from './financial-auth-evidence.js';
+export type { FinancialAuthEvidence } from './financial-auth-evidence.js';
+export { assertFinancialAuthorityPool, createFinancialAuthorityPool } from './financial-authority-pool.js';
+export { FinancialPolicyReadObservationSchema, FinancialPolicyReaderScopeSchema,
+  FinancialPolicyContextQuerySchema, FinancialPolicyContextSchema, FinancialGovernanceIndexQuerySchema,
+  FinancialGovernanceIndexSchema, FinancialPolicyOriginalQuerySchema, FinancialPolicyOriginalSchema,
+  FinancialPolicyProposerObservationSchema } from './financial-policy-read-schema.js';
+export type { FinancialPolicyReadObservation, FinancialPolicyReaderScope, FinancialPolicyContextQuery,
+  FinancialPolicyContext, FinancialGovernanceIndexQuery, FinancialGovernanceIndex, FinancialPolicyOriginalQuery,
+  FinancialPolicyOriginal, FinancialPolicyProposerObservation, FinancialPolicyReaders } from './financial-policy-read-schema.js';
+export { PostgresFinancialPolicyReaders } from './financial-policy-read-repository.js';
+export { FinancialPolicyPreparationQuerySchema, FinancialPolicyPreparationSchema,
+  financialPolicyPreparationReasons } from './financial-policy-preparation-schema.js';
+export type { FinancialPolicyPreparationQuery, FinancialPolicyPreparation,
+  FinancialPolicyPreparationReader } from './financial-policy-preparation-schema.js';
+export { PostgresFinancialPolicyPreparationReader } from './financial-policy-preparation-repository.js';
+export { FinancialPolicyOriginalClosureIntentSchema, FinancialPolicyOriginalStatusSchema,
+  FinancialPolicyOriginalClosedSchema } from './financial-policy-closure-schema.js';
+export type { FinancialPolicyOriginalClosureIntent, FinancialPolicyOriginalStatus,
+  FinancialPolicyOriginalClosed, FinancialPolicyClosures } from './financial-policy-closure-schema.js';
+export { PostgresFinancialPolicyClosureRepository } from './financial-policy-closure-repository.js';
+export { PostgresNativeTaskRepository, PostgresNativeTaskWorkerRepository } from './native-task-repository.js';
+export { createNativeTaskPool, assertNativeTaskPool } from './native-task-pool.js';
+export type { NativeTaskPoolPurpose } from './native-task-pool.js';
+export { PostgresNativeDispatchPublisherRepository, PostgresNativeDispatchWorkerRepository } from './native-dispatch-repository.js';
+export { PostgresNativeAuthorityRepository } from './native-authority-repository.js';
+export { PostgresNativeDelegationRepository, PostgresNativeDelegationWorkerRepository,
+  PostgresNativeDelegationDispatchRepository } from './native-delegation-repository.js';
+export { createNativeDelegationPool, assertNativeDelegationPool } from './native-delegation-pool.js';
+export { PostgresNativeMemoryNotesRepository } from './native-memory-notes-repository.js';
+export { PostgresNativeRootRepository } from './native-root-lifecycle-repository.js';
+export { PostgresNativeWorkIntentRepository } from './native-work-intent-repository.js';
+export { PostgresNativeAgentWorkListRepository } from './native-agent-work-list-repository.js';

@@ -1,9 +1,11 @@
-import Link from 'next/link';
 import { SignUp } from '@clerk/nextjs';
+import { AuthShell, authAppearance } from '@/components/auth-shell';
 import { SetupState } from '@/components/setup-state';
 import { authConfigured } from '@/lib/server-config';
+import { workspaceAuthPath, workspaceOnboardingPath, workspaceReturnPath } from '@/lib/workspace-return';
 export const metadata = { title: 'Create an account' };
-export default function SignUpPage() {
+export default async function SignUpPage({ searchParams }: { searchParams: Promise<{ redirect_url?: string | string[] }> }) {
   if (!authConfigured()) return <SetupState/>;
-  return <main className="signin-page"><Link href="/" className="brand-link"><img src="/brand/logo.svg" alt="Pactwoven" width="180" height="40"/></Link><div className="signin-grid"><section><p className="eyebrow">A clear place to begin</p><h1>Bring your<br/>work together.</h1><p>Create your account, choose an organization, then add the first place where work happens.</p><div className="signin-mark"><img src="/brand/symbol.svg" alt="" width="170" height="170"/></div></section><div className="signin-form"><SignUp appearance={{ elements: { rootBox: { width: "100%", maxWidth: 400 }, cardBox: { width: "100%", maxWidth: "100%" } } }} routing="path" path="/sign-up" signInUrl="/sign-in" fallbackRedirectUrl="/app/onboarding"/></div></div></main>;
+  const destination = workspaceReturnPath((await searchParams).redirect_url);
+  return <AuthShell mode="sign-up"><SignUp appearance={authAppearance} routing="path" path="/sign-up" signInUrl={workspaceAuthPath('/sign-in', destination)} forceRedirectUrl={workspaceOnboardingPath(destination)} fallbackRedirectUrl="/app/onboarding"/></AuthShell>;
 }

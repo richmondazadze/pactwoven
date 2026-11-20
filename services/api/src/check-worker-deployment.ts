@@ -1,7 +1,10 @@
 import { assertDevelopmentWorkerDeployment } from './worker-deployment.js';
 
-// Read the two configs, fresh sanitized Hyperdrive observations and Worker
-// secret-name inventories on stdin. Never supply or echo secret values.
+// Read the base configs and optional financial/supplier profiles, fresh sanitized
+// Hyperdrive observations and Worker secret inventories on stdin. Supplier
+// inventory entries must retain {name,type:'secret_text'} from the control plane;
+// base/financial inventories retain their existing name-only contract.
+// Never supply or echo secret values. Private lane JSON is validated, not logged.
 try {
   let input = '';
   for await (const chunk of process.stdin) {

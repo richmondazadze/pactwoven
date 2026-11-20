@@ -37,10 +37,20 @@ export async function privateDeadline<T>(milliseconds: number, work: (signal: Ab
 
 /** A timeout is unconfirmed; callers must not automatically replace or retry an effect. */
 export async function serviceJsonRequest(binding: ServiceBinding, request: Request, maxBytes = 64 * 1024) {
-  return privateDeadline(20_000, async signal => {
-    const response = await binding.fetch(new Request(request, { signal }));
-    if (signal.aborted) { void response.body?.cancel().catch(() => {}); throw new Error('Private exchange was not confirmed'); }
-    const data = await readPrivateJson(response.body, signal, maxBytes);
-    return { response, data };
-  });
+  try {
+    return await privateDeadline(20_000, async signal => {
+      // Workerd accepts manual/follow only. Never follow a private response's
+      // Location with the original authorization or command body.
+      const response = await binding.fetch(new Request(request, { signal, redirect: 'manual' }));
+      if (signal.aborted || (response.status >= 300 && response.status < 400) || response.redirected) {
+        void response.body?.cancel().catch(() => {});
+        throw new Error('Private exchange was not confirmed');
+      }
+      const data = await readPrivateJson(response.body, signal, maxBytes);
+      return { response, data };
+    });
+  } catch {
+    // A service/stream exception is not a verified API error. Drop its type and private diagnostics.
+    throw new Error('Private service exchange was not confirmed');
+  }
 }

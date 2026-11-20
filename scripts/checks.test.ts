@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync, linkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -46,6 +46,44 @@ function rules(root: string) { return checkBoundaries({ root }).findings.map((fi
 afterEach(() => { temporary.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })); });
 
 describe('dependency and import boundaries', () => {
+  it('admits the paid gateway type without admitting its runtime or test-fixture backdoors', () => {
+    const root = workspace();
+    write(root, 'services/paid-tools/package.json', JSON.stringify({ name: '@pactwoven/paid-tools' }));
+    write(root, 'services/paid-tools/src/selection.ts', 'import type { NativeModelGateway } from "../../coordinator/src/azure-gateway.js";');
+    expect(rules(root)).toEqual([]);
+    write(root, 'services/paid-tools/src/selection.ts', 'import { NativeModelGateway } from "../../coordinator/src/azure-gateway.js";');
+    expect(rules(root)).toContain('forbidden dependency: services/paid-tools -> services/coordinator');
+    write(root, 'services/paid-tools/src/selection.ts', 'import "./helpers.test-fixture";');
+    write(root, 'services/paid-tools/src/helpers.test-fixture.ts', 'import { vi } from "vitest";');
+    expect(rules(root)).toContain('production source cannot import a test fixture');
+    write(root, 'apps/web/src/index.ts', 'import "../../../services/paid-tools/src/selection";');
+    expect(rules(root)).toContain('forbidden dependency: apps/web -> services/paid-tools');
+  });
+
+  it('accepts only the two reviewed patch inputs and rejects executable additions', () => {
+    const root = workspace();
+    write(root, 'packages/security-patches/picomatch-4.0.7.patch', 'reviewed patch input');
+    write(root, 'packages/security-patches/picomatch-LICENSE', 'upstream license');
+    expect(rules(root)).toEqual([]);
+    write(root, 'packages/security-patches/index.js', 'export const unexpected = true;');
+    expect(rules(root)).toContain('dependency patch directory contains unreviewed files');
+  });
+
+  it('rejects a symlink in the patch input directory', () => {
+    const root = workspace();
+    write(root, 'packages/security-patches/picomatch-4.0.7.patch', 'reviewed patch input');
+    symlinkSync('picomatch-4.0.7.patch', path.join(root, 'packages/security-patches/picomatch-LICENSE'));
+    expect(rules(root)).toContain('dependency patch directory contains unreviewed files');
+  });
+
+  it('excludes generated OpenNext output while continuing to inspect web source', () => {
+    const root = workspace();
+    write(root, 'apps/web/.open-next/worker.js', 'import db from "@pactwoven/db";');
+    expect(rules(root)).toEqual([]);
+    write(root, 'apps/web/src/worker.ts', 'import db from "@pactwoven/db";');
+    expect(rules(root)).toContain('forbidden dependency: apps/web -> packages/db');
+  });
+
   it('accepts the reviewed graph including pure policy calls inside repositories', () => {
     const root = workspace();
     write(root, 'apps/web/src/index.ts', 'import type { RecordId } from "@pactwoven/contracts"; export type WebId = RecordId;');
@@ -109,6 +147,143 @@ describe('dependency and import boundaries', () => {
     expect(rules(root)).toContain('runtime code generation requires boundary review');
   });
 
+  it('permits only the reviewed filesystem-mock synchronization import in the exact offline fixture', () => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    expect(rules(root)).toEqual([]);
+  });
+
+  it('allows an empty module marker without exporting the fixture capability', () => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module"; export {}; syncBuiltinESMExports();');
+    expect(rules(root)).toEqual([]);
+  });
+
+  it.each([
+    'import { createRequire as syncBuiltinESMExports } from "node:module";',
+    'import { syncBuiltinESMExports, createRequire } from "node:module";',
+    'import module from "node:module";',
+    'import * as module from "node:module";',
+    'export { syncBuiltinESMExports } from "node:module";',
+    'const module = import("node:module");',
+    'import { syncBuiltinESMExports } from "module";',
+  ])('does not turn the offline synchronization exception into module access: %s', source => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', source);
+    expect(rules(root)).toContain('custom runtime module loading requires boundary review');
+  });
+
+  it.each(['programs/pactwoven/tests/other.test.ts', 'programs/pactwoven/client/src/index.ts', 'apps/web/src/sync.test.ts'])('keeps synchronization unavailable outside the exact fixture: %s', file => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, file, 'import { syncBuiltinESMExports } from "node:module";');
+    expect(rules(root)).toContain('custom runtime module loading requires boundary review');
+  });
+
+  it('still inspects configured aliases underneath the exact synchronization import', () => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', JSON.stringify({ compilerOptions: { paths: { 'node:module': ['../../services/signer/src/index.ts'] } } }));
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module";');
+    expect(rules(root)).toContain('forbidden dependency: programs/pactwoven -> services/signer');
+  });
+
+  it.each([
+    'export { syncBuiltinESMExports };',
+    'export { syncBuiltinESMExports as sync };',
+    'export default syncBuiltinESMExports;',
+    'export const helpers = { sync: syncBuiltinESMExports };',
+    'export function sync() { syncBuiltinESMExports(); }',
+    'export = syncBuiltinESMExports;',
+  ])('keeps the special fixture from exporting its capability: %s', source => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', `import { syncBuiltinESMExports } from 'node:module'; ${source}`);
+    expect(rules(root)).toContain('isolated builtin fixture cannot export bindings');
+  });
+
+  it.each([
+    ['programs/pactwoven/client/src/index.ts', '../../tests/execution/offline.test.js'],
+    ['programs/pactwoven/client/src/index.ts', '@/offline.test'],
+    ['programs/pactwoven/client/src/index.ts', '#offline'],
+    ['services/signer/src/index.ts', '../../../programs/pactwoven/tests/execution/offline.test.ts'],
+    ['services/signer/src/index.ts', '@pactwoven/program-client/tests/execution/offline.test.ts'],
+  ])('rejects importing the special fixture through %s %s', (file, specifier) => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client', imports: { '#offline': './tests/execution/offline.test.ts' } }));
+    write(root, 'programs/pactwoven/tsconfig.json', JSON.stringify({ compilerOptions: { paths: { '@/*': ['./tests/execution/*'] } } }));
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    write(root, file, `import '${specifier}';`);
+    expect(rules(root)).toContain('isolated builtin fixture cannot be imported');
+  });
+
+  it.each(['./tests/execution/offline.test.ts', './tests/execution/offline.test.js', './tests/*', './*'])('rejects package exports exposing the special fixture: %s', target => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client', exports: { '.': target } }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    expect(rules(root).some(rule => rule.startsWith('isolated builtin fixture cannot be'))).toBe(true);
+  });
+
+  it('rejects a symlink import resolving to the isolated fixture', () => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    const fixture = 'programs/pactwoven/tests/execution/offline.test.ts';
+    write(root, fixture, 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    write(root, 'programs/pactwoven/client/src/index.ts', 'import "./alias.js";');
+    symlinkSync(path.join(root, fixture), path.join(root, 'programs/pactwoven/client/src/alias.ts'));
+    expect(rules(root)).toContain('isolated builtin fixture cannot be imported');
+  });
+
+  it.each(['exports', 'main', 'module', 'types', 'typings', 'browser'])('refuses encoded and remapped fixture exposure in %s', field => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    for (const target of ['./tests/execution/offline%2etest.ts', './tests/execution/offline.test.ts', './tests/execution/*.js', './tests/execution/*.mts',
+      './tests/execution/offline.test.ts?cache', './tests/execution/offline.test.ts#cache', './tests/execution/*.ts?cache', './*es*s/execution/offline.test.ts', './tests/execution/OFFLINE.test.ts']) {
+      write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client', [field]: field === 'exports' ? { '.': target } : target }));
+      expect(rules(root).some(rule => rule === 'noncanonical package entry target' || rule.startsWith('isolated builtin fixture cannot be'))).toBe(true);
+    }
+  });
+
+  it('identifies a hardlinked alias as the same isolated fixture', () => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    const fixture = 'programs/pactwoven/tests/execution/offline.test.ts';
+    write(root, fixture, 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    write(root, 'programs/pactwoven/client/src/index.ts', 'import "./alias.js";');
+    linkSync(path.join(root, fixture), path.join(root, 'programs/pactwoven/client/src/alias.ts'));
+    expect(rules(root)).toContain('isolated builtin fixture cannot be imported');
+  });
+
+  it.each(['./tests/execution/offline.test.ts?cache', './tests/execution/offline%2etest.ts'])('refuses noncanonical package-import targets: %s', target => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client', imports: { '#offline': target } }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    write(root, 'programs/pactwoven/client/src/index.ts', 'import "#offline";');
+    expect(rules(root)).toContain('noncanonical local module target');
+  });
+
+  it.each(['@pactwoven/program-client/tests/execution/offline%2etest.ts', '../../../programs/pactwoven/tests/execution/offline%2etest.ts'])('rejects encoded module resolution to the fixture: %s', specifier => {
+    const root = workspace();
+    write(root, 'programs/pactwoven/package.json', JSON.stringify({ name: '@pactwoven/program-client' }));
+    write(root, 'programs/pactwoven/tsconfig.json', '{}');
+    write(root, 'programs/pactwoven/tests/execution/offline.test.ts', 'import { syncBuiltinESMExports } from "node:module"; syncBuiltinESMExports();');
+    write(root, 'services/signer/src/index.ts', `import '${specifier}';`);
+    expect(rules(root)).toContain('noncanonical module path');
+  });
+
   it('blocks privileged package aliases and declared but unused forbidden dependencies', () => {
     const root = workspace();
     write(root, 'apps/web/package.json', JSON.stringify({ name: '@pactwoven/web', dependencies: { '@pactwoven/db': 'workspace:*', innocuous: 'npm:pg@8.23.1' } }));
@@ -142,10 +317,84 @@ describe('dependency and import boundaries', () => {
     expect(rules(root)).toContain('local import cannot be resolved for boundary inspection');
     expect(rules(root)).toContain('package export escapes its owning module');
   });
+
+  it('permits only pinned root codec exports in the adapters workspace', () => {
+    const root = workspace();
+    write(root, 'packages/adapters/package.json', JSON.stringify({ name: '@pactwoven/adapters', dependencies: {
+      '@solana/codecs-numbers': '8.6.0', '@solana/codecs-strings': '8.6.0', 'jsonc-parser': '3.3.1',
+    } }));
+    write(root, 'packages/adapters/src/index.ts', 'export * from "@solana/codecs-numbers"; export * from "@solana/codecs-strings"; export * from "jsonc-parser";');
+    expect(rules(root)).toEqual([]);
+    write(root, 'apps/web/src/index.ts', 'export * from "@pactwoven/adapters";');
+    expect(rules(root)).toContain('forbidden dependency: apps/web -> packages/adapters');
+  });
+
+  it.each(['packages/domain', 'packages/contracts', 'packages/testkit'])('does not extend codec capability to %s', owner => {
+    const root = workspace();
+    write(root, `${owner}/package.json`, JSON.stringify({ name: '@pactwoven/' + owner.split('/')[1], dependencies: {
+      '@solana/codecs-numbers': '8.6.0', '@solana/codecs-strings': '8.6.0', 'jsonc-parser': '3.3.1',
+    } }));
+    write(root, `${owner}/src/index.ts`, 'export * from "@solana/codecs-numbers";');
+    expect(rules(root)).toContain('unreviewed effect or SDK dependency in deterministic module: @solana/codecs-numbers');
+  });
+
+  it.each([
+    ['@solana/codecs-numbers', '8.5.0'],
+    ['@solana/codecs-strings', '8.7.0'],
+    ['jsonc-parser', '3.3.0'],
+    ['@solana/kit', '8.6.0'],
+    ['@solana-program/token', '0.18.0'],
+    ['@solana/codecs-numbers/internal', '8.6.0'],
+    ['jsonc-parser/lib/umd/main', '3.3.1'],
+  ])('rejects unreviewed adapter dependency/export %s@%s', (specifier, version) => {
+    const root = workspace();
+    const name = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0]!;
+    write(root, 'packages/adapters/package.json', JSON.stringify({ name: '@pactwoven/adapters', dependencies: { [name]: version } }));
+    write(root, 'packages/adapters/src/index.ts', `export * from ${JSON.stringify(specifier)};`);
+    expect(rules(root)).toContain(`unreviewed effect or SDK dependency in deterministic module: ${name}`);
+  });
+
+  it('keeps ambient network and credentials forbidden beside reviewed codecs', () => {
+    const root = workspace();
+    write(root, 'packages/adapters/package.json', JSON.stringify({ name: '@pactwoven/adapters', dependencies: { '@solana/codecs-numbers': '8.6.0' } }));
+    write(root, 'packages/adapters/src/index.ts', 'import "@solana/codecs-numbers"; fetch("https://example.test"); const config = process.env;');
+    expect(rules(root)).toContain('ambient network, credentials, or executable-code capability in deterministic module');
+    expect(rules(root)).toContain('ambient credentials in deterministic module');
+  });
+
+  it.each(['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'])('rejects codec aliases in %s even beside a canonical approved pin', section => {
+    for (const [name, approved, alternate] of [
+      ['@solana/codecs-numbers', '8.6.0', '8.5.0'],
+      ['@solana/codecs-strings', '8.6.0', '8.5.0'],
+      ['jsonc-parser', '3.3.1', '3.3.0'],
+    ]) {
+      for (const version of [approved, alternate]) {
+        const root = workspace();
+        const manifest: Record<string, unknown> = { name: '@pactwoven/adapters', dependencies: { [name!]: approved } };
+        manifest[section] = { ...(section === 'dependencies' ? manifest.dependencies as object : {}), alternate: `npm:${name}@${version}` };
+        write(root, 'packages/adapters/package.json', JSON.stringify(manifest));
+        write(root, 'packages/adapters/src/index.ts', 'export * from "alternate";');
+        const result = checkBoundaries({ root });
+        expect(result.findings).toContainEqual(expect.objectContaining({
+          file: 'packages/adapters/src/index.ts',
+          rule: 'reviewed codec dependencies require a direct package name and exact pin',
+        }));
+      }
+    }
+  });
 });
 
 describe('code-only publication', () => {
-  it.each(['docs/spec.json', 'PRD.md', 'apps/web/README.MD', 'AGENTS.md', 'evidence/run.json', '.local/state.sql', '.env', '.env.example', 'apps/web/.env.production', 'infra/local.env.sample', 'env.sample.json', 'credentials/account.json', 'keys/signing-keypair.json', 'infra/id.json', 'private.pem', 'apps/web/secrets/key.ts', '../escape.ts', 'apps/../source.ts', 'apps/web\\file.ts', 'notes.txt', 'tests/output.pdf', 'node_modules/library/index.js'])('rejects %s', (file) => {
+  it('admits only the reviewed dependency patch path', () => {
+    expect(inspectPath('packages/security-patches/picomatch-4.0.7.patch')).toBeNull();
+    expect(inspectPath('packages/security-patches/picomatch-LICENSE')).toBeNull();
+    for (const file of ['packages/security-patches/other.patch', 'packages/security-patches/picomatch-4.0.8.patch',
+      'apps/web/picomatch-4.0.7.patch', 'docs/picomatch-4.0.7.patch']) expect(inspectPath(file)).not.toBeNull();
+  });
+  it.each(['apps/web/wrangler.jsonc', 'apps/web/public/_headers'])('allows reviewed Cloudflare source configuration %s', file => {
+    expect(inspectPath(file)).toBeNull();
+  });
+  it.each(['docs/spec.json', 'PRD.md', 'apps/web/README.MD', 'AGENTS.md', 'evidence/run.json', '.local/state.sql', '.env', '.env.example', 'apps/web/.env.production', 'infra/local.env.sample', 'env.sample.json', 'credentials/account.json', 'keys/signing-keypair.json', 'infra/id.json', 'private.pem', 'apps/web/secrets/key.ts', '../escape.ts', 'apps/../source.ts', 'apps/web\\file.ts', 'notes.txt', 'tests/output.pdf', 'node_modules/library/index.js', 'apps/web/.open-next/worker.js', 'apps/web/.open-next/assets/image.svg', 'apps/other/wrangler.jsonc', 'apps/other/public/_headers'])('rejects %s', (file) => {
     expect(inspectPath(file)).not.toBeNull();
   });
 

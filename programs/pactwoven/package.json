@@ -1,0 +1,23 @@
+{
+  "name": "@pactwoven/program-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "generate": "node client/generate.mjs"
+  },
+  "dependencies": {
+    "@solana/kit": "8.6.0"
+  },
+  "devDependencies": {
+    "@solana-program/token": "0.18.0",
+    "@solana-program/system": "0.16.0",
+    "codama": "1.11.0",
+    "@codama/nodes-from-anchor": "1.5.6",
+    "@codama/renderers-js": "2.9.0"
+  },
+  "exports": {
+    ".": "./client/src/index.ts"
+  }
+}

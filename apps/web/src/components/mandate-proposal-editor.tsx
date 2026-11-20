@@ -1,0 +1,19 @@
+'use client';
+import { useEffectEvent, useId, useLayoutEffect, useRef } from 'react';
+import type { MandateAuthoringCapsule } from '../lib/mandate-authoring';
+import { MandateAuthoringReview } from './mandate-authoring-review';
+import { ActionLabel, Panel } from './ui';
+import { useArrival, useMotion } from './motion';
+import { revealAccessTarget } from '../lib/access-viewport';
+
+export function MandateProposalEditor({ policyExpiry, reviewDeadline, onDates, capsule, busy, disabled, fresh, site, onReview, onSubmit, onEdit }: { policyExpiry: string; reviewDeadline: string; onDates: (policy: string, review: string) => void; capsule: (MandateAuthoringCapsule & { kind: 'proposal' }) | null; busy: boolean; disabled: boolean; fresh: boolean; site: string; onReview: () => void; onSubmit: () => void; onEdit: () => void }) {
+  const id = useId(), heading = useRef<HTMLDivElement>(null), edit = useRef<HTMLInputElement>(null), returnToTerms = useRef(false), arrival = useArrival(capsule?.integrityHash, 120), { mode, keyboard } = useMotion();
+  const reveal = useEffectEvent((target: HTMLElement | null) => { if (!document.hidden) revealAccessTarget(target, { mode, keyboard: keyboard.current, prefersReducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches, hidden: document.hidden }); });
+  useLayoutEffect(() => {
+    if (capsule) { reveal(heading.current); return; }
+    if (returnToTerms.current) { returnToTerms.current = false; reveal(edit.current); }
+  }, [capsule?.integrityHash]);
+  return <section className="mandate-authoring-proposal"><Panel title="Proposal terms"><p className="review-note">Advice only at {site}. This proposal cannot authorize purchases, supplier orders, money movement or outbound messages. A different qualified owner or finance reviewer must decide it.</p>{!capsule && <><fieldset disabled={busy || disabled}><legend>Choose expiry and review times in UTC</legend><div className="mandate-authoring-dates"><label className="field" htmlFor={`${id}-policy`}>Policy expires at (UTC)<input ref={edit} type="datetime-local" step="1" id={`${id}-policy`} value={policyExpiry} onChange={event => onDates(event.target.value, reviewDeadline)} required/></label><label className="field" htmlFor={`${id}-review`}>Proposal review deadline (UTC)<input type="datetime-local" step="1" id={`${id}-review`} value={reviewDeadline} onChange={event => onDates(policyExpiry, event.target.value)} required/></label></div><p className="fine">Both times must be in the future. Review must finish no later than policy expiry. The exact UTC timestamps appear in the next review.</p></fieldset><button className="button secondary" type="button" disabled={busy || disabled || !policyExpiry || !reviewDeadline} onClick={onReview}><ActionLabel label={busy ? 'Preparing full review…' : 'Review complete proposal'} reserve={['Review complete proposal', 'Preparing full review…']}/></button></>}
+    <div ref={arrival}>{capsule && <><div ref={heading} tabIndex={-1} className="access-heading-focus"><h3>Review the complete proposal</h3></div><MandateAuthoringReview capsule={capsule}/>{!fresh && <p className="review-note">The current-context review or a deadline has expired. Return to terms and prepare a fresh exact review.</p>}<footer className="form-footer"><p>Submitting creates a proposal for independent review. It does not activate authority.</p><div className="actions"><button className="button secondary" type="button" disabled={busy} onClick={() => { returnToTerms.current = true; onEdit(); }}>Back to terms</button><button className="button" type="button" disabled={busy || disabled || !fresh} onClick={onSubmit}><ActionLabel label={busy ? 'Submitting proposal…' : 'Submit proposal for independent review'} reserve={['Submit proposal for independent review', 'Submitting proposal…']}/></button></div></footer></>}</div>
+  </Panel></section>;
+}

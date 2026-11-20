@@ -31,6 +31,7 @@ const safeErrors = {
   NOT_FOUND: [404, 'The requested access record was not found.'],
   VERSION_CONFLICT: [409, 'Access or organization authority changed. Refresh before reviewing again.'],
   IDEMPOTENCY_CONFLICT: [409, 'This request key was already used for a different change.'],
+  ACCESS_KEY_FENCED: [409, 'This access request reference is closed. Check its original outcome.'],
   VALIDATION_FAILED: [422, 'Check the member access details.'],
   IDENTITY_UNAVAILABLE: [503, 'Identity verification is temporarily unavailable.'],
   DURABLE_SERVICE_UNAVAILABLE: [503, 'Member access was not confirmed. Check the original operation before trying again.'],
@@ -138,13 +139,14 @@ export function serviceAccessGateway(binding: ServiceBinding, originalRequest: R
       throw new DomainError('AUTH_REQUIRED', 401, safeErrors.AUTH_REQUIRED[1]);
     }
     const startedAt = Date.now();
+    let verifiedFailure: DomainError | undefined;
     try {
       const input = requestSchema.parse({ nonce: crypto.randomUUID(), request: { url: originalRequest.url,
         method: originalRequest.method, correlationId }, action });
       await validateRoute(input);
       if ('key' in action && originalRequest.headers.get('Idempotency-Key') !== action.key) throw new Error('Command key mismatch');
       const expected = await affinity(input, token);
-      const { response, data } = await serviceJsonRequest(binding, new Request(accessUrl, { method: 'POST', redirect: 'error',
+      const { response, data } = await serviceJsonRequest(binding, new Request(accessUrl, { method: 'POST', redirect: 'manual',
         headers: { Authorization: authorization, 'Content-Type': 'application/json' }, body: JSON.stringify(input) }), accessResponseBytes);
       const result = responseSchema.parse(data), now = Date.now(), respondedAt = Date.parse(result.respondedAt);
       if (response.headers.get('Cache-Control') !== 'private, no-store' ||
@@ -157,12 +159,13 @@ export function serviceAccessGateway(binding: ServiceBinding, originalRequest: R
       if (result.outcome.status === 'error') {
         const [status, message] = safeErrors[result.outcome.code];
         if (response.status !== status) throw new Error('Access error status mismatch');
-        throw new DomainError(result.outcome.code, status, message);
+        verifiedFailure = new DomainError(result.outcome.code, status, message);
+        throw verifiedFailure;
       }
       if (response.status !== 200) throw new Error('Access success status mismatch');
       return parseResult(action, result.outcome.data);
     } catch (error) {
-      if (error instanceof DomainError) throw error;
+      if (verifiedFailure && error === verifiedFailure) throw verifiedFailure;
       throw new DomainError('DURABLE_SERVICE_UNAVAILABLE', 503, safeErrors.DURABLE_SERVICE_UNAVAILABLE[1]);
     }
   }

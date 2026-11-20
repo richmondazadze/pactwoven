@@ -1,0 +1,41 @@
+'use client';
+import { useEffect, useId, useRef, useState } from 'react';
+import { Icon, type IconName } from '../icon';
+import { useArrival, useMotion } from '../motion';
+const stages: { label: string; agent: string; title: string; copy: string; icon: IconName; evidence: string; status: string }[] = [
+  { label: 'Brief', agent: 'Coordinator', title: 'A clear outcome to work toward.', copy: 'Prepare Harbor Hall for 120 guests. Compare equipment options within the agreed budget.', icon: 'clipboard', evidence: 'Scope recorded · 120 chairs · 20 tables', status: 'Outcome defined' },
+  { label: 'Research', agent: 'Research agent', title: 'Find the options. Keep the sources.', copy: 'The research agent gathers catalogue details and highlights what still needs confirmation.', icon: 'search', evidence: '3 example options · availability unconfirmed', status: 'Gathering evidence' },
+  { label: 'Plan', agent: 'Planning agent', title: 'Bring the dependencies together.', copy: 'Equipment, delivery and setup are arranged into one plan, with room to see what could change.', icon: 'connected-nodes', evidence: 'Delivery → setup → site handoff', status: 'Connecting the plan' },
+  { label: 'Review', agent: 'Policy check', title: 'A decision within your boundaries.', copy: 'The proposed plan is checked against the brief. A supplier commitment still needs explicit authority.', icon: 'shield-lock', evidence: 'Proposed total: $1,840 · example limit: $2,000', status: 'Ready for your review' },
+  { label: 'Record', agent: 'Coordinator', title: 'The result, with its reasoning.', copy: 'A decision pack brings the recommendation, its sources and the remaining questions together.', icon: 'receipt', evidence: 'Example decision pack · no booking or payment', status: 'Decision pack prepared' },
+];
+export function ExecutionDemo({ guidedStep }: { guidedStep?: number | undefined }) {
+  const [manualStep, setStep] = useState(0);
+  const [following, setFollowing] = useState(true);
+  const step = guidedStep !== undefined && following ? guidedStep : manualStep;
+  const [playing, setPlaying] = useState(false);
+  const { mode } = useMotion();
+  const root = useRef<HTMLDivElement>(null);
+  const id = useId();
+  const stage = stages[step]!;
+  const arrival = useArrival(step, 200);
+  useEffect(() => { if (guidedStep !== undefined && following) setStep(guidedStep); }, [guidedStep, following]);
+  useEffect(() => {
+    if (mode !== 'normal') setPlaying(false);
+  }, [mode]);
+  useEffect(() => {
+    const node = root.current;
+    const pause = () => { if (document.hidden) setPlaying(false); };
+    const observer = new IntersectionObserver(entries => { if (!entries[0]?.isIntersecting) setPlaying(false); }, { threshold: .15 });
+    if (node) observer.observe(node);
+    document.addEventListener('visibilitychange', pause);
+    return () => { observer.disconnect(); document.removeEventListener('visibilitychange', pause); };
+  }, []);
+  useEffect(() => {
+    if (!playing || mode !== 'normal' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const timer = window.setTimeout(() => { if (step === stages.length - 1) setPlaying(false); else setStep(value => Math.min(value + 1, stages.length - 1)); }, 2400);
+    return () => window.clearTimeout(timer);
+  }, [playing, step, mode]);
+  function choose(index: number) { setFollowing(false); setPlaying(false); setStep(index); }
+  return <div ref={root} onFocusCapture={event => { if (guidedStep !== undefined && following && !(event.target as HTMLElement).closest('.mk-demo-follow')) { setStep(step); setFollowing(false); } }} className="mk-demo" data-playing={playing} data-step={step} data-following={guidedStep !== undefined && following} aria-label="Interactive concept of a Pactwoven agent workflow"><div className="mk-demo-top"><div><img src="/brand/symbol-small.svg" alt="" width="22" height="22"/><span>Harbor Hall</span><span className="mk-demo-separator">/</span><span>Run overview</span></div><span className="mk-demo-concept">Product concept</span></div><div className="mk-demo-brief"><span className="mk-human-avatar">You</span><div><strong>Get the venue ready for 120 guests.</strong><p>Compare the options. Keep the plan under $2,000.</p></div><Icon name="arrow-right" size={18}/></div><div className="mk-agent-map" aria-label={`Current example step: ${stage.agent}`}><div className={`mk-coordinator ${step === 0 || step === 4 ? 'mk-agent-active' : ''}`}><span className="mk-coordinator-symbol"><img src="/brand/symbol.svg" alt="" width="32" height="32"/></span><div><strong>Coordinator</strong><span>One shared outcome</span></div><span className="mk-agent-light"/></div><div className="mk-map-connectors" aria-hidden="true"><span/><span/><span/></div><div className="mk-specialists">{([{ name: 'Research', icon: 'search', step: 1 }, { name: 'Planning', icon: 'connected-nodes', step: 2 }, { name: 'Policy', icon: 'shield-lock', step: 3 }] as const).map(item => <div key={item.name} className={`mk-agent ${step === item.step ? 'mk-agent-active' : ''}`}><Icon name={item.icon} size={22}/><strong>{item.name}</strong><span>{step > item.step ? 'Reviewed' : step === item.step ? 'In focus' : 'On the team'}</span></div>)}</div></div><div className="mk-demo-detail" ref={arrival} role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-tab-${step}`} tabIndex={0}><div className="mk-demo-detail-top"><span><Icon name={stage.icon} size={17}/>{stage.agent}</span><span className="mk-demo-state">{stage.status}</span></div><div className="mk-demo-view">{step === 1 ? <div className="mk-tool-preview"><div className="mk-tool-bar"><span aria-hidden="true">•••</span><span>Supplier catalogue · sample observation</span><Icon name="search" size={13}/></div><div className="mk-tool-row"><span>Folding chairs</span><strong>120 requested</strong></div><div className="mk-tool-row"><span>Delivery window</span><strong>Needs confirmation</strong></div><div className="mk-tool-row"><span>Source note</span><strong>Delivery fee excluded</strong></div></div> : step === 4 ? <div className="mk-tool-preview"><div className="mk-tool-bar"><Icon name="receipt" size={14}/><span>Example receipt · PW-DEMO-001</span></div><div className="mk-tool-row"><span>Recommendation</span><strong>Ready for review</strong></div><div className="mk-tool-row"><span>Supporting sources</span><strong>3 sample options</strong></div><div className="mk-tool-row"><span>Commitments / payments</span><strong>None made</strong></div></div> : <><h3>{stage.title}</h3><p>{stage.copy}</p></>}</div><div className="mk-demo-evidence"><Icon name="paperclip" size={15}/><span>{stage.evidence}</span></div></div><div className="mk-demo-tabs" role="tablist" aria-label="Example workflow steps">{stages.map((item, index) => <button key={item.label} type="button" id={`${id}-tab-${index}`} role="tab" aria-selected={step === index} aria-controls={`${id}-panel`} tabIndex={step === index ? 0 : -1} onClick={() => choose(index)} onKeyDown={event => { let next: number | undefined; if (event.key === 'ArrowRight') next = (index + 1) % stages.length; if (event.key === 'ArrowLeft') next = (index + stages.length - 1) % stages.length; if (event.key === 'Home') next = 0; if (event.key === 'End') next = stages.length - 1; if (next !== undefined) { event.preventDefault(); choose(next); document.getElementById(`${id}-tab-${next}`)?.focus(); } }}><span>{index + 1}</span>{item.label}</button>)}</div><div className="mk-demo-controls"><p>Illustrative walkthrough. No actions taken.</p><button type="button" className="mk-demo-play" onClick={() => { if (mode !== 'normal') { choose((step + 1) % stages.length); return; } if (playing) setPlaying(false); else { setFollowing(false); setStep(step === stages.length - 1 ? 0 : step); setPlaying(true); } }}><Icon name={playing ? 'pause-circle' : mode !== 'normal' ? 'arrow-right' : 'repeat-arrows'} size={17}/>{mode !== 'normal' ? 'Next step' : playing ? 'Pause' : step === stages.length - 1 ? 'Replay walkthrough' : 'Play walkthrough'}</button></div>{guidedStep !== undefined && <button type="button" className="mk-demo-follow" onClick={() => { setPlaying(false); setStep(step); setFollowing(value => !value); }}>{following ? 'Pause scroll guide' : 'Follow scroll again'}<Icon name={following ? 'pause-circle' : 'arrow-right'} size={15}/></button>}</div>;
+}

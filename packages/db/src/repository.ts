@@ -10,6 +10,8 @@ import {
 } from '@pactwoven/contracts';
 import { assertCreationVersion, assertResponsibilityCreator, assertResponsibilityReader, commandDigest, DomainError } from '@pactwoven/domain';
 import * as schema from './schema.js';
+import { assertLegacyMandateIsolation } from './mandate-isolation.js';
+import { assertAccessRecoveryIsolation } from './access-recovery-isolation.js';
 
 export type VerifiedIdentity = {
   subject: string;
@@ -32,32 +34,35 @@ export interface FoundationRepository {
 
 export async function assertUnprivilegedPool(pool: Pool): Promise<void> {
   const result = await pool.query<{ switched_role: boolean; privileged: boolean; owns_schema: boolean; owns_table: boolean; can_create: boolean }>(`
-    SELECT current_user <> session_user AS switched_role,
-      EXISTS (SELECT 1 FROM pg_roles privileged_role
-      WHERE (privileged_role.rolsuper OR privileged_role.rolbypassrls OR privileged_role.rolcreaterole)
-        AND pg_has_role(current_user, privileged_role.oid, 'MEMBER')) AS privileged,
-      EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = 'pactwoven' AND pg_has_role(current_user, n.nspowner, 'MEMBER')) AS owns_schema,
-      EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'pactwoven' AND c.relkind IN ('r','p') AND pg_has_role(current_user, c.relowner, 'MEMBER')) AS owns_table,
-      has_schema_privilege(current_user, 'pactwoven', 'CREATE') AS can_create
-    FROM pg_roles r WHERE r.rolname = current_user
+    SELECT current_user OPERATOR(pg_catalog.<>) session_user AS switched_role,
+      EXISTS (SELECT 1 FROM pg_catalog.pg_roles privileged_role
+      WHERE (privileged_role.rolsuper OR privileged_role.rolbypassrls OR privileged_role.rolcreaterole
+        OR privileged_role.rolreplication OR privileged_role.rolcreatedb)
+        AND pg_catalog.pg_has_role(current_user, privileged_role.oid, 'MEMBER')) AS privileged,
+      EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname OPERATOR(pg_catalog.=) 'pactwoven' AND pg_catalog.pg_has_role(current_user, n.nspowner, 'MEMBER')) AS owns_schema,
+      EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+        WHERE n.nspname OPERATOR(pg_catalog.=) 'pactwoven' AND c.relkind OPERATOR(pg_catalog.=) ANY (ARRAY['r','p']::pg_catalog."char"[]) AND pg_catalog.pg_has_role(current_user, c.relowner, 'MEMBER')) AS owns_table,
+      pg_catalog.has_schema_privilege(current_user, 'pactwoven', 'CREATE') AS can_create
+    FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) current_user
   `);
-  const role = result.rows[0];
-  if (!role || role.switched_role || role.privileged || role.owns_schema || role.owns_table || role.can_create) {
+  const role = Array.isArray(result?.rows) && result.rows.length === 1 ? result.rows[0] : undefined;
+  if (role?.switched_role !== false || role.privileged !== false || role.owns_schema !== false || role.owns_table !== false || role.can_create !== false) {
     throw new DomainError('UNSAFE_DATABASE_ROLE', 503, 'The API requires a non-owner, non-privileged database role.');
   }
 }
 
 export async function assertRuntimePool(pool: Pool): Promise<void> {
   await assertUnprivilegedPool(pool);
+  await assertLegacyMandateIsolation(pool);
+  await assertAccessRecoveryIsolation(pool, 'runtime');
   const result = await pool.query<{ can_provision: boolean }>(`SELECT EXISTS (
-    SELECT 1 FROM pg_roles r WHERE r.rolname IN ('pactwoven_provisioner','pactwoven_access_provisioner')
-      AND (pg_has_role(current_user,r.oid,'MEMBER') OR pg_has_role(session_user,r.oid,'MEMBER')))
+    SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname OPERATOR(pg_catalog.=) ANY (ARRAY['pactwoven_provisioner','pactwoven_access_provisioner']::pg_catalog.name[])
+      AND (pg_catalog.pg_has_role(current_user,r.oid,'MEMBER') OR pg_catalog.pg_has_role(session_user,r.oid,'MEMBER')))
     OR EXISTS (
-    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-    WHERE n.nspname = 'pactwoven' AND p.proname IN ('bootstrap_organization','change_member_access','read_member_access','read_access_operation')
-      AND has_function_privilege(current_user,p.oid,'EXECUTE')) AS can_provision`);
-  if (result.rows[0]?.can_provision) {
+    SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace
+    WHERE n.nspname OPERATOR(pg_catalog.=) 'pactwoven' AND p.proname OPERATOR(pg_catalog.=) ANY (ARRAY['bootstrap_organization','change_member_access','read_member_access','read_access_operation']::pg_catalog.name[])
+      AND pg_catalog.has_function_privilege(current_user,p.oid,'EXECUTE')) AS can_provision`);
+  if (!Array.isArray(result?.rows) || result.rows.length !== 1 || result.rows[0]?.can_provision !== false) {
     throw new DomainError('UNSAFE_DATABASE_ROLE', 503, 'The API runtime must not have identity provisioning authority.');
   }
 }

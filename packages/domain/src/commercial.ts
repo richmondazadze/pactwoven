@@ -7,9 +7,10 @@ export async function qualifyOfferTerms(input: OfferTermsVersion, now: string, p
   const terms = OfferTermsVersionSchema.parse(input);
   const fail = (message: string): never => { throw new DomainError('TERMS_INCOMPLETE', 422, message); };
   if (instant(terms.expiresAt) <= instant(now)) throw new DomainError('TERMS_EXPIRED', 409, 'The offer expired.');
-  if (terms.version !== (previous?.version ?? 0) + 1 || (previous ? terms.previousVersionHash !== await commandDigest(previous) : terms.previousVersionHash !== null) ||
-      (previous && (previous.id !== terms.id || previous.organizationId !== terms.organizationId || previous.environment !== terms.environment ||
-      previous.supplierRelationshipId !== terms.supplierRelationshipId))) fail('Counteroffers must form one immutable scoped version chain.');
+  const prior = previous === null ? null : immutable(OfferTermsVersionSchema.parse(previous));
+  if (terms.version !== (prior?.version ?? 0) + 1 || (prior ? terms.previousVersionHash !== await commandDigest(prior) : terms.previousVersionHash !== null) ||
+      (prior && (prior.id !== terms.id || prior.organizationId !== terms.organizationId || prior.environment !== terms.environment ||
+      prior.supplierRelationshipId !== terms.supplierRelationshipId))) fail('Counteroffers must form one immutable scoped version chain.');
   const assets = new Map(terms.assets.map(asset => [asset.id, asset]));
   if (assets.size !== terms.assets.length || terms.assets.some(asset => asset.environment !== terms.environment)) fail('Asset definitions must be unique and in the same environment.');
   const payeeAsset = assets.get(terms.payee.assetId);

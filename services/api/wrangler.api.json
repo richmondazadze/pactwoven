@@ -3,18 +3,40 @@
   "name": "pactwoven-api-development",
   "main": "src/worker.ts",
   "compatibility_date": "2026-11-14",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "workers_dev": true,
   "preview_urls": false,
   "routes": [],
   "send_metrics": false,
-  "observability": {"enabled": false},
+  "observability": {
+    "enabled": false
+  },
   "vars": {
     "APP_ENVIRONMENT": "development",
     "WORKER_ROLE": "api",
-    "ALLOWED_ORIGINS": "http://127.0.0.1:3001,http://localhost:3001",
+    "ALLOWED_ORIGINS": "http://127.0.0.1:3001,http://localhost:3001,https://pactwoven-web-development.richmondazadze1313.workers.dev,https://pactwoven-richmond-s-projects.vercel.app,https://pactwoven-ceheah86v-richmond-s-projects.vercel.app,https://pactwoven.vercel.app",
     "EXPECTED_DATABASE_USER": "pactwoven_dev_app"
   },
-  "services": [{"binding": "IDENTITY_PROVISIONER", "service": "pactwoven-provisioner-development"}],
-  "hyperdrive": []
+  "services": [
+    {
+      "binding": "IDENTITY_PROVISIONER",
+      "service": "pactwoven-provisioner-development"
+    },
+    {
+      "binding": "MANDATE_AUTHORITY",
+      "service": "pactwoven-mandate-development"
+    },
+    {
+      "binding": "FINANCIAL_AUTHORITY",
+      "service": "pactwoven-financial-development"
+    }
+  ],
+  "hyperdrive": [
+    {
+      "binding": "DATABASE",
+      "id": "9d30fcc5d81d4ab4b80a0bb64ab7b81e"
+    }
+  ]
 }

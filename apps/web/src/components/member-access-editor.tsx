@@ -4,7 +4,10 @@ import { useAuth } from '@clerk/nextjs';
 import { AccessRoleSchema, AccessScopeSchema, OperationSchema, type AccessScope, type Operation } from '@pactwoven/contracts';
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { accessFailureKind, accessScopeOf, buildAccessIntent, effectiveReadingDescription, type AccessIntent, type AccessSelection } from '@/lib/access-review';
-import { saveAccessRecovery, removeAccessRecovery, type AccessRecovery, type AccessRecoveryScope } from '@/lib/access-recovery';
+import { saveAccessRecovery, removeAccessRecovery, readAccessRecovery, recoveryFromCapsule, type AccessRecovery, type AccessRecoveryScope } from '@/lib/access-recovery';
+import { createAccessCapsule,readCurrentAccessMember,type AccessCapsule } from '@/lib/access-capsule';
+import { originalOperation } from '@/lib/access-retry';
+import { useAccessRecoveryMemory } from './access-recovery-memory';
 import { browserRecoveryStorage } from '@/lib/bootstrap-recovery';
 import { apiRequest, RequestError } from '@/lib/api';
 import { zonedDateTimeToIso } from '@/lib/time';
@@ -28,7 +31,7 @@ function RevokedMemberInspection({member,onBack}:{member:Extract<AccessSelection
   return <div className="access-editor" ref={arrival}><button type="button" className="back-link" onClick={onBack}><Icon name="arrow-left"/>People & authority</button><div ref={heading} id="member-access-heading" tabIndex={-1} className="access-heading-focus"><PageHeading title="Revoked member record" description={`${member.displayName} · ${session.organization.name}`}/></div><RevokedMemberReview member={member} sites={session.sites}/></div>;
 }
 function EditableMemberAccess({ selection, authorityEpoch, recoveryScope, onBack, onOutcome, onUnresolved }: MemberAccessEditorProps) {
-  const {mode,keyboard}=useMotion();const {session}=useWorkspace(); const auth=useAuth(); const client=useQueryClient();
+  const {mode,keyboard}=useMotion();const {session}=useWorkspace(); const auth=useAuth(); const client=useQueryClient();const memory=useAccessRecoveryMemory();
   const [scope,setScope]=useState<AccessScope>(()=>selection.kind==='grant'?{roles:[],siteIds:[],actionSiteIds:[],expiresAt:null}:accessScopeOf(selection.member));
   const [expiry,setExpiry]=useState(()=>scope.expiresAt?new Date(scope.expiresAt).toISOString().slice(0,16):''); const [reason,setReason]=useState('');
   const [intent,setIntent]=useState<AccessIntent|null>(null); const [verified,setVerified]=useState(false); const [verifyRound,setVerifyRound]=useState(0);
@@ -56,25 +59,32 @@ function EditableMemberAccess({ selection, authorityEpoch, recoveryScope, onBack
   }
   async function submit() {
     if(sending.current || !intent || !verified || rejected || isSelf || !requestKey.current)return;
-    const recovery:AccessRecovery={version:1,...recoveryScope,kind:intent.kind,key:requestKey.current};
-    if(!saveAccessRecovery(browserRecoveryStorage(),recovery)) {setError(new RequestError('RECOVERY_UNAVAILABLE','This browser cannot retain the original request reference. Enable tab storage before submitting an access change.'));return;}
+    if(readAccessRecovery(browserRecoveryStorage(),recoveryScope)||memory.capsule){setError(new RequestError('ORIGINAL_REQUEST_PENDING','An original access request is unresolved. Return to People & authority to check it.'));return;}
     sending.current=true;setBusy(true);setError(null);
+    let recovery:AccessRecovery|null=null;let capsule:AccessCapsule|null=null;let attempted=false;let retained=false;
+    const controller=new AbortController();requestController.current=controller;
     try {
-      if(!auth.orgId || auth.orgId!==recoveryScope.organizationId || auth.userId!==recoveryScope.userId)throw new RequestError('SESSION_REQUIRED','Your organization session changed. Sign in again before submitting.',401);
-      const controller=new AbortController();requestController.current=controller;
-      const operation=await apiRequest(intent.path,OperationSchema,()=>auth.getToken({skipCache:true,organizationId:recoveryScope.organizationId}),{body:intent.command,idempotencyKey:recovery.key,signal:controller.signal});
-      if(operation.status==='succeeded'||operation.status==='failed')removeAccessRecovery(browserRecoveryStorage(),recoveryScope);
-      if(mounted.current) { if(operation.status==='succeeded'||operation.status==='failed')onOutcome(operation);else onUnresolved(recovery); }
+      if(!auth.orgId||!auth.userId||!auth.sessionId||auth.orgId!==recoveryScope.organizationId||auth.userId!==recoveryScope.userId)throw new RequestError('SESSION_REQUIRED','Your organization session changed. Sign in again before submitting.',401);
+      const freshToken=()=>auth.getToken({skipCache:true,organizationId:recoveryScope.organizationId});
+      const requester=await readCurrentAccessMember(session.actor.actorId,freshToken,controller.signal);
+      if(!requester||requester.externalSubject!==auth.userId||requester.status!=='active'||!requester.roles.includes('owner'))throw new RequestError('FORBIDDEN','Current owner membership could not be verified.',403);
+      capsule=await createAccessCapsule({userId:auth.userId,organizationId:auth.orgId,sessionId:auth.sessionId,apiBase:recoveryScope.apiBase,environment:session.actor.environment,internalOrganizationId:session.organization.id,actorId:session.actor.actorId,requesterMembershipId:requester.externalMembershipId},selection,intent,requestKey.current);
+      controller.signal.throwIfAborted();memory.retain(capsule);retained=true;recovery=recoveryFromCapsule(capsule);
+      if(!saveAccessRecovery(browserRecoveryStorage(),recovery))throw new RequestError('RECOVERY_UNAVAILABLE','This browser cannot retain the original request reference. No command was sent.');
+      attempted=true;
+      const operation=originalOperation(await apiRequest(capsule.original.path,OperationSchema,freshToken,{body:capsule.original.command,idempotencyKey:capsule.key,signal:controller.signal}),capsule.scope.environment,capsule);
+      if(operation.status==='succeeded'||operation.status==='failed'){removeAccessRecovery(browserRecoveryStorage(),recovery);memory.resolve(capsule.key);}
+      if(mounted.current){if(operation.status==='succeeded'||operation.status==='failed')onOutcome(operation);else onUnresolved(recovery);}
     } catch(e) {
-      const issue=e instanceof RequestError?e:new RequestError('UNCONFIRMED','The service outcome could not be confirmed.');
+      const issue=e instanceof RequestError?e:new RequestError(attempted?'UNCONFIRMED':'PREPARATION_FAILED',attempted?'The service outcome could not be confirmed.':'The original request could not be prepared. No command was sent.');
       const kind=accessFailureKind(issue);
-      if(kind!=='unknown')removeAccessRecovery(browserRecoveryStorage(),recoveryScope);
-      if(mounted.current) {
+      if(!attempted||kind!=='unknown'){if(recovery)removeAccessRecovery(browserRecoveryStorage(),recovery);if(retained&&capsule)memory.resolve(capsule.key);}
+      if(mounted.current){
         setError(issue);setVerified(false);
-        if(issue.status===401 || (issue.status===403 && issue.code==='FORBIDDEN')) {setAccessLost(true);void client.cancelQueries({queryKey:['members']});client.removeQueries({queryKey:['members']});client.removeQueries({queryKey:['member-candidates']});void client.invalidateQueries({queryKey:['session']});}
+        if(issue.status===401||(issue.status===403&&issue.code==='FORBIDDEN')){memory.purge();setAccessLost(true);void client.cancelQueries({queryKey:['members']});client.removeQueries({queryKey:['members']});client.removeQueries({queryKey:['member-candidates']});void client.invalidateQueries({queryKey:['session']});}
         if(kind==='step-up')setVerifyRound(value=>value+1);
-        else if(kind==='rejected')setRejected(true);
-        else onUnresolved(recovery);
+        else if(attempted&&kind==='rejected')setRejected(true);
+        else if(attempted&&recovery)onUnresolved(recovery);
       }
     } finally {sending.current=false;if(mounted.current)setBusy(false);}
   }

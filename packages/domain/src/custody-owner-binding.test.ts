@@ -1,0 +1,8 @@
+import {describe,expect,it} from 'vitest';
+import {custodySetupAddresses,custodyCommandHash} from './custody-owner-binding';
+import type {CustodyCommand} from '@pactwoven/contracts';
+describe('custody immutable identity',()=>{
+ it('matches an independently generated Solana Kit 8.6 PDA and operation vector',async()=>{expect(await custodySetupAddresses('5UaivPxV8oQypy5mxmQCzvZXHVSMkPsZ2TKJvszyebVG','123e4567-e89b-12d3-a456-426614174000','123e4567-e89b-12d3-a456-426614174001','34ee730cf90d3d55ea2d34e911aa4ad941aafb29668bf4056cfa88c6cf0492e4')).toEqual({configAddress:'6nCoQdJQFYiz4s8JY3d5oZb38hBrTJayvxk5xib9SvDs',registrationAddress:'Gj3xg9vE2DWPFeSJo5tJqxn88mz8Zmo5ovCbYXhGhK4F',vaultAddress:'ea7H8kdpttXwcbZLJ9d7CR5VhJY1ZTD24MwYeFkJpEk',setupOperationKey:'0e494aacfbff4e2e79264c6d2a2ff62c801ad9e71ea13f5cfea805ce67fff524'});});
+ it('binds original actor, key, scope, nonce and evidence reference',async()=>{const v:CustodyCommand={schemaVersion:1,kind:'confirm',key:'original_confirm_key_001',responsibilityId:'r',setupId:'123e4567-e89b-12d3-a456-426614174000',expectedSetupVersion:1,expectedSetupHash:'a'.repeat(64),confirmationId:'123e4567-e89b-12d3-a456-426614174001',confirmationNonce:'A'.repeat(43),mfaEvidenceId:'123e4567-e89b-12d3-a456-426614174002'};
+  const hash=await custodyCommandHash('org','owner',v);expect(await custodyCommandHash('org','owner',{...v})).toBe(hash);for(const [o,a,c] of [['other','owner',v],['org','other',v],['org','owner',{...v,key:'changed_confirm_key_001'}],['org','owner',{...v,mfaEvidenceId:'123e4567-e89b-12d3-a456-426614174003'}]] as const)expect(await custodyCommandHash(o,a,c)).not.toBe(hash);});
+});

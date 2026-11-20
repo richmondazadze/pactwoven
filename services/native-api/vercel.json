@@ -1,0 +1,22 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm build",
+  "regions": ["iad1"],
+  "functions": { "api/index.mjs": { "maxDuration": 60 } },
+  "rewrites": [
+    { "source": "/v1/voice/transcribe", "destination": "/api/index" },
+    { "source": "/v1/voice/speak", "destination": "/api/index" },
+    { "source": "/health", "destination": "/api/index" },
+    { "source": "/internal/native-authority", "destination": "/api/index" },
+    { "source": "/internal/native-delegated-authority", "destination": "/api/index" },
+    { "source": "/v1/tasks", "destination": "/api/index" },
+    { "source": "/v1/tasks/:path*", "destination": "/api/index" },
+    { "source": "/v1/memory", "destination": "/api/index" },
+    { "source": "/v1/memory/(.*)", "destination": "/api/index" },
+    { "source": "/v1/agent-work", "destination": "/api/index" },
+    { "source": "/v1/agent-work/(.*)", "destination": "/api/index" },
+    { "source": "/v1/google/(.*)", "destination": "/api/index" }
+  ]
+}

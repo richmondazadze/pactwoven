@@ -1,0 +1,58 @@
+import { SessionSchema, type MandateDecisionIntent, type MandateOperationResult, type MandateDecision, type MandateHead, type MandatePage, type MandatePolicy, type MandateProposalVersion, type MandateReview, type MandateVersion, type PolicyDocumentVersion, type Responsibility } from '@pactwoven/contracts';
+import { commandDigest } from '@pactwoven/contracts/canonical';
+import { createMandateReadScope } from './mandates';
+import { prepareMandateDecision } from './mandate-actions';
+import { createMandateCapsule } from './mandate-capsule';
+import { locatorFromCapsule } from './mandate-recovery';
+export const mandateFixtureNow=Date.parse('2026-11-15T12:00:00.000Z');
+export const mandateFixtureTime=(offset:number)=>new Date(mandateFixtureNow+offset).toISOString();
+export async function mandateReadFixture(accepted=true) {
+  const session=SessionSchema.parse({actor:{actorId:'reviewer_a',principalKind:'human',organizationId:'org_a',environment:'development',roles:['finance'],siteIds:['site_a'],actionSiteIds:['site_a'],sessionId:'server_session',authenticatedAt:mandateFixtureTime(-5000),correlationId:'correlation_a'},organization:{id:'org_a',name:'Fixture organization',authorityEpoch:3},sites:[{id:'site_a',name:'Current site label',timeZone:'UTC'}]});
+  const scope=createMandateReadScope(session,{userId:'user_a',orgId:'provider_org_a',sessionId:'clerk_session_a'},'https://api.example.test','responsibility_a');
+  const original:Responsibility={id:scope.responsibilityId,organizationId:scope.organizationId,environment:'development',ownerId:'requester_a',title:'Original responsibility title',description:'Original delivery requirements.',siteId:'site_a',version:1,window:{startsAt:mandateFixtureTime(-20_000),endsAt:mandateFixtureTime(9_000_000),timeZone:'UTC'},requirements:[{id:'requirement_a',description:'Original requirement',quantity:4,unit:'crates',evidenceRule:'Photograph the seal.'}],acceptancePolicy:'Original acceptance text.\nKeep the signed receipt.',executionState:'DRAFT',authorityState:null,coverageState:'UNKNOWN',createdAt:mandateFixtureTime(-30_000),updatedAt:mandateFixtureTime(-20_000)};
+  const current:Responsibility={...original,version:2,title:'Current responsibility title',description:'Current description differs.',acceptancePolicy:'Current acceptance text is different.',updatedAt:mandateFixtureTime(-10_000)};
+  const reference=async(record:Responsibility)=>({id:record.id,version:record.version,siteId:record.siteId,hash:await commandDigest(record)});
+  async function document(id:string,purpose:PolicyDocumentVersion['purpose'],text:string):Promise<PolicyDocumentVersion>{const body={schemaVersion:1 as const,id,version:1,organizationId:scope.organizationId,environment:scope.environment,purpose,normalization:'NFC_LF_V1' as const,text,contentHash:await commandDigest(text),previousVersion:null,createdAt:mandateFixtureTime(-5000),createdBy:'requester_a'};return {...body,hash:await commandDigest(body)};}
+  async function proposal(id:string,responsibility:Responsibility,text:string){const acceptance=await document(`${id}_acceptance`,'ACCEPTANCE_POLICY',responsibility.acceptancePolicy),policyDocument=await document(`${id}_policy`,'MANDATE_POLICY',text);const policy:MandatePolicy={mode:'ADVISE',siteIds:['site_a'],actions:[],budgets:[],supplierRelationshipIds:[],acceptancePolicy:{id:acceptance.id,version:acceptance.version,hash:acceptance.hash},communication:{recipientIds:[],purposes:[],messageKinds:[],maximumMessages:0,expiresAt:mandateFixtureTime(3_600_000)},expiresAt:mandateFixtureTime(3_600_000)};const body={schemaVersion:1 as const,id,version:1,previousProposal:null,organizationId:scope.organizationId,environment:scope.environment,organizationEpoch:3,mandateId:'mandate_a',responsibility:await reference(responsibility),requesterId:'requester_a',previousAcceptedVersion:null,expectedHead:null,policy,policyHash:await commandDigest(policy),policyDocument:{id:policyDocument.id,version:policyDocument.version,hash:policyDocument.hash},createdAt:mandateFixtureTime(-2000),expiresAt:mandateFixtureTime(600_000)};return {proposal:{...body,hash:await commandDigest(body)} satisfies MandateProposalVersion,documents:[acceptance,policyDocument]};}
+  const selected=await proposal('proposal_original',original,'Original mandate policy.\n  Preserve this indentation and full text.\n<script>not executable</script>');
+  const acceptedSource=await proposal('proposal_current',current,'Current accepted mandate policy.\nDifferent exact terms.');
+  const referenceOf=(p:MandateProposalVersion)=>({id:p.id,version:p.version,hash:p.hash});
+  const open=(p:MandateProposalVersion):MandateDecision=>({proposal:referenceOf(p),version:1,state:'OPEN',createdAt:p.createdAt,decidedAt:null,actorId:null,intentHash:null,reason:null,replacement:null,authorization:null,operationId:`${p.id}_operation`});
+  const acceptedVersion:MandateVersion={id:'mandate_a',organizationId:scope.organizationId,environment:scope.environment,responsibilityId:scope.responsibilityId,version:2,mandateEpoch:2,organizationEpoch:3,policy:acceptedSource.proposal.policy,policyHash:acceptedSource.proposal.policyHash,previousVersionHash:'a'.repeat(64),createdAt:mandateFixtureTime(-1000),createdBy:'requester_a'};
+  const acceptedReference={id:acceptedVersion.id,version:acceptedVersion.version,hash:await commandDigest(acceptedVersion)};
+  const head:MandateHead={organizationId:scope.organizationId,environment:scope.environment,organizationEpoch:3,mandateId:'mandate_a',mandateVersion:2,mandateEpoch:2,responsibilityId:scope.responsibilityId,state:'ACTIVE',policyHash:acceptedVersion.policyHash,expiresAt:acceptedVersion.policy.expiresAt};
+  const headReference={mandateId:head.mandateId,mandateVersion:head.mandateVersion,mandateEpoch:head.mandateEpoch,hash:await commandDigest(head)};
+  const approved:MandateDecision={...open(acceptedSource.proposal),version:2,state:'APPROVED',decidedAt:mandateFixtureTime(-1000),actorId:'reviewer_a',intentHash:'d'.repeat(64),authorization:{id:'receipt_a',purpose:'mandate_authorization',intentHash:'d'.repeat(64),requesterId:'requester_a',approverId:'reviewer_a',approvedAt:mandateFixtureTime(-1000),stepUpEvidenceId:'evidence_reference',stepUpVerifiedAt:mandateFixtureTime(-2000),stepUpExpiresAt:mandateFixtureTime(298_000),acceptedVersion:acceptedReference,acceptedHead:headReference}};
+  const currentReference=await reference(current);
+  const review:MandateReview={schemaVersion:1,envelope:{schemaVersion:1,observedAt:mandateFixtureTime(0),organizationEpoch:3,responsibility:current,responsibilityReference:currentReference,site:session.sites[0]!,proposal:selected.proposal,decision:open(selected.proposal),acceptedVersion:accepted?acceptedVersion:null,head:accepted?head:null,acceptedProposal:accepted?acceptedSource.proposal:null,acceptedDecision:accepted?approved:null,financialState:null,policyDocuments:[...selected.documents,...(accepted?acceptedSource.documents:[])],eligibility:[{action:'AUTHORIZE',eligible:false,requiresStepUp:true,blockers:['RESPONSIBILITY_CHANGED']}],supportedPolicy:{mode:'ADVISE',financialActions:[],monetaryBudgets:false,supplierReferences:false,outboundCommunication:false},operation:null},responsibilityVersions:[current,original],effectiveAuthority:accepted?{state:'ACTIVE',blockers:[]}:{state:'NONE',blockers:['NO_AUTHORITY']},effectiveDecisionState:'STALE'};
+  const page:MandatePage={schemaVersion:1,organizationId:scope.organizationId,environment:scope.environment,organizationEpoch:3,responsibility:current,responsibilityReference:currentReference,site:session.sites[0]!,items:[{proposal:referenceOf(selected.proposal),mandateId:'mandate_a',responsibility:selected.proposal.responsibility,requesterId:'requester_a',decisionState:'OPEN',effectiveDecisionState:'STALE',createdAt:selected.proposal.createdAt,expiresAt:selected.proposal.expiresAt}],nextCursor:'opaque+/cursor=&page2',acceptedVersion:accepted?acceptedReference:null,head:accepted?head:null,effectiveAuthority:review.effectiveAuthority,eligibility:[],observedAt:mandateFixtureTime(0)};
+  return {session,scope,review,page,original,current,selected,acceptedSource,acceptedVersion,head};
+}
+
+export async function mandateDecisionFixture() {
+  const base = await mandateReadFixture(false), review = structuredClone(base.review);
+  const p = review.envelope.proposal!;
+  p.version = 3; p.previousProposal = { id: p.id, version: 2, hash: 'b'.repeat(64) };
+  const { hash: _, ...body } = p; p.hash = await commandDigest(body);
+  review.envelope.responsibility = base.original; review.envelope.responsibilityReference = p.responsibility;
+  review.responsibilityVersions = [base.original]; review.effectiveDecisionState = 'OPEN';
+  review.envelope.decision!.proposal = { id: p.id, version: p.version, hash: p.hash };
+  review.envelope.eligibility = [{ action: 'AUTHORIZE', eligible: true, requiresStepUp: true, blockers: [] }, { action: 'REJECT', eligible: true, requiresStepUp: false, blockers: [] }];
+  return { ...base, review };
+}
+
+export async function decisionTestCase(action:MandateDecisionIntent['action']='REJECT') {
+  const f=await mandateDecisionFixture(), intent=await prepareMandateDecision(f.review,f.scope,action,'  Revise these terms.\nKeep the signed copy.  ',mandateFixtureNow);
+  const capsule=await createMandateCapsule(f.scope,intent,f.review,'mandate_request_123456789'),locator=locatorFromCapsule(capsule),review=structuredClone(f.review);
+  const p=review.envelope.proposal!, d=review.envelope.decision!, at=mandateFixtureTime(1000);
+  d.version=2;d.state=action==='REJECT'?'REJECTED':'APPROVED';d.actorId=f.scope.actorId;d.decidedAt=at;d.intentHash=locator.intentHash;d.reason=intent.reason;d.operationId='decision_operation';
+  review.envelope.observedAt=at;review.effectiveDecisionState=d.state;
+  if(action==='AUTHORIZE'){
+    const accepted={id:p.mandateId,organizationId:p.organizationId,environment:p.environment,responsibilityId:p.responsibility.id,version:1,mandateEpoch:1,organizationEpoch:p.organizationEpoch,policy:p.policy,policyHash:p.policyHash,previousVersionHash:null,createdAt:at,createdBy:p.requesterId};
+    const head={organizationId:p.organizationId,environment:p.environment,organizationEpoch:p.organizationEpoch,mandateId:p.mandateId,mandateVersion:1,mandateEpoch:1,responsibilityId:p.responsibility.id,state:'ACTIVE' as const,policyHash:p.policyHash,expiresAt:p.policy.expiresAt};
+    d.authorization={id:'authorization_receipt',purpose:'mandate_authorization',intentHash:locator.intentHash,requesterId:p.requesterId,approverId:f.scope.actorId,approvedAt:at,stepUpEvidenceId:'factor_evidence',stepUpVerifiedAt:mandateFixtureTime(0),stepUpExpiresAt:mandateFixtureTime(300000),acceptedVersion:{id:p.mandateId,version:1,hash:await commandDigest(accepted)},acceptedHead:{mandateId:p.mandateId,mandateVersion:1,mandateEpoch:1,hash:await commandDigest(head)}};
+    review.envelope.acceptedVersion=accepted;review.envelope.acceptedProposal=p;review.envelope.acceptedDecision=d;review.envelope.head=head;review.effectiveAuthority={state:'ACTIVE',blockers:[]};
+  }
+  const result:MandateOperationResult={schemaVersion:1,organizationId:f.scope.organizationId,kind:locator.kind,responsibilityId:f.scope.responsibilityId,target:{kind:'decision',id:p.id,version:2,hash:await commandDigest(d)},commandHash:locator.commandHash,intentHash:locator.intentHash,observedAt:at,operation:{id:d.operationId,environment:f.scope.environment,status:'succeeded',aggregateId:p.id,aggregateVersion:2,financialState:null,evidenceRefs:[],nextCheckAt:null,error:null}};
+  return {...f,intent,capsule,locator,outcomeReview:review,result};
+}

@@ -7,7 +7,9 @@
     "dev": "next dev --hostname 127.0.0.1 --port 3001",
     "build": "next build",
     "start": "next start --hostname 127.0.0.1 --port 3001",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:cloudflare": "opennextjs-cloudflare build",
+    "preview:cloudflare": "opennextjs-cloudflare preview --local"
   },
   "dependencies": {
     "@pactwoven/contracts": "workspace:*",
@@ -24,7 +26,8 @@
     "clsx": "2.1.1",
     "tailwind-merge": "3.7.0",
     "zod": "4.6.7",
-    "server-only": "0.0.1"
+    "server-only": "0.0.1",
+    "@opennextjs/cloudflare": "1.20.17"
   },
   "devDependencies": {
     "@types/react": "19.3.0",

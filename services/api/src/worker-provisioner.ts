@@ -18,7 +18,7 @@ export function serviceProvisioner(binding: ServiceBinding, authorization: strin
   return {
     async bootstrapOrganization(_identity, idempotencyKey, command, correlationId) {
       const { response, data } = await serviceJsonRequest(binding, new Request(provisionerUrl, {
-        method: 'POST', redirect: 'error', headers: { Authorization: authorization, 'Content-Type': 'application/json',
+        method: 'POST', redirect: 'manual', headers: { Authorization: authorization, 'Content-Type': 'application/json',
           'Idempotency-Key': idempotencyKey, 'X-Correlation-Id': correlationId }, body: JSON.stringify(command),
       }));
       if (response.status !== 201) {

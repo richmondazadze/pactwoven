@@ -87,13 +87,22 @@ export function assertMandateActor(actorInput: ActorContext, context: MandateCur
 
 /** A historical accepted version may have an older epoch or expiry; its current head must still match that immutable version. */
 export async function validateMandateCurrentContext(context: MandateCurrentContext): Promise<void> {
+  return validateMandateContext(context, false);
+}
+
+/** Site inactivity blocks new use, but does not remove an otherwise qualified actor's ability to stop it. */
+export async function validateMandateStopContext(context: MandateCurrentContext): Promise<void> {
+  return validateMandateContext(context, true);
+}
+
+async function validateMandateContext(context: MandateCurrentContext, allowInactiveSite: boolean): Promise<void> {
   const responsibility = ResponsibilitySchema.parse(context.responsibility);
   instant(context.now);
   if (!Number.isSafeInteger(context.organizationEpoch) || context.organizationEpoch < 0 ||
       responsibility.organizationId !== context.organizationId || responsibility.environment !== context.environment ||
       context.site.organizationId !== context.organizationId || context.site.environment !== context.environment ||
-      context.site.id !== responsibility.siteId || context.site.active !== true) {
-    throw new DomainError('SITE_UNAVAILABLE', 409, 'The responsibility and active site must resolve in the current organization and environment.');
+      context.site.id !== responsibility.siteId || (context.site.active !== true && !(allowInactiveSite && context.site.active === false))) {
+    throw new DomainError('SITE_UNAVAILABLE', 409, 'The responsibility and an eligible site must resolve in the current organization and environment.');
   }
   if ((context.acceptedVersion === null) !== (context.head === null)) {
     throw new DomainError('AUTHORITY_CHANGED', 409, 'Accepted authority and its current head must resolve together.');

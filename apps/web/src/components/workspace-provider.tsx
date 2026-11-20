@@ -52,8 +52,8 @@ function SessionContent({ children }: { children: ReactNode }) {
     }
     previousScope.current = authorizationScope;
   }, [authorizationScope, client, drafts]);
-  if (requiresSetup) return <main className="workspace-connection"><LoadingState label="Opening organization setup"/><Link href={onboardingPath} className="button secondary">Continue setup</Link></main>;
-  if (query.isPending) return <main className="workspace-connection"><LoadingState label="Verifying organization access"/></main>;
+  if (requiresSetup) return <main className="workspace-connection"><LoadingState variant="compact" label="Opening organization setup"/><Link href={onboardingPath} className="button secondary">Continue setup</Link></main>;
+  if (query.isPending) return <main className="workspace-connection"><LoadingState variant="compact" label="Verifying organization access"/></main>;
   if (query.isError) { const error = query.error; const denied = error instanceof RequestError && [401,403].includes(error.status); return <main className="workspace-connection"><Link href="/" className="brand-link"><img src="/brand/logo.svg" alt="Pactwoven" width="170" height="38"/></Link><h1>{denied ? 'Your workspace access needs attention.' : 'The workspace is temporarily unavailable.'}</h1><Alert title={denied ? 'Access not verified' : 'Unable to retrieve your organization'} tone="red"><p>{readableRequestFailure(error, 'access')}</p><SupportDetails context="workspace-access" error={error} /></Alert><div className="actions"><button className="button" disabled={query.isFetching} onClick={() => void query.refetch()}>{query.isFetching ? 'Checking access…' : 'Check again'}</button><button className="button secondary" onClick={() => void signOut({ redirectUrl: '/sign-in' })}>Sign out</button></div></main>; }
   return <WorkspaceContext key={authorizationScope} value={{ session: query.data, getToken, drafts }}>{mandateMemoryScope ? <MandateRecoveryMemoryProvider key={authorizationScope} scope={mandateMemoryScope}><MandateAuthoringMemoryProvider scope={mandateMemoryScope}><MandateAuthorityMemoryProvider scope={mandateMemoryScope}><MandateRecoveryNotice workspace/><MandateWorkNotice/>{children}</MandateAuthorityMemoryProvider></MandateAuthoringMemoryProvider></MandateRecoveryMemoryProvider> : children}</WorkspaceContext>;
 }
@@ -65,11 +65,11 @@ function ScopedQueries({ children }: { children: ReactNode }) {
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const destination = useWorkspaceLocation();
   const { isLoaded, isSignedIn, userId, orgId, sessionId } = useAuth();
-  if (!isLoaded) return <main className="workspace-connection"><LoadingState label="Checking your sign-in"/></main>;
+  if (!isLoaded) return <main className="workspace-connection"><LoadingState variant="compact" label="Checking your sign-in"/></main>;
   if (!isSignedIn) return <main className="workspace-connection"><h1>Sign in to your workspace.</h1><p>Your session has ended. Sign in again to verify organization access.</p><Link href={workspaceAuthPath('/sign-in', destination)} className="button">Sign in</Link></main>;
   if (!orgId) return <OrganizationRequired destination={destination}/>;
   if (!getApiBase()) return <SetupState kind="service"/>;
   return <ScopedQueries key={`${userId}:${orgId ?? 'none'}:${sessionId}:${getApiBase()}`}>{children}</ScopedQueries>;
 }
 
-function OrganizationRequired({ destination }: { destination: string }) { const router = useRouter(); const path = workspaceOnboardingPath(destination); useEffect(() => { router.replace(path); }, [router, path]); return <main className="workspace-connection"><LoadingState label="Choose an organization to continue"/><Link href={path} className="button secondary">Choose organization</Link></main>; }
+function OrganizationRequired({ destination }: { destination: string }) { const router = useRouter(); const path = workspaceOnboardingPath(destination); useEffect(() => { router.replace(path); }, [router, path]); return <main className="workspace-connection"><LoadingState variant="compact" label="Choose an organization to continue"/><Link href={path} className="button secondary">Choose organization</Link></main>; }

@@ -48,3 +48,15 @@ export { FinancialPolicyOriginalClosureIntentSchema, FinancialPolicyOriginalStat
 export type { FinancialPolicyOriginalClosureIntent, FinancialPolicyOriginalStatus,
   FinancialPolicyOriginalClosed, FinancialPolicyClosures } from './financial-policy-closure-schema.js';
 export { PostgresFinancialPolicyClosureRepository } from './financial-policy-closure-repository.js';
+export { PostgresNativeTaskRepository, PostgresNativeTaskWorkerRepository } from './native-task-repository.js';
+export { createNativeTaskPool, assertNativeTaskPool } from './native-task-pool.js';
+export type { NativeTaskPoolPurpose } from './native-task-pool.js';
+export { PostgresNativeDispatchPublisherRepository, PostgresNativeDispatchWorkerRepository } from './native-dispatch-repository.js';
+export { PostgresNativeAuthorityRepository } from './native-authority-repository.js';
+export { PostgresNativeDelegationRepository, PostgresNativeDelegationWorkerRepository,
+  PostgresNativeDelegationDispatchRepository } from './native-delegation-repository.js';
+export { createNativeDelegationPool, assertNativeDelegationPool } from './native-delegation-pool.js';
+export { PostgresNativeMemoryNotesRepository } from './native-memory-notes-repository.js';
+export { PostgresNativeRootRepository } from './native-root-lifecycle-repository.js';
+export { PostgresNativeWorkIntentRepository } from './native-work-intent-repository.js';
+export { PostgresNativeAgentWorkListRepository } from './native-agent-work-list-repository.js';

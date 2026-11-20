@@ -1,0 +1,12 @@
+.voice-command{padding:20px;border:1px solid var(--line,#e3e7ed);border-radius:12px;background:var(--canvas,#f7f9fc);min-width:0;color:var(--ink,#111318)}
+.voice-command-heading{display:flex;gap:12px;align-items:flex-start}.voice-command-symbol{display:grid;place-items:center;width:38px;height:38px;border-radius:10px;background:white;color:var(--blue,#155eef);flex-shrink:0}
+.voice-command-heading h3{font-size:15px!important;font-weight:600;margin:0 0 4px!important}.voice-command-heading p{font-size:12px;line-height:1.6;color:var(--muted,#586174);margin:0!important}
+.voice-command-status{font-size:12px;line-height:1.65;color:var(--muted,#586174);margin:12px 0!important}.voice-command-status:empty{display:none}
+.voice-command-error{font-size:13px;line-height:1.7;color:#b42318;background:#fff0ee;border-radius:8px;padding:12px;margin:12px 0!important}
+.voice-command-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}.voice-command-actions>.button{min-height:44px;font-size:12px;max-width:100%;white-space:normal}
+.voice-command-recording{display:flex;gap:9px;align-items:center;margin-top:14px;font-variant-numeric:tabular-nums}.voice-command-recording>span:first-child{width:8px;height:8px;border-radius:50%;background:#b42318}.voice-command-recording strong{font-size:20px;font-weight:500}.voice-command-recording>span:last-child{font-size:12px;color:var(--muted,#586174)}
+.voice-command-transcript{display:grid;gap:8px;font-size:13px;font-weight:600;margin-top:18px}.voice-command-transcript textarea{display:block;width:100%;resize:vertical;min-height:110px;background:white;color:var(--ink,#111318);border:1px solid #aab4c3;border-radius:8px;padding:12px;font:400 14px/1.7 var(--font-ui);overflow-wrap:anywhere}
+.voice-command-privacy{font-size:11px!important;line-height:1.6!important;color:var(--muted,#586174);margin:12px 0 0!important}
+.voice-command :is(button,textarea):focus-visible,.spoken-work-result :is(button,audio):focus-visible{outline:3px solid var(--blue,#155eef);outline-offset:3px}
+.spoken-work-result{display:grid;gap:12px;justify-items:start;margin-top:18px;min-width:0}.spoken-work-result audio{max-width:100%;width:360px}.spoken-work-result>p[role=alert]{font-size:12px;color:#b42318}
+@media(max-width:600px){.voice-command{padding:16px}.voice-command-transcript textarea{font-size:16px}.voice-command-actions>.button{flex:1 1 160px}}

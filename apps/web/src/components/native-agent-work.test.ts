@@ -1,0 +1,14 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, it, vi } from 'vitest';
+import { agentWorkReviewFixture, agentWorkFixture } from '../lib/native-agent-work.test-fixtures';
+import { AgentWorkReview } from './native-agent-work-composer';
+import { NativeAgentWorkContent } from './native-agent-work-detail';
+vi.mock('./workspace-provider',()=>({useWorkspace:()=>{throw Error('No synthetic identity in presentation checks.');}}));
+describe('readable work review and recorded activity',()=>{
+ it('shows exact review boundaries without internal request identity',()=>{const r=agentWorkReviewFixture(),html=renderToStaticMarkup(createElement(AgentWorkReview,{review:r}));expect(html).toContain('Work permission ends');expect(html).toContain('close this tab or sign out');expect(html).toContain('No saved notes will be used.');expect(html).not.toContain(r.id);expect(html).not.toContain(r.token);});
+ it('renders returned selected text and attribution as escaped statements',()=>{const r=agentWorkReviewFixture();r.body.selectedNotes=[{noteId:'private_note_id',title:'Delivery entrance',text:'<script>private</script>',purpose:'Deliveries',suppliedBy:'Morgan Reed',sourceLabel:'Human statement — not independently verified',reviewBy:r.expiresAt}];r.body.allowedWork=['Research public sources','Read selected notes','Draft advice'];const html=renderToStaticMarkup(createElement(AgentWorkReview,{review:r}));expect(html).toContain('&lt;script&gt;');expect(html).toContain('Supplied by Morgan Reed');expect(html).not.toContain('<script>');expect(html).not.toContain('private_note_id');});
+ it('shows actual returned step labels without exposing technical IDs',()=>{const work=agentWorkFixture(),html=renderToStaticMarkup(createElement(NativeAgentWorkContent,{work}));expect(html).toContain('Review the supplied sources');expect(html).toContain('In progress');expect(html).not.toContain('step_internal');expect(html).not.toContain(work.id);});
+ it('withholds progress and advice after evidence is unavailable',()=>{const work={...agentWorkFixture(),evidenceUnavailable:true},html=renderToStaticMarkup(createElement(NativeAgentWorkContent,{work}));expect(html).not.toContain('Comparing the provided descriptions.');expect(html).toContain('Earlier evidence needs review');});
+ it('withholds already-expired advice on the first render',()=>{const work={...agentWorkFixture(),result:{title:'Old advice',summary:'Expired private summary',artifacts:[],advisoryOnly:true as const,evidenceValidUntil:new Date(Date.now()-1000).toISOString()}},html=renderToStaticMarkup(createElement(NativeAgentWorkContent,{work}));expect(html).not.toContain('Expired private summary');expect(html).not.toContain('Comparing the provided descriptions.');expect(html).toContain('Earlier evidence needs review');});
+});

@@ -2,7 +2,15 @@ export function isPublishableKey(value: string | undefined): value is string {
   return Boolean(value && /^pk_(test|live)_[A-Za-z0-9_-]+$/.test(value));
 }
 export function getApiBase(): string | null {
-  const value = process.env.NEXT_PUBLIC_API_BASE_URL;
+  return parseApiBase(process.env.NEXT_PUBLIC_API_BASE_URL);
+}
+export function getNativeApiBase(): string | null {
+  const value = process.env.NEXT_PUBLIC_NATIVE_API_BASE_URL;
+  // Existing installs keep their original service until a native host is set.
+  // A present but invalid value must not silently redirect to the legacy host.
+  return value === undefined ? getApiBase() : parseApiBase(value);
+}
+function parseApiBase(value: string | undefined): string | null {
   if (!value) return null;
   try {
     const url = new URL(value);

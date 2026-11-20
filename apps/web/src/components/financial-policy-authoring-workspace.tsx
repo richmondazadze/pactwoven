@@ -22,6 +22,7 @@ import { clearFinancialPolicyReminder, clearClosedFinancialPolicyReminder, creat
 import { digestFinancialPolicyNewTextMaterial } from '../lib/financial-policy-new-text-intent';
 import { FinancialPolicyRecoveryPanel, type FinancialPolicyRecoveryRow } from './financial-policy-recovery-panel';
 import { financialPolicyClosureHeadingId } from './financial-policy-closure-review';
+import { VerificationDetails } from './verification-details';
 import { FinancialPolicyReview, FinancialPolicyReceiptReview, financialPolicyCollectionPath } from './financial-policy-review';
 import { FinancialPolicyPreparationReview } from './financial-policy-preparation-review';
 import { FinancialPolicyNewTextIntentReview } from './financial-policy-new-text-intent-review';
@@ -733,11 +734,11 @@ export function FinancialPolicyAuthoringWorkspaceView(props: FinancialPolicyAuth
           : <div id="authoring-start" tabIndex={-1} className="actions"><button type="button" className="button secondary" disabled={disabled || !context} onClick={() => controller.startNew('document')}>
             {buffer.documentId ? 'Continue policy text' : 'Start new policy text'}</button>
             <button type="button" className="button secondary" disabled={disabled || !context} onClick={() => controller.startNew('draft')}>{buffer.draftId ? 'Continue draft' : 'Start new draft'}</button></div>}
-        <p className="review-note">{buffer.kind === 'document' ? 'Policy text' : 'Draft'} record: <code>{(buffer.kind === 'document' ? buffer.documentId : buffer.draftId) || 'Not started'}</code></p>
+        <p className="review-note">{buffer.kind === 'document' ? 'Policy text' : 'Draft'}: {(buffer.kind === 'document' ? buffer.documentId : buffer.draftId) ? 'Record selected' : 'Not started'}</p><VerificationDetails label="Selected record reference"><dl><div><dt>Record</dt><dd>{(buffer.kind === 'document' ? buffer.documentId : buffer.draftId) || 'Not started'}</dd></div></dl></VerificationDetails>
         <p className="review-note">Starting chooses a record once. A conflict never silently replaces it or a selected previous version.</p>
         {props.revision && <><p>Requested version {props.revision.version}. The record type must match this exact version.</p>
           <button type="button" className="button secondary" disabled={disabled || !context} onClick={() => void controller.readRevision()}>Read exact previous version</button>
-          {context && view.exact && <FinancialPolicyReview response={view.exact}/>}</>}
+          {context && view.exact && <FinancialPolicyReview response={view.exact} context={context}/>}</>}
       </Panel>
       <Panel title={buffer.kind === 'document' ? '1. Review the full policy text' : '2. Review the incomplete draft'}>
         {buffer.kind === 'document' ? <FinancialPolicyDocumentEditor text={buffer.text} disabled={disabled} reviewed={review?.kind === 'save_document' ? review.input.text : null}
@@ -745,17 +746,17 @@ export function FinancialPolicyAuthoringWorkspaceView(props: FinancialPolicyAuth
           : <><section id="draft-document-id" tabIndex={-1} aria-label="Select existing policy text">
             <h3>Choose the policy text</h3><button type="button" className="button secondary" disabled={disabled || !context} onClick={() => void controller.indexDocuments()}>Find policy text in saved drafts</button>
             {context && view.index && <div className="financial-authoring-document-options">{view.index.items.flatMap(item => item.policy.record.kind === 'draft' ? item.policy.record.draft.documents.map(doc =>
-              <article key={`${item.policy.reference.id}:${doc.id}:${doc.version}`}><p>Policy text in draft {item.policy.reference.id} · version {doc.version}</p>
+              <article key={`${item.policy.reference.id}:${doc.id}:${doc.version}`}><p>Financial mandate text · version {doc.version}</p><p className="review-note">Draft recorded {item.policy.record.createdAt}</p><VerificationDetails label="Draft and text references"><dl><div><dt>Draft</dt><dd>{item.policy.reference.id}</dd></div><div><dt>Policy text</dt><dd>{doc.id}<code>{doc.recordHash}</code></dd></div></dl></VerificationDetails>
                 <button type="button" className="button secondary" disabled={disabled} onClick={() => void controller.readDocument({ id: doc.id, version: doc.version, recordHash: doc.recordHash })}>Read this exact policy text</button></article>) : [])}
               {view.index.items.length === 0 && <p>No saved drafts were returned. Save policy text first or check a saved original receipt below.</p>}
               {view.index.nextId && <button type="button" className="button secondary" disabled={disabled} onClick={() => void controller.indexDocuments(view.index!.nextId)}>Read next draft page</button>}
             </div>}
             {context && view.context?.documents.map(doc => <button key={`${doc.reference.id}:${doc.reference.version}`} type="button" className="button secondary" disabled={disabled}
               onClick={() => void controller.readDocument(doc.reference)}>Read checked context policy text · version {doc.reference.version}</button>)}
-            {context && view.documentRead && <><FinancialPolicyReview response={view.documentRead}/><button type="button" className="button secondary" disabled={disabled} onClick={() => controller.selectReadDocument()}>Select this exact policy text</button></>}
+            {context && view.documentRead && <><FinancialPolicyReview response={view.documentRead} context={context}/><button type="button" className="button secondary" disabled={disabled} onClick={() => controller.selectReadDocument()}>Select this exact policy text</button></>}
             {context && view.rows.filter(row => row.receipt?.record.kind === 'document').map(row => <button key={row.reference.locator.key} type="button" className="button secondary" disabled={disabled}
               onClick={() => controller.useDocumentReceipt(row.receipt!)}>Select saved policy text · version {row.receipt!.target.version}</button>)}
-            <dl className="financial-policy-facts"><div><dt>Selected policy text</dt><dd>{buffer.document.id ? <>{buffer.document.id} · version {buffer.document.version}<code>{buffer.document.recordHash}</code></> : 'No text selected'}</dd></div></dl>
+            <dl className="financial-policy-facts"><div><dt>Selected policy text</dt><dd>{buffer.document.id ? <>Version {buffer.document.version}<VerificationDetails label="Selected text reference"><dl><div><dt>Document</dt><dd>{buffer.document.id}</dd></div><div><dt>Record hash</dt><dd>{buffer.document.recordHash}</dd></div></dl></VerificationDetails></> : 'No text selected'}</dd></div></dl>
           </section>
             <p className="review-note">A checked record or saved receipt selects an exact document. Fresh preparation still checks and displays its current full text before a draft save.</p>
             <FinancialPolicyDraftEditor dates={buffer.dates} disabled={disabled} reviewed={draftReview} error={view.error?.field.startsWith('draft-') ? view.error : null}

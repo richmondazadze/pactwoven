@@ -74,3 +74,20 @@ describe('financial policy exact review server rendering', () => {
     expect(html).toContain('Read exact recorded version'); expect(html).not.toContain('/revise'); expect(html).not.toContain('kind=document');
   });
 });
+
+describe('financial policy primary reading', () => {
+  const main = (html: string) => html.replace(/<details\b[^>]*>[\s\S]*?<\/details>/g, '');
+  it('leads with the policy name and full terms while retaining original provenance in native details', () => {
+    const html = renderToStaticMarkup(createElement(FinancialPolicyReview, { response: documentResponse('Exact approval policy. Do not spend.') }));
+    const visible = main(html);
+    expect(visible).toContain('Budget policy text'); expect(visible).toContain('version 1');
+    expect(visible).toContain('Exact approval policy. Do not spend.'); expect(visible).toContain('Test workspace');
+    for (const ref of ['document_a', 'owner_a', 'Organization epoch', hash]) { expect(visible).not.toContain(ref); expect(html).toContain(ref); }
+    expect(html).toContain('<summary>Record verification'); expect(html).not.toContain('<button');
+  });
+  it('keeps historical document content and revision navigation outside reference details', () => {
+    const html = renderToStaticMarkup(documentSurface('reference', 'responsibility_a')), visible = main(html);
+    expect(visible).toContain('Historical &lt;policy&gt; text stays complete.'); expect(visible).toContain('Version 3');
+    expect(visible).toContain('Check policy text revision'); expect(visible).not.toContain(hash); expect(html).toContain(hash);
+  });
+});

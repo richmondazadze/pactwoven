@@ -28,3 +28,5 @@ export { supplierScopeCategoryDigest, supplierScopePolicyDigest, supplierScopePo
   planSupplierScopePolicyMutation, bindSupplierRelationshipScopePolicy,
   assessSupplierRelationshipScopePolicy, applySupplierRelationshipScopePolicy } from './supplier-scope-policy.js';
 export type { SupplierScopePolicyReadFacts, SupplierScopePolicyIssuerFacts } from './supplier-scope-policy.js';
+export * from './native-delegation.js';
+export * from './native-memory.js';

@@ -1,0 +1,25 @@
+{
+  "name": "@pactwoven/native-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "pnpm typecheck && node ../../scripts/build-native-host.mjs"
+  },
+  "dependencies": {
+    "@pactwoven/contracts": "workspace:*",
+    "@pactwoven/coordinator": "workspace:*",
+    "@pactwoven/db": "workspace:*",
+    "@pactwoven/service-identity": "workspace:*",
+    "@vercel/functions": "3.11.3",
+    "@vercel/queue": "0.11.0",
+    "@vercel/schedules": "0.0.3",
+    "jose": "5.10.0",
+    "pg": "8.23.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
+  }
+}

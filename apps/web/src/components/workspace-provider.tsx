@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useAuth, useClerk } from '@clerk/nextjs';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { SessionSchema, type Session } from '@pactwoven/contracts';
@@ -18,6 +18,10 @@ import { AccessFeedbackProvider, useAccessFeedback } from './access-feedback';
 import { getApiBase } from '@/lib/config';
 import { SetupState } from './setup-state';
 import { Alert, LoadingState } from './ui';
+import { readableRequestFailure } from '../lib/presentation';
+import { SupportDetails } from './support-details';
+import { workspaceAuthPath, workspaceOnboardingPath, workspaceReturnPath } from '../lib/workspace-return';
+function useWorkspaceLocation() { const pathname = usePathname(); const search = useSearchParams(); return workspaceReturnPath(`${pathname}${search.size ? `?${search}` : ''}`); }
 export type DraftMemory = Map<string, unknown>;
 const WorkspaceContext = createContext<{ session: Session; getToken: TokenSource; drafts: DraftMemory } | null>(null);
 export function useWorkspace() { const value = useContext(WorkspaceContext); if (!value) throw new Error('An authorized workspace is required'); return value; }
@@ -25,6 +29,7 @@ export const canCreate = canCreateResponsibility;
 export function canReadResponsibilities(session: Session) { return session.actor.roles.some(role => ['owner','operations','finance','receiver','auditor'].includes(role)); }
 function SessionContent({ children }: { children: ReactNode }) {
   const router = useRouter();
+  const onboardingPath = workspaceOnboardingPath(useWorkspaceLocation());
   const feedback=useAccessFeedback();const recoveryMemory=useAccessRecoveryMemory();
   const auth = useAuth(); const { signOut } = useClerk(); const client = useQueryClient();
   const getToken = useCallback(() => auth.getToken(auth.orgId ? { organizationId: auth.orgId } : undefined), [auth.getToken, auth.orgId]);
@@ -33,7 +38,7 @@ function SessionContent({ children }: { children: ReactNode }) {
   useLayoutEffect(()=>{if(feedback.fenceNotice && ((query.data && !visibleAccessFenceReceipt(feedback.fenceNotice,query.data)) || (query.error instanceof RequestError && [401,403].includes(query.error.status))))feedback.dismissFence();},[feedback,query.data,query.error]);
   useLayoutEffect(()=>{if(recoveryMemory.capsule&&((query.data&&!capsuleMatchesSession(recoveryMemory.capsule,query.data,auth,getApiBase()))||(query.error instanceof RequestError&&[401,403].includes(query.error.status))))recoveryMemory.purge();},[recoveryMemory,query.data,query.error,auth.userId,auth.orgId,auth.sessionId]);
   const requiresSetup = query.error instanceof RequestError && query.error.status === 409 && query.error.code === 'ORGANIZATION_SETUP_REQUIRED';
-  useEffect(() => { if (requiresSetup) router.replace('/app/onboarding'); }, [requiresSetup, router]);
+  useEffect(() => { if (requiresSetup) router.replace(onboardingPath); }, [requiresSetup, router, onboardingPath]);
   const authorizationScope = query.data ? JSON.stringify([query.data.actor.actorId, query.data.actor.organizationId, query.data.actor.environment, query.data.actor.roles, query.data.actor.siteIds, query.data.actor.actionSiteIds, query.data.organization.authorityEpoch]) : null;
   const mandateMemoryScope = useMemo(() => query.data && auth.userId && auth.orgId && auth.sessionId && getApiBase() ? { userId: auth.userId, externalOrganizationId: auth.orgId, sessionId: auth.sessionId, apiBase: getApiBase()!, organizationId: query.data.organization.id, environment: query.data.actor.environment, actorId: query.data.actor.actorId, organizationEpoch: query.data.organization.authorityEpoch, principalKind: query.data.actor.principalKind, roles: [...query.data.actor.roles], siteIds: [...query.data.actor.siteIds], actionSiteIds: [...query.data.actor.actionSiteIds] } : null, [authorizationScope, auth.userId, auth.orgId, auth.sessionId]);
   const drafts = useMemo<DraftMemory>(() => new Map(), [authorizationScope]);
@@ -47,9 +52,9 @@ function SessionContent({ children }: { children: ReactNode }) {
     }
     previousScope.current = authorizationScope;
   }, [authorizationScope, client, drafts]);
-  if (requiresSetup) return <main className="workspace-connection"><LoadingState label="Opening organization setup"/><Link href="/app/onboarding" className="button secondary">Continue setup</Link></main>;
+  if (requiresSetup) return <main className="workspace-connection"><LoadingState label="Opening organization setup"/><Link href={onboardingPath} className="button secondary">Continue setup</Link></main>;
   if (query.isPending) return <main className="workspace-connection"><LoadingState label="Verifying organization access"/></main>;
-  if (query.isError) { const error = query.error; const denied = error instanceof RequestError && [401,403].includes(error.status); return <main className="workspace-connection"><Link href="/" className="brand-link"><img src="/brand/logo.svg" alt="Pactwoven" width="170" height="38"/></Link><h1>{denied ? 'Your workspace access needs attention.' : 'The workspace is temporarily unavailable.'}</h1><Alert title={denied ? 'Access not verified' : 'Unable to retrieve your organization'} tone="red"><p>{error.message}</p>{error instanceof RequestError && error.correlationId && <p className="fine">Reference: {error.correlationId}</p>}</Alert><div className="actions"><button className="button" disabled={query.isFetching} onClick={() => void query.refetch()}>{query.isFetching ? 'Checking access…' : 'Check again'}</button><button className="button secondary" onClick={() => void signOut({ redirectUrl: '/sign-in' })}>Sign out</button></div></main>; }
+  if (query.isError) { const error = query.error; const denied = error instanceof RequestError && [401,403].includes(error.status); return <main className="workspace-connection"><Link href="/" className="brand-link"><img src="/brand/logo.svg" alt="Pactwoven" width="170" height="38"/></Link><h1>{denied ? 'Your workspace access needs attention.' : 'The workspace is temporarily unavailable.'}</h1><Alert title={denied ? 'Access not verified' : 'Unable to retrieve your organization'} tone="red"><p>{readableRequestFailure(error, 'access')}</p><SupportDetails context="workspace-access" error={error} /></Alert><div className="actions"><button className="button" disabled={query.isFetching} onClick={() => void query.refetch()}>{query.isFetching ? 'Checking access…' : 'Check again'}</button><button className="button secondary" onClick={() => void signOut({ redirectUrl: '/sign-in' })}>Sign out</button></div></main>; }
   return <WorkspaceContext key={authorizationScope} value={{ session: query.data, getToken, drafts }}>{mandateMemoryScope ? <MandateRecoveryMemoryProvider key={authorizationScope} scope={mandateMemoryScope}><MandateAuthoringMemoryProvider scope={mandateMemoryScope}><MandateAuthorityMemoryProvider scope={mandateMemoryScope}><MandateRecoveryNotice workspace/><MandateWorkNotice/>{children}</MandateAuthorityMemoryProvider></MandateAuthoringMemoryProvider></MandateRecoveryMemoryProvider> : children}</WorkspaceContext>;
 }
 function ScopedQueries({ children }: { children: ReactNode }) {
@@ -58,12 +63,13 @@ function ScopedQueries({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={client}><AccessFeedbackProvider><AccessRecoveryMemoryProvider><SessionContent>{children}</SessionContent></AccessRecoveryMemoryProvider></AccessFeedbackProvider></QueryClientProvider>;
 }
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
+  const destination = useWorkspaceLocation();
   const { isLoaded, isSignedIn, userId, orgId, sessionId } = useAuth();
   if (!isLoaded) return <main className="workspace-connection"><LoadingState label="Checking your sign-in"/></main>;
-  if (!isSignedIn) return <main className="workspace-connection"><h1>Sign in to your workspace.</h1><p>Your session has ended. Sign in again to verify organization access.</p><Link href="/sign-in" className="button">Sign in</Link></main>;
-  if (!orgId) return <OrganizationRequired/>;
+  if (!isSignedIn) return <main className="workspace-connection"><h1>Sign in to your workspace.</h1><p>Your session has ended. Sign in again to verify organization access.</p><Link href={workspaceAuthPath('/sign-in', destination)} className="button">Sign in</Link></main>;
+  if (!orgId) return <OrganizationRequired destination={destination}/>;
   if (!getApiBase()) return <SetupState kind="service"/>;
   return <ScopedQueries key={`${userId}:${orgId ?? 'none'}:${sessionId}:${getApiBase()}`}>{children}</ScopedQueries>;
 }
 
-function OrganizationRequired() { const router = useRouter(); useEffect(() => { router.replace('/app/onboarding'); }, [router]); return <main className="workspace-connection"><LoadingState label="Choose an organization to continue"/><Link href="/app/onboarding" className="button secondary">Choose organization</Link></main>; }
+function OrganizationRequired({ destination }: { destination: string }) { const router = useRouter(); const path = workspaceOnboardingPath(destination); useEffect(() => { router.replace(path); }, [router, path]); return <main className="workspace-connection"><LoadingState label="Choose an organization to continue"/><Link href={path} className="button secondary">Choose organization</Link></main>; }

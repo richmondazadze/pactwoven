@@ -45,5 +45,7 @@
 @media(max-width:900px) { .async-loading[data-variant=detail] .loading-columns { grid-template-columns: minmax(0, 1fr); }.loading-aside { display: none; } }
 @media(max-width:520px) { .loading-row { padding: 20px 8px; gap: 12px; }.loading-badge { width: 52px; }.loading-card { padding: 20px; } }
 @media(prefers-reduced-motion:reduce) { .loading-block::after,.pending-mark i,.async-loading .brand-loader .face { animation: none; } }
-html:is([data-motion=reduced],[data-motion=off]) :is(.loading-block::after,.pending-mark i,.async-loading .brand-loader .face) { animation: none; }
+html:is([data-motion=reduced],[data-motion=off]) .loading-block::after,
+html:is([data-motion=reduced],[data-motion=off]) .pending-mark i,
+html:is([data-motion=reduced],[data-motion=off]) .async-loading .brand-loader .face { animation: none; }
 @media(forced-colors:active) { .loading-block { background: CanvasText; opacity: .15; }.pending-mark i { background: ButtonText; } }

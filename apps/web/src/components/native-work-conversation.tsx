@@ -10,13 +10,14 @@ import { clearWorkInstructionAttempt, createWorkInstructionAttempt, previousWork
 import { canObserveAgentWork, useAgentWorkBinding } from './native-agent-work-hooks';
 import { ActionLabel, Alert } from './ui';
 import { VoiceCommandComposer } from './voice-command-composer';
+import { ReadableText } from './readable-content';
 import { appendVoiceTranscript } from '../lib/voice-command';
 
 const unavailableLabels={pause_required:'Pause work before updating its instructions.',finished:'This work is finished. Its saved instructions remain available.',cancelled:'This work was cancelled. Its saved instructions remain available.',authority_unavailable:'Current work permission is unavailable. Refresh your access before continuing.',instruction_limit:'This work has reached its instruction update limit.',execution_limit:'This work has reached its execution limit. Its saved instructions remain available.'} as const;
 
 export function NativeWorkConversationContent({ conversation }: { conversation: NativeWorkConversation }) {
-  return <div className="agent-work-conversation"><article className="agent-work-message"><div className="agent-work-message-byline"><h3>Your original request</h3></div><p className="agent-work-text">{conversation.originalPrompt}</p></article>
-    {conversation.entries.map(entry=><article className="agent-work-message" key={entry.sequence}><div className="agent-work-message-byline"><h3>Your instruction update</h3><time dateTime={entry.recordedAt}>{agentWorkTime(entry.recordedAt)}</time></div><p className="agent-work-text">{entry.text}</p><p className="agent-work-caption">{entry.state==='applied'?'Included in the team’s current instructions.':'Saved. Waiting for the team to apply this update.'}</p></article>)}
+  return <div className="agent-work-conversation"><article className="agent-work-message"><div className="agent-work-message-byline"><h3>Your original request</h3></div><ReadableText text={conversation.originalPrompt} label="Read original request"/></article>
+    {conversation.entries.map(entry=><article className="agent-work-message" key={entry.sequence}><div className="agent-work-message-byline"><h3>Your instruction update</h3><time dateTime={entry.recordedAt}>{agentWorkTime(entry.recordedAt)}</time></div><ReadableText text={entry.text} label="Read instruction update"/><p className="agent-work-caption">{entry.state==='applied'?'Included in the team’s current instructions.':'Saved. Waiting for the team to apply this update.'}</p></article>)}
   </div>;
 }
 

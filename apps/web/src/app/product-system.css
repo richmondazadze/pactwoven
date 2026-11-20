@@ -1,8 +1,8 @@
 /* Shared product surfaces. Marketing keeps its own editorial rhythm. */
 :root {
-  --radius-control: 8px;
-  --radius-card: 12px;
-  --radius-panel: 16px;
+  --radius-control: var(--radius-ui);
+  --radius-card: var(--radius-ui);
+  --radius-panel: var(--radius-ui);
   --surface: #fff;
   --product-ease: cubic-bezier(.22, 1, .36, 1);
   --product-hover: 220ms;
@@ -89,7 +89,7 @@
 .breadcrumb > span:first-child { max-width: 240px; }
 .breadcrumb > span:last-child { font-weight: 600; }
 .workspace-header-right { flex-shrink: 0; gap: 12px; }
-.environment { font-size: 11px; padding: 6px 10px; border-radius: 5px; }
+.environment { font-size: 11px; padding: 6px 10px; border-radius: var(--radius-ui); }
 .workspace-main { padding: 44px 40px 80px; max-width: 1480px; scroll-margin-top: 96px; }
 .workspace-main:focus-visible { outline: none; }
 .workspace-main :is(h1, h2, h3, h4) { text-wrap: balance; }
@@ -117,7 +117,7 @@
 .workspace .block-skeleton { border-radius: var(--radius-card); }
 .workspace .workspace-note { font-size: 12px; color: var(--muted); align-items: flex-start; line-height: 1.8; }
 .workspace-note .icon { margin-top: 2px; }
-.workspace .badge { border-radius: 5px; font-size: 11px; font-weight: 600; }
+.workspace .badge { border-radius: var(--radius-ui); font-size: 11px; font-weight: 600; }
 .workspace :is(table, .key-values, .review-key-values, .financial-policy-facts, .requirement-quantity) { font-variant-numeric: tabular-nums; }
 .workspace table { font-size: 13px; }
 .workspace th { background: #fafbfd; font-size: 12px; font-weight: 500; padding: 17px 20px; }
@@ -225,3 +225,11 @@
   :is(.workspace, .mobile-drawer) { --product-hover: 120ms; }
 }
 html[data-motion="off"] :is(.workspace, .mobile-drawer) { --product-hover: 0ms; }
+
+/* Clerk scales some controls independently of its base radius. */
+:is(.cl-rootBox, .cl-userButtonPopoverRootBox, .cl-modalContent) :is(.cl-button:not(.cl-userButtonTrigger), .cl-input, .cl-lastAuthenticationStrategyBadge, .cl-badge, .cl-cardBox, .cl-card, .cl-scrollBox, .cl-popoverBox, .cl-userButtonPopoverMain),
+.cl-userButtonPopoverCard .cl-userButtonPopoverMain,
+.cl-modalContent,
+.cl-userButtonPopoverCard {
+  border-radius: var(--radius-ui);
+}

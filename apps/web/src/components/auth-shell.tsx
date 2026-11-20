@@ -10,7 +10,7 @@ export const authAppearance: NonNullable<ComponentProps<typeof SignIn>['appearan
     colorForeground: '#111318',
     colorMutedForeground: '#596579',
     fontFamily: 'var(--font-manrope)',
-    borderRadius: '8px',
+    borderRadius: '6px',
   },
   elements: {
     rootBox: 'auth-clerk-root',

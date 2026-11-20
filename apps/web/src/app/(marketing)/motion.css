@@ -21,7 +21,7 @@
 .mk-demo-tabs button::after{content:'';position:absolute;left:8px;right:8px;bottom:2px;height:2px;border-radius:2px;background:var(--blue);transform:scaleX(0);transition:transform var(--panel) var(--ease)}
 .mk-demo-tabs button[aria-selected=true]::after{transform:scaleX(1)}
 .mk-menu-button,.mk-menu-close,.mk-demo-play,.mk-demo-follow{transition:background-color var(--feedback) var(--ease),border-color var(--feedback) var(--ease),color var(--feedback) var(--ease)}
-.mk-demo-follow{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;min-height:44px;margin-top:8px;background:#edf4ff;border:1px solid #c9dafa;border-radius:8px;color:#164dbe;font-size:11px}
+.mk-demo-follow{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;min-height:44px;margin-top:8px;background:#edf4ff;border:1px solid #c9dafa;border-radius:var(--radius-ui);color:#164dbe;font-size:11px}
 .mk-demo[data-following=true] .mk-agent-active{border-color:#7ea9f7;background:#edf4ff}
 .mk-map-connectors::after{content:'';position:absolute;top:-1px;left:0;right:0;height:1px;background:var(--blue);transform:scaleX(0);transform-origin:center;transition:transform var(--panel) var(--ease)}
 .mk-demo[data-step="1"] .mk-map-connectors::after,.mk-demo[data-step="2"] .mk-map-connectors::after,.mk-demo[data-step="3"] .mk-map-connectors::after,.mk-demo[data-step="4"] .mk-map-connectors::after{transform:scaleX(1)}

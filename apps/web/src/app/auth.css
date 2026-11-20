@@ -1,8 +1,8 @@
 .auth-page,
 .onboarding-page {
-  --auth-control: var(--radius-control, 8px);
-  --auth-card: var(--radius-card, 12px);
-  --auth-panel: var(--radius-panel, 16px);
+  --auth-control: var(--radius-control, 6px);
+  --auth-card: var(--radius-card, 6px);
+  --auth-panel: var(--radius-panel, 6px);
   --auth-arrival: 900ms;
   --auth-scene-ease: cubic-bezier(.37, 0, .63, 1);
   color: var(--ink);
@@ -51,14 +51,14 @@
 
 /* Clerk retains its own accessible fields, challenges and account flows. */
 :is(.auth-page, .onboarding-page) .auth-clerk-root { width: 100%; max-width: 440px; }
-:is(.auth-page, .onboarding-page) .auth-clerk-card-box { width: 100%; max-width: 100%; border: 1px solid #dce2eb; border-radius: 16px; box-shadow: 0 14px 40px -30px #19396552; overflow: hidden; }
-:is(.auth-page, .onboarding-page) .auth-clerk-card { border-radius: 16px; padding: 32px; box-shadow: none; background: #fff; }
+:is(.auth-page, .onboarding-page) .auth-clerk-card-box { width: 100%; max-width: 100%; border: 1px solid #dce2eb; border-radius: var(--radius-ui); box-shadow: 0 14px 40px -30px #19396552; overflow: hidden; }
+:is(.auth-page, .onboarding-page) .auth-clerk-card { border-radius: var(--radius-ui); padding: 32px; box-shadow: none; background: #fff; }
 :is(.auth-page, .onboarding-page) .auth-clerk-title { font-family: var(--font-heading); font-size: 25px; font-weight: 400; letter-spacing: -.025em; line-height: 1.3; }
 :is(.auth-page, .onboarding-page) .auth-clerk-subtitle { font-size: 13px; line-height: 1.7; color: #596579; }
 :is(.auth-page, .onboarding-page) .auth-clerk-label { font-size: 12px; font-weight: 600; color: var(--ink); }
-:is(.auth-page, .onboarding-page) .auth-clerk-input { min-height: 44px; border: 1px solid #9da9bb; border-radius: 8px; box-shadow: none; font-size: 14px; }
+:is(.auth-page, .onboarding-page) .auth-clerk-input { min-height: 44px; border: 1px solid #9da9bb; border-radius: var(--radius-ui); box-shadow: none; font-size: 14px; }
 :is(.auth-page, .onboarding-page) .auth-clerk-primary,
-:is(.auth-page, .onboarding-page) .auth-clerk-social { min-height: 44px; border-radius: 8px; font-size: 13px; box-shadow: none; transition: background-color var(--feedback) var(--ease), border-color var(--feedback) var(--ease), color var(--feedback) var(--ease); }
+:is(.auth-page, .onboarding-page) .auth-clerk-social { min-height: 44px; border-radius: var(--radius-ui); font-size: 13px; box-shadow: none; transition: background-color var(--feedback) var(--ease), border-color var(--feedback) var(--ease), color var(--feedback) var(--ease); }
 :is(.auth-page, .onboarding-page) .auth-clerk-primary { background: var(--blue); font-weight: 600; text-transform: none; }
 :is(.auth-page, .onboarding-page) .auth-clerk-social { border: 1px solid #cbd3df; }
 :is(.auth-page, .onboarding-page) .auth-clerk-footer { background: #f7f9fc; border-top: 1px solid #e7ecf3; }

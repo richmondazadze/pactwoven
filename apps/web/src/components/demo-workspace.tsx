@@ -7,6 +7,7 @@ import { demoActionLabels, demoAgentFocus, demoExactAmount, demoPaymentActionLab
   DemoPaymentCardSchema, demoTextPreview, demoWorkspaceAnnouncement, demoWorkspaceStages, type DemoPaymentAction, type DemoPaymentCard as Payment,
   type DemoWorkspaceTarget } from '../lib/demo-workspace';
 import { Icon, type IconName } from './icon';
+import { ReadingRegion } from './readable-content';
 import './demo-workspace.css';
 
 const stageIcons: Record<DemoWorkspaceTarget, IconName> = { plan: 'split-route', team: 'connected-nodes', result: 'document-signature' };
@@ -103,9 +104,9 @@ export function AgentActivityWorkspace({ activity, observing = true, result, res
     </div>
     {result && !resultUnavailable && !unavailable && (!result.evidenceValidUntil || observation.now < Date.parse(result.evidenceValidUntil)) && <DemoWorkspaceResult result={result} actions={resultActions}/>}
     {actions.length > 0 && <details className="demo-workspace-history"><summary>Activity details <span>{actions.length} recorded {actions.length === 1 ? 'action' : 'actions'}</span></summary>
-      <ol>{[...actions].sort((a,b) => (b.recordedAt ? Date.parse(b.recordedAt) : 0) - (a.recordedAt ? Date.parse(a.recordedAt) : 0)).map(action => <li key={action.id}>
+      <ReadingRegion label="Recorded activity"><ol>{[...actions].sort((a,b) => (b.recordedAt ? Date.parse(b.recordedAt) : 0) - (a.recordedAt ? Date.parse(a.recordedAt) : 0)).map(action => <li key={action.id}>
         {action.recordedAt ? <time dateTime={action.recordedAt}>{displayTime(action.recordedAt)}</time> : <span>Recorded</span>}<div><strong>{activity.agents.find(agent => agent.id === action.actorId)?.label ?? 'Team'}</strong><p>{action.label}</p></div><span>{demoActionLabels[action.state]}</span>
-      </li>)}</ol></details>}
+      </li>)}</ol></ReadingRegion></details>}
     <p className="demo-workspace-footnote">Planning and advice permission does not authorize payments. A computation payment requires a separate exact approval. Messages and orders are not permitted.</p>
   </section>;
 }
@@ -115,8 +116,8 @@ export function DemoWorkspaceResult({ result,actions }: { result: NonNullable<Na
   return <section className="demo-workspace-result" aria-label="Your result"><div className="demo-workspace-result-heading"><Icon name="circle-check" size={24}/><div><p className="demo-workspace-eyebrow">Your result</p><h3>{result.title}</h3></div></div>
     <p className="demo-workspace-result-summary">{preview.text}</p>
     {actions}
-    {preview.shortened && <details className="demo-workspace-result-detail"><summary>Read full summary<Icon name="chevron-down" size={16}/></summary><div>{result.summary}</div></details>}
-    {result.artifacts.map(artifact => <details key={artifact.id} className="demo-workspace-result-detail"><summary>{artifact.title}<Icon name="chevron-down" size={16}/></summary><div>{artifact.text}</div></details>)}
+    {preview.shortened && <details className="demo-workspace-result-detail"><summary>Read full summary<Icon name="chevron-down" size={16}/></summary><ReadingRegion label="Full summary"><div className="readable-text">{result.summary}</div></ReadingRegion></details>}
+    {result.artifacts.map(artifact => <details key={artifact.id} className="demo-workspace-result-detail"><summary>{artifact.title}<Icon name="chevron-down" size={16}/></summary><ReadingRegion label={artifact.title}><div className="readable-text">{artifact.text}</div></ReadingRegion></details>)}
   </section>;
 }
 

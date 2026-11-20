@@ -7,6 +7,7 @@ import { authConfigured } from '@/lib/server-config';
 import './globals.css';
 import './product-system.css';
 import './workspace-layout.css';
+import './content-layout.css';
 const geist = localFont({ src: '../fonts/geist-variable.ttf', variable: '--font-geist', weight: '100 900', display: 'swap' });
 const manrope = localFont({ src: '../fonts/manrope-variable.ttf', variable: '--font-manrope', weight: '200 800', display: 'swap' });
 export const metadata: Metadata = { title: { default: 'Pactwoven — Keep the promise.', template: '%s · Pactwoven' }, description: 'A clear home for responsibilities, supplier handoffs and the decisions that keep work moving.' };

@@ -5,22 +5,33 @@ export type MotionMode = 'normal' | 'reduced' | 'off';
 type MotionContextValue = { mode: MotionMode; preference: MotionMode; setPreference: (mode: MotionMode) => void; keyboard: React.MutableRefObject<boolean> };
 const MotionContext = createContext<MotionContextValue | null>(null);
 const activeAnimations = new Set<Animation>();
+function settleAnimations() {
+  for (const animation of activeAnimations) animation.cancel();
+  activeAnimations.clear();
+}
 export function MotionProvider({ children }: { children: ReactNode }) {
   const [preference, setPreference] = useState<MotionMode>('normal');
   const [reduced, setReduced] = useState(false);
   const keyboard = useRef(false);
+  const previousMode = useRef<MotionMode | null>(null);
   const mode = preference === 'off' ? 'off' : preference === 'reduced' || reduced ? 'reduced' : 'normal';
   useEffect(() => {
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
     const update = () => setReduced(media.matches); update(); media.addEventListener('change', update);
-    const key = (event: KeyboardEvent) => { if (!event.metaKey && !event.ctrlKey && !event.altKey) { keyboard.current = true; document.documentElement.dataset.input = 'keyboard'; } };
+    const key = (event: KeyboardEvent) => { if (!event.metaKey && !event.ctrlKey && !event.altKey) { keyboard.current = true; document.documentElement.dataset.input = 'keyboard'; settleAnimations(); } };
     const pointer = () => { keyboard.current = false; document.documentElement.dataset.input = 'pointer'; };
-    const settle = () => { document.documentElement.dataset.visibility = document.hidden ? 'hidden' : 'visible'; for (const animation of activeAnimations) animation.cancel(); activeAnimations.clear(); };
+    const settle = () => { document.documentElement.dataset.visibility = document.hidden ? 'hidden' : 'visible'; settleAnimations(); };
+    document.documentElement.dataset.visibility = document.hidden ? 'hidden' : 'visible';
+    if (document.hidden) settleAnimations();
     document.addEventListener('keydown', key, true); document.addEventListener('pointerdown', pointer, true);
     document.addEventListener('visibilitychange', settle); window.addEventListener('resize', settle);
     return () => { media.removeEventListener('change', update); document.removeEventListener('keydown', key, true); document.removeEventListener('pointerdown', pointer, true); document.removeEventListener('visibilitychange', settle); window.removeEventListener('resize', settle); settle(); };
   }, []);
-  useEffect(() => { document.documentElement.dataset.motion = mode; for (const animation of activeAnimations) animation.cancel(); activeAnimations.clear(); }, [mode]);
+  useEffect(() => {
+    document.documentElement.dataset.motion = mode;
+    if (mode !== 'normal' || (previousMode.current !== null && previousMode.current !== mode)) settleAnimations();
+    previousMode.current = mode;
+  }, [mode]);
   return <MotionContext value={{ mode, preference, setPreference, keyboard }}>{children}</MotionContext>;
 }
 export function useMotion() { const value = useContext(MotionContext); if (!value) throw new Error('MotionProvider is required'); return value; }
@@ -50,7 +61,7 @@ export function useArrival(trigger: unknown, duration = 120) {
   useLayoutEffect(() => () => { const animation = current.current; animation?.cancel(); if (animation) activeAnimations.delete(animation); current.current = null; }, []);
   return ref;
 }
-export function RouteArrival({ children }: { children: ReactNode }) { const path = usePathname(); const ref = useArrival(path); return <div ref={ref} className="route-content">{children}</div>; }
+export function RouteArrival({ children }: { children: ReactNode }) { const path = usePathname(); const ref = useArrival(path, 200); return <div ref={ref} className="route-content">{children}</div>; }
 export function MotionPreference() {
   const { preference, setPreference } = useMotion();
   return <label className="motion-preference"><span>Motion</span><select value={preference} onChange={e => setPreference(e.target.value as MotionMode)} aria-label="Motion preference"><option value="normal">Full</option><option value="reduced">Reduced</option><option value="off">Off</option></select></label>;
@@ -63,7 +74,7 @@ export function useReversibleHeight(open: boolean) {
     animation.current?.cancel();
     node.style.height = open ? 'auto' : '0px';
     const target = open ? node.scrollHeight : 0;
-    if (mode !== 'normal' || window.matchMedia('(prefers-reduced-motion: reduce)').matches || keyboard.current || !node.animate) return;
+    if (mode !== 'normal' || window.matchMedia('(prefers-reduced-motion: reduce)').matches || keyboard.current || document.hidden || !node.animate) return;
     const next = node.animate([{ height: `${height}px` }, { height: `${target}px` }], { duration: 200, easing: 'cubic-bezier(.23,1,.32,1)' });
     animation.current = next; activeAnimations.add(next);
     next.finished.then(() => activeAnimations.delete(next)).catch(() => activeAnimations.delete(next));

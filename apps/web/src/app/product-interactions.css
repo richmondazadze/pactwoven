@@ -1,0 +1,59 @@
+/* Feedback stays on controls; financial values and reading positions stay still. */
+.workspace, .mobile-drawer, .workspace-connection, .onboarding-page {
+  --product-hover: var(--exit);
+  --product-ease: var(--ease);
+}
+
+.workspace :is(.back-link, .muted-link, .record-link, .workspace-context-link) {
+  transition: color var(--exit) var(--ease);
+}
+.workspace :is(.back-link, .workspace-context-link) > .icon {
+  transition: transform var(--exit) var(--ease);
+}
+.workspace details > summary {
+  border-radius: var(--radius-ui);
+  transition: color var(--exit) var(--ease), background-color var(--exit) var(--ease);
+}
+.workspace details > summary:focus-visible {
+  outline: 3px solid var(--blue);
+  outline-offset: 3px;
+}
+.workspace details > summary > .icon:last-child {
+  transition: transform var(--panel) var(--ease);
+}
+.workspace details[open] > summary > .icon:last-child {
+  transform: rotate(180deg);
+}
+.workspace details[open] > :not(summary) {
+  animation: product-detail-in 180ms var(--ease);
+}
+.workspace-tooltip[data-state="delayed-open"] {
+  transform-origin: var(--radix-tooltip-content-transform-origin);
+  animation: product-tooltip-in 140ms var(--ease);
+}
+
+@keyframes product-detail-in { from { opacity: .65; } to { opacity: 1; } }
+@keyframes product-tooltip-in { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: none; } }
+
+@media (hover: hover) and (pointer: fine) {
+  .workspace :is(.back-link, .muted-link, .record-link, .workspace-context-link):hover { color: var(--blue); }
+  .workspace .back-link:hover > .icon { transform: translateX(-2px); }
+  .workspace .workspace-context-link:hover > .icon:last-child { transform: translateX(2px); }
+  .workspace details > summary:hover { color: var(--blue); }
+  :is(.workspace, .mobile-drawer) .icon-button { transition: background-color var(--feedback) var(--ease), border-color var(--feedback) var(--ease), transform var(--feedback) var(--ease); }
+  :is(.workspace, .mobile-drawer) .icon-button:not(:disabled):active { transform: scale(.96); }
+}
+
+/* Native disclosure semantics and all content remain available without motion. */
+@media (prefers-reduced-motion: reduce) {
+  .workspace details[open] > :not(summary), .workspace-tooltip { animation: none; }
+  .workspace :is(.back-link, .workspace-context-link) > .icon,
+  .workspace details > summary > .icon,
+  :is(.workspace, .mobile-drawer) .icon-button { transition: none; }
+  .workspace :is(.back-link, .workspace-context-link):hover > .icon,
+  :is(.workspace, .mobile-drawer) .icon-button:not(:disabled):active { transform: none; }
+}
+html:is([data-motion="reduced"], [data-motion="off"], [data-input="keyboard"]) .workspace :is(.back-link, .workspace-context-link):hover > .icon,
+html:is([data-motion="reduced"], [data-motion="off"], [data-input="keyboard"]) :is(.workspace, .mobile-drawer) .icon-button:not(:disabled):active { transform: none; }
+html[data-visibility="hidden"] .workspace details[open] > :not(summary),
+html[data-visibility="hidden"] .workspace-tooltip { animation: none; }

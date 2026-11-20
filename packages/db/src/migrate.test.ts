@@ -17,7 +17,7 @@ const authoredMigrationFiles = ['0001_foundation.sql', '0002_organization_bootst
   '0025_native_provider_authority.sql', '0026_native_delegation.sql', '0027_native_memory.sql', '0028_native_memory_notes.sql',
   '0029_native_delegation_root_lifecycle.sql', '0030_native_work_intent.sql', '0031_native_agent_work_list.sql',
   '0032_native_communication.sql', '0033_native_google.sql', '0034_native_google_access.sql', '0035_native_google_discovery.sql', '0036_google_oauth_window.sql',
-  '0037_native_delegation_source_refresh.sql', '0038_native_delegation_bootstrap_policy.sql', '0039_native_work_instructions.sql', '0040_native_work_activity.sql', '0041_paid_tool_core.sql', '0042_paid_tool_root.sql', '0043_paid_tool_intent.sql', '0044_paid_tool_dispatch.sql'];
+  '0037_native_delegation_source_refresh.sql', '0038_native_delegation_bootstrap_policy.sql', '0039_native_work_instructions.sql', '0040_native_work_activity.sql', '0041_paid_tool_core.sql', '0042_paid_tool_root.sql', '0043_paid_tool_intent.sql', '0044_paid_tool_dispatch.sql', '0045_paid_tool_retained_contributors.sql', '0046_paid_tool_settlement_wait.sql', '0047_paid_tool_root_revalidation.sql', '0048_paid_tool_completed_history.sql', '0049_native_work_execution.sql'];
 function fixtureDatabaseUrl(source: string): string {
   const url = new URL(source);
   url.password = 'fixture';

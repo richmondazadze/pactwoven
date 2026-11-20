@@ -9,17 +9,20 @@ import { inspectSupplyChain } from './check-publication.mjs';
 // DB calls deterministic policy inside transactions; domain cannot call DB back.
 export const allowedGraph = Object.freeze({
   'apps/web': ['packages/contracts'],
-  'services/api': ['packages/contracts', 'packages/domain', 'packages/db', 'packages/observability'],
+  'services/api': ['packages/contracts', 'packages/domain', 'packages/db', 'packages/observability', 'services/paid-tools'],
   // Coordinator composition uses a native-task-only database role; no financial grants.
-  'services/coordinator': ['packages/contracts', 'packages/domain', 'packages/adapters', 'packages/db', 'services/connectors'],
+  'services/coordinator': ['packages/contracts', 'packages/domain', 'packages/adapters', 'packages/db', 'services/connectors', 'services/paid-tools'],
   'services/connectors': ['packages/contracts', 'packages/adapters'],
   // Separate server deployment; web never imports this composition or its secrets.
-  'services/native-host': ['services/coordinator', 'packages/contracts', 'packages/db', 'packages/service-identity'],
+  'services/native-host': ['services/coordinator', 'packages/contracts', 'packages/db', 'packages/service-identity', 'services/paid-tools'],
   // Foreground Google OAuth and explicit event reads use private connector
   // transport/vault code; no connector capability is added to the web bundle.
   'services/native-api': ['services/api', 'services/connectors', 'packages/contracts', 'packages/db', 'packages/service-identity'],
   // Isolated browser substrate; no application or financial-service imports.
   'services/browser-tools': [],
+  // Private paid-tool protocol and execution; never available to web.
+  'services/paid-tools': ['packages/contracts', 'packages/domain', 'packages/adapters', 'packages/db', 'packages/service-identity', 'programs/pactwoven'],
+  'services/paid-signer': ['services/paid-tools', 'packages/contracts', 'packages/db', 'packages/service-identity'],
   // Private evidence qualification. Public API composition uses an explicit port;
   // transport credentials never enter the deterministic adapter package.
   'services/financial-qualification': ['packages/contracts', 'packages/domain', 'packages/adapters', 'packages/db', 'programs/pactwoven'],
@@ -36,10 +39,16 @@ export const allowedGraph = Object.freeze({
   'packages/testkit': ['packages/contracts', 'packages/domain'],
   'programs/pactwoven': [],
 });
+// Test fixtures may verify composition without widening production imports.
+const testOnlyGraph = Object.freeze({
+  'services/api': ['services/native-api'],
+  'services/native-host': ['packages/domain'],
+  'services/paid-tools': ['programs/pactwoven'],
+});
 const pureModules = new Set(['packages/contracts', 'packages/domain', 'packages/adapters', 'packages/testkit']);
 const ignored = new Set(['node_modules', '.next', '.open-next', '.turbo', 'dist', 'build', 'target', 'coverage', '.local', '.wrangler', '.vercel']);
 const sourcePattern = /\.(?:[cm]?[jt]s|[jt]sx)$/;
-const testPattern = /(?:^|\/)(?:__tests__|tests)\/|\.(?:test|spec)\.[cm]?[jt]sx?$/;
+const testPattern = /(?:^|\/)(?:__tests__|tests)\/|\.(?:test(?:-fixture|-support)?|spec)\.[cm]?[jt]sx?$/;
 const safePureExternals = new Set(['zod']);
 // These exact root exports contain deterministic codecs/parsing only. Keep the
 // capability local to adapters; full RPC, wallet and signer SDKs stay forbidden.
@@ -188,13 +197,14 @@ export function checkBoundaries({ root = process.cwd() } = {}) {
 
   function checkEdge(from, target, file, line, test) {
     if (from === target) return;
-    if (test && target === 'packages/testkit') return;
+    if (test && (target === 'packages/testkit' || testOnlyGraph[from]?.includes(target))) return;
     if (!target || !allowedGraph[from].includes(target)) add(file, `forbidden dependency: ${from} -> ${target ?? 'unowned source'}`, line);
   }
 
   function checkTarget(workspace, candidate, file, line, test, requireExists = false) {
     if (/[\\%?#\x00-\x1f]/.test(candidate)) { add(file, 'noncanonical local module target', line); return; }
     const target = path.resolve(candidate);
+    if (!test && testPattern.test(posix(target))) add(file, 'production source cannot import a test fixture', line);
     if (!contained(root, target)) { add(file, 'import escapes repository root', line); return; }
     checkEdge(workspace.owner, ownerOf(root, target), file, line, test);
     const existing = resolveExisting(target);
@@ -203,6 +213,7 @@ export function checkBoundaries({ root = process.cwd() } = {}) {
       return;
     }
     const real = fs.realpathSync(existing);
+    if (!test && [existing, real].some(value => testPattern.test(posix(value)))) add(file, 'production source cannot import a test fixture', line);
     const fixturePath = path.join(root, isolatedBuiltinFixture);
     const resolvedStat = fs.statSync(existing);
     const fixtureStat = fs.existsSync(fixturePath) ? fs.statSync(fixturePath) : null;
@@ -309,6 +320,14 @@ export function checkBoundaries({ root = process.cwd() } = {}) {
         const specifier = staticString(argument);
         if (specifier === null) add(file, 'computed module loading requires explicit boundary review', node.loc?.start.line);
         else {
+          // Equipment selection consumes only this erased gateway interface.
+          // Do not grant the paid service runtime access to coordinator code.
+          const gatewayTypeOnly = workspace.owner === 'services/paid-tools'
+            && node.type === 'ImportDeclaration' && node.importKind === 'type'
+            && specifier === '../../coordinator/src/azure-gateway.js'
+            && node.specifiers.length > 0 && node.specifiers.every(binding => binding.type === 'ImportSpecifier'
+              && ['NativeModelGateway', ...(test ? ['ModelRequest'] : [])].includes(binding.imported.name));
+          if (gatewayTypeOnly) return;
           // This offline fixture synchronizes mocked Node filesystem exports. It
           // receives no module loader, namespace, dynamic import or re-export.
           const binding = node.specifiers?.[0];

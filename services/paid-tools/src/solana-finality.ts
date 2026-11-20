@@ -55,7 +55,8 @@ export async function inspectPaidTransferFinality(wire: VerifiedPaidTransferWire
 
   // Recheck evidence bytes that the general decoder does not retain in its
   // projection: exact signatures, header/blockhash and every lamport delta.
-  const result = solanaJsonObject(raw(transactionEvidence), ['slot', 'blockTime', 'version', 'transaction', 'meta'], ['slot', 'version', 'transaction', 'meta']);
+  const result = solanaJsonObject(raw(transactionEvidence), ['slot', 'blockTime', 'version', 'transaction', 'meta', 'transactionIndex'], ['slot', 'version', 'transaction', 'meta']);
+  if (result.transactionIndex !== undefined) solanaSmallInteger(result.transactionIndex, Number.MAX_SAFE_INTEGER);
   const transaction = solanaJsonObject(result.transaction, ['signatures', 'message']);
   const signatures = solanaJsonArray(transaction.signatures, 2).map(value => solanaJsonString(value, 88));
   assert(signatures.length === expected.signerAddresses.length && signatures[0] === wire.signature);

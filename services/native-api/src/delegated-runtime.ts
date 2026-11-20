@@ -4,6 +4,7 @@ import { createRuntimePool, PostgresFoundationRepository, PostgresNativeMemoryNo
   PostgresNativeRootRepository, PostgresNativeWorkIntentRepository, PostgresNativeAgentWorkListRepository, PostgresNativeDelegationRepository } from '@pactwoven/db';
 import { createNativeWorkProtocolPool } from '../../../packages/db/src/native-work-protocol-pool';
 import { PostgresNativeWorkConversationRepository } from '../../../packages/db/src/native-work-conversation-repository';
+import { PostgresNativeWorkExecutionRepository } from '../../../packages/db/src/native-work-execution-repository';
 import { PostgresNativeWorkActivityRepository } from '../../../packages/db/src/native-work-activity-repository';
 import { createElevenLabsVoiceGateway } from '../../api/src/native-voice-service';
 import { readNativeApiConfig, readNativeDelegatedApiConfig } from './config.js';
@@ -61,11 +62,12 @@ export function nativeDelegatedResources(deadlineAt = Date.now() + 15000): Promi
     const opened: ManagedPool[] = [];
     try {
       const foundation = await openPool(() => createRuntimePool(base.foundationDatabaseUrl), initializeBy); opened.push(foundation);
-      let instructions = false, activity = false;
+      let instructions = false, activity = false, execution = false;
       const delegated = await openPool(async () => {
         const selected = await createNativeWorkProtocolPool(config.delegationDatabaseUrl, config.environment);
         instructions = selected.instructions;
         activity = selected.activity;
+        execution = selected.execution;
         return selected.pool;
       }, initializeBy); opened.push(delegated);
       const workIntent = new PostgresNativeWorkIntentRepository(delegated, config.environment);
@@ -86,6 +88,7 @@ export function nativeDelegatedResources(deadlineAt = Date.now() + 15000): Promi
         nativeAgentWorkListRepository: new PostgresNativeAgentWorkListRepository(delegated, config.environment),
         nativeAgentWorkRepository: new PostgresNativeRootRepository(delegated, config.environment),
         ...(nativeVoiceGateway ? { nativeVoiceGateway } : {}),
+        ...(execution ? { nativeWorkTeamActivityRepository: new PostgresNativeWorkExecutionRepository(delegated, config.environment) } : {}),
         ...(activity ? { nativeWorkActivityRepository: new PostgresNativeWorkActivityRepository(delegated, config.environment) } : {}),
         ...(instructions ? { nativeWorkConversationRepository: new PostgresNativeWorkConversationRepository(delegated, config.environment) } : {}) });
       const authority: NativeDelegatedAuthorityResources = { repository: new PostgresNativeDelegationRepository(delegated, config.environment),

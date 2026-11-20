@@ -3,12 +3,14 @@ import type { Pool } from 'pg';
 import type { createDelegatedRuntime } from './delegated-runtime';
 
 const mocks = vi.hoisted(() => ({
-  attach: vi.fn(), pool: vi.fn(), dispatchRepository: vi.fn(), router: vi.fn(),
+  attach: vi.fn(), pool: vi.fn(), protocolPool: vi.fn(), dispatchRepository: vi.fn(), router: vi.fn(),
   config: vi.fn(), dispatchConfig: vi.fn(), compose: vi.fn(), gateway: vi.fn(), transport: vi.fn(),
   observe: vi.fn(), evidence: vi.fn(), send: vi.fn(), publish: vi.fn(), consume: vi.fn(), recover: vi.fn(),
 }));
 vi.mock('@vercel/functions', () => ({ attachDatabasePool: mocks.attach }));
+vi.mock('./delegated-trace', () => ({ withDelegatedTrace: async (_message: unknown, run: () => Promise<unknown>) => run(), traceDelegatedAuthority: (value: unknown) => value, traceDelegatedGateway: (value: unknown) => value, delegatedTraceFields: () => ({}) }));
 vi.mock('../../../packages/db/src/native-delegation-pool', () => ({ createNativeDelegationPool: mocks.pool }));
+vi.mock('../../../packages/db/src/native-root-protocol-pool', () => ({ createNativeRootProtocolPool: mocks.protocolPool }));
 vi.mock('../../../packages/db/src/native-delegation-repository', async importOriginal => ({
   ...await importOriginal<object>(), PostgresNativeDelegationDispatchRepository: mocks.dispatchRepository,
 }));
@@ -36,6 +38,8 @@ async function fixture() {
   const pools = { coordinator: pool('coordinator'), worker: pool('worker'), dispatcher: pool('dispatcher') };
   const runtimePublish = vi.fn(async (_deadline: number) => counts);
   mocks.pool.mockImplementation(async (_url: string, _environment: string, purpose: keyof typeof pools) => pools[purpose]);
+  mocks.protocolPool.mockImplementation(async (url: string, environment: string, purpose: string) =>
+    ({ pool: await mocks.pool(url, environment, purpose, 'delegation-root'), protocol: 'legacy' }));
   mocks.config.mockReturnValue(configuration);
   mocks.dispatchConfig.mockReturnValue({ environment: 'development', databaseUrl: configuration.databases.dispatcher });
   mocks.dispatchRepository.mockImplementation(function () {});
@@ -71,6 +75,18 @@ describe('delegated host initialization boundaries', () => {
     expect(mocks.observe).toHaveBeenCalledWith(configuration.apiOrigin);
     expect(mocks.consume).toHaveBeenCalledWith(payload, { deadlineAt: f.deadline });
     expect(mocks.attach).toHaveBeenCalledTimes(3); expect(f.runtimePublish).toHaveBeenCalledWith(f.deadline);
+  });
+  it('selects refresh ports only when both independently admitted pools use refresh', async () => {
+    const f = await fixture(); mocks.protocolPool.mockImplementation(async (_url: string, _environment: string, purpose: 'coordinator' | 'worker') => ({ pool: f.pools[purpose], protocol: 'refresh' }));
+    await f.runDelegatedQueueMessage(payload, f.deadline);
+    expect(mocks.compose).toHaveBeenCalledWith(expect.objectContaining({ protocol: 'refresh', pools: f.pools }));
+    expect(mocks.protocolPool.mock.calls).toEqual([['coordinator-db', 'development', 'coordinator'], ['worker-db', 'development', 'worker']]);
+  });
+  it('disposes both execution pools when an upgrade races between profile checks', async () => {
+    const f = await fixture(); mocks.protocolPool.mockImplementation(async (_url: string, _environment: string, purpose: 'coordinator' | 'worker') => ({ pool: f.pools[purpose], protocol: purpose === 'coordinator' ? 'legacy' : 'refresh' }));
+    await expect(f.runDelegatedQueueMessage(payload, f.deadline)).rejects.toThrow(f.NativeDeliveryRetry);
+    expect(mocks.compose).not.toHaveBeenCalled(); expect(f.pools.coordinator.end).toHaveBeenCalledOnce(); expect(f.pools.worker.end).toHaveBeenCalledOnce();
+    expect(f.pools.dispatcher.end).not.toHaveBeenCalled(); expect(mocks.consume).not.toHaveBeenCalled();
   });
   it('shares pending initialization between concurrent publication and execution callers', async () => {
     const f = await fixture(), pending = deferred<Pool>(); mocks.pool.mockImplementationOnce(() => pending.promise);
@@ -178,9 +194,53 @@ describe('delegated host initialization boundaries', () => {
     options.onUsage!({ taskId: 'private-task-id', role: 'coordinator', usage: { inputTokens: 4, outputTokens: 6, totalTokens: 10 } });
     expect(log.mock.calls).toEqual([[JSON.stringify({ kind: 'delegated-model-usage', role: 'coordinator', inputTokens: 4, outputTokens: 6, totalTokens: 10 })]]);
   });
+  it('logs only the fixed interruption projection, even if a caller adds private fields', async () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {}), f = await fixture(); await f.runDelegatedQueueMessage(payload, f.deadline);
+    const options = mocks.compose.mock.calls[0]![0] as Parameters<typeof createDelegatedRuntime>[0];
+    const event = { runner: 'specialist' as const, stage: 'publication' as const, failure: 'persistence_unknown' as const,
+      taskId: 'private-task', prompt: 'private-prompt', credential: 'private-credential' };
+    options.onDiagnostic!(event);
+    expect(log.mock.calls).toEqual([[JSON.stringify({ kind: 'delegated-execution-interruption',
+      runner: 'specialist', stage: 'publication', failure: 'persistence_unknown' })]]);
+  });
 });
 
 describe('delegated host delivery behavior', () => {
+  it('recovers one bounded batch and publishes before consuming the original delivery once', async () => {
+    const f = await fixture(), order: string[] = [];
+    mocks.recover.mockImplementation(async () => { order.push('recover'); return Array.from({ length: 20 }, () => ({})); });
+    mocks.publish.mockImplementation(async () => { order.push('publish'); return counts; });
+    mocks.consume.mockImplementation(async () => { order.push('consume'); return 'discarded'; });
+    expect(await f.runDelegatedQueueMessage(payload, f.deadline)).toBe('discarded');
+    expect(order).toEqual(['recover', 'publish', 'consume']); expect(mocks.recover.mock.calls).toEqual([[20]]);
+    expect(mocks.consume).toHaveBeenCalledWith(payload, { deadlineAt: f.deadline });
+    expect(f.runtimePublish).not.toHaveBeenCalled();
+  });
+  it('does not publish recovery when SQL finds no eligible interrupted root', async () => {
+    const f = await fixture(); mocks.consume.mockResolvedValue('discarded');
+    await f.runDelegatedQueueMessage(payload, f.deadline);
+    expect(mocks.recover).toHaveBeenCalledWith(20); expect(mocks.publish).not.toHaveBeenCalled();
+  });
+  it('leaves the original delivery to retry if recovery acknowledgement is unknown', async () => {
+    const f = await fixture(), retry = new f.NativeDeliveryRetry(71); mocks.recover.mockRejectedValue(retry);
+    await expect(f.runDelegatedQueueMessage(payload, f.deadline)).rejects.toBe(retry);
+    expect(mocks.recover).toHaveBeenCalledOnce(); expect(mocks.consume).not.toHaveBeenCalled(); expect(mocks.publish).not.toHaveBeenCalled();
+  });
+  it('does not discard the old delivery after unconfirmed recovery publication', async () => {
+    const f = await fixture(); mocks.recover.mockResolvedValue([{}]); mocks.publish.mockResolvedValue({ accepted: 0, discarded: 0, unconfirmed: 1 });
+    await expect(f.runDelegatedQueueMessage(payload, f.deadline)).rejects.toBeInstanceOf(f.NativeDeliveryRetry);
+    expect(mocks.consume).not.toHaveBeenCalled(); expect(mocks.publish).toHaveBeenCalledOnce();
+  });
+  it('rechecks remaining execution time after recovery publication', async () => {
+    vi.useFakeTimers(); const f = await fixture(); mocks.recover.mockResolvedValue([{}]);
+    mocks.publish.mockImplementation(async () => { vi.setSystemTime(f.deadline - 24000); return counts; });
+    await expect(f.runDelegatedQueueMessage(payload, f.deadline)).rejects.toBeInstanceOf(f.NativeDeliveryRetry);
+    expect(mocks.consume).not.toHaveBeenCalled();
+  });
+  it('does not start a recovery scan in a short but still usable execution slice', async () => {
+    const f = await fixture(); await f.runDelegatedQueueMessage(payload, Date.now() + 44000);
+    expect(mocks.recover).not.toHaveBeenCalled(); expect(mocks.consume).toHaveBeenCalledOnce();
+  });
   it.each([null, { ...payload, extra: true }, { ...payload, environment: 'production' }, { ...payload, environment: 'simulation' },
     { ...payload, target: { ...payload.target, generation: 0 } }])('discards invalid or foreign metadata without initialization', async invalid => {
     const f = await fixture(); expect(await f.runDelegatedQueueMessage(invalid, f.deadline)).toBe('discarded');

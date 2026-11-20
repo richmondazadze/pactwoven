@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -13,7 +14,7 @@ vi.mock('./native-agent-work-hooks',()=>({canObserveAgentWork:()=>visible,useAge
  useAgentWorkBinding:()=>({session:nativeSessionFixture(),scope:agentWorkScope(nativeSessionFixture(),'site_one'),current:vi.fn(),live:{current:true},controller:{current:new AbortController()},getToken:vi.fn()})}));
 beforeEach(()=>{vi.stubEnv('NEXT_PUBLIC_NATIVE_API_BASE_URL','http://localhost:3108');work=agentWorkFixture();visible=true;});
 afterEach(()=>vi.unstubAllEnvs());
-const render=()=>renderToStaticMarkup(createElement(NativeAgentWorkDetail,{siteId:'site_one',id:'root_internal'}));
+const render=()=>renderToStaticMarkup(createElement(QueryClientProvider,{client:new QueryClient()},createElement(NativeAgentWorkDetail,{siteId:'site_one',id:'root_internal'})));
 it('offers no cancellation without a returned authoritative action',()=>{
  work=NativeAgentWorkSchema.parse({...work,state:'working',progress:null,availableActions:[]});expect(render()).not.toContain('Cancel work');
 });

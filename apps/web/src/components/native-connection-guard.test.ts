@@ -9,6 +9,7 @@ import { NativePreviousConnection } from './native-previous-connection';
 
 // Offline interaction harness: real recovery helpers and components, simulated
 // React hooks and query/router boundaries. This is not browser qualification.
+// Continuation routing has its own suite; mount its connected child here.
 const h = vi.hoisted(() => ({ active: null as any, workspace: null as any, query: null as any,
   token: vi.fn(async () => 'token'), fetch: vi.fn(), client: { setQueryData: vi.fn(), invalidateQueries: vi.fn() },
   lifetime: { live: { current: true }, controller: { current: null as AbortController | null } },
@@ -63,7 +64,7 @@ describe('actual create and reply controls after a work connection change', () =
     const store = storage(), scope = taskAttemptScope(h.workspace.session), taskId = h.query.data.task.id;
     const original = createTaskReplyAttempt(scope, taskId, { text: 'Original reply.', expectedVersion: 3 }); storeTaskAttempt(store, original);
     vi.stubGlobal('window', { sessionStorage: store }); vi.stubEnv('NEXT_PUBLIC_NATIVE_API_BASE_URL', 'https://new-native.example.test');
-    const view = mount(NativeTaskWorkspace({ id: taskId })); let nodes = elements(view.tree);
+    const view = mount(NativeTaskWorkspace({ id: taskId }).props.children); let nodes = elements(view.tree);
     expect(nodes.find(node => node.type === NativePreviousConnection)?.props.requests).toEqual([{ kind: 'reply', key: original.key, taskId }]);
     expect(nodes.find(node => node.type === 'button' && node.props.type === 'submit')?.props.disabled).toBe(true);
     nodes.find(node => node.type === 'textarea').props.onChange({ target: { value: 'Programmatic duplicate reply.' } }); view.render(); nodes = elements(view.tree);
@@ -78,7 +79,7 @@ describe('actual create and reply controls after a work connection change', () =
     const original = createTaskReplyAttempt(scope, taskId, { text: 'Original reply.', expectedVersion: 3 }); storeTaskAttempt(store, original);
     h.query = { ...h.query, data: undefined, error: new RequestError('NOT_FOUND', 'Not available', 404) };
     vi.stubGlobal('window', { sessionStorage: store }); vi.stubEnv('NEXT_PUBLIC_NATIVE_API_BASE_URL', 'https://new-native.example.test');
-    const view = mount(NativeTaskWorkspace({ id: taskId })), nodes = elements(view.tree);
+    const view = mount(NativeTaskWorkspace({ id: taskId }).props.children), nodes = elements(view.tree);
     expect(nodes.find(node => node.type === NativePreviousConnection)?.props.requests).toEqual([{ kind: 'reply', key: original.key, taskId }]);
     expect(nodes.some(node => node.type === 'form')).toBe(false);
     expect(h.token).not.toHaveBeenCalled(); expect(h.fetch).not.toHaveBeenCalled();

@@ -16,7 +16,7 @@ const STORE_ENTRY = `picomatch@4.0.7_patch_hash=${PATCH_SHA}`;
 const INTEGRITY = 'sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==';
 const TARBALL = 'https://registry.npmjs.org/picomatch/-/picomatch-4.0.7.tgz';
 const NEXT_CONFIG = 'apps/web/next.config.ts';
-const NEXT_CONFIG_SHA = '2e8c3adab3ce7ed7a5a686a2209ff64d548590d0f31a85b7aa3ca5a7afdb475c';
+const NEXT_CONFIG_SHA = 'ffb7c54b101005c813cfb71baf8903e42c69f7868c52c4bdfa3a9959a06181e9';
 const SEVERITIES = ['info', 'low', 'moderate', 'high', 'critical'];
 const SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies'];
 const MAX_BYTES = 16 * 1024 * 1024;

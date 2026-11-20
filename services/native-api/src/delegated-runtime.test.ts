@@ -3,21 +3,23 @@ const f = vi.hoisted(() => ({
   foundation: { end: vi.fn(async () => undefined) }, delegated: { end: vi.fn(async () => undefined) },
   createFoundation: vi.fn(), createDelegated: vi.fn(), attach: vi.fn(), createApp: vi.fn(),
   verifyObserved: vi.fn(), observeAuthority: vi.fn(), readBase: vi.fn(), readDelegated: vi.fn(),
-  instructions: false, activity: false, createActivity: vi.fn(), createConversation: vi.fn(), createWorkIntent: vi.fn(), workIntent: { provenance: vi.fn() },
+  instructions: false, activity: false, execution: false, createExecution: vi.fn(), createActivity: vi.fn(), createConversation: vi.fn(), createWorkIntent: vi.fn(), workIntent: { provenance: vi.fn() },
 }));
 vi.mock('@vercel/functions', () => ({ attachDatabasePool: f.attach }));
 vi.mock('@pactwoven/api/native-host', () => ({ createNativeTaskApp: f.createApp, createClerkIdentityObservationVerifier: f.verifyObserved }));
 vi.mock('@pactwoven/db', () => ({ createRuntimePool: f.createFoundation, createNativeDelegationPool: f.createDelegated,
   PostgresFoundationRepository: class {}, PostgresNativeMemoryNotesRepository: class {},
   PostgresNativeRootRepository: class {}, PostgresNativeWorkIntentRepository: f.createWorkIntent, PostgresNativeAgentWorkListRepository: class {}, PostgresNativeDelegationRepository: class {} }));
-vi.mock('../../../packages/db/src/native-work-protocol-pool', () => ({ createNativeWorkProtocolPool: (...args: unknown[]) => f.createDelegated(...args).then((pool: typeof f.delegated) => ({ pool, instructions: f.instructions, activity: f.activity })) }));
+vi.mock('../../../packages/db/src/native-work-protocol-pool', () => ({ createNativeWorkProtocolPool: (...args: unknown[]) => f.createDelegated(...args).then((pool: typeof f.delegated) => ({ pool, instructions: f.instructions, activity: f.activity, execution: f.execution })) }));
 vi.mock('../../../packages/db/src/native-work-conversation-repository', () => ({ PostgresNativeWorkConversationRepository: f.createConversation }));
 vi.mock('../../../packages/db/src/native-work-activity-repository', () => ({ PostgresNativeWorkActivityRepository: f.createActivity }));
+vi.mock('../../../packages/db/src/native-work-execution-repository', () => ({ PostgresNativeWorkExecutionRepository: f.createExecution }));
 vi.mock('./config.js', () => ({ readNativeApiConfig: f.readBase, readNativeDelegatedApiConfig: f.readDelegated }));
 vi.mock('./delegated-provider-authority.js', () => ({ createClerkDelegatedProviderAuthorityObserver: f.observeAuthority }));
 beforeEach(() => {
-  vi.resetModules();vi.resetAllMocks();f.instructions = false; f.activity = false;
+  vi.resetModules();vi.resetAllMocks();f.instructions = false; f.activity = false; f.execution = false;
   f.createConversation.mockImplementation(function () { return {}; });
+  f.createExecution.mockImplementation(function () { return {}; });
   f.createActivity.mockImplementation(function () { return {}; });
   f.foundation.end.mockResolvedValue(undefined);f.delegated.end.mockResolvedValue(undefined);
   f.createFoundation.mockResolvedValue(f.foundation);f.createDelegated.mockResolvedValue(f.delegated);
@@ -44,7 +46,19 @@ describe('shared delegated API initialization', () => {
   it('mounts a valid optional voice gateway without contacting its provider', async () => {
     vi.stubEnv('ELEVENLABS_API_KEY', 'synthetic-review-key'); vi.stubEnv('ELEVENLABS_VOICE_ID', 'valid_voice');
     const { nativeWorkApp } = await import('./delegated-runtime'); await nativeWorkApp();
-    expect(f.createApp.mock.calls[0]![0].nativeVoiceGateway).toMatchObject({ transcribe: expect.any(Function), speak: expect.any(Function) });
+    expect(typeof f.createApp.mock.calls[0]![0].nativeVoiceGateway.transcribe).toBe('function');
+    expect(typeof f.createApp.mock.calls[0]![0].nativeVoiceGateway.speak).toBe('function');
+  });
+  it.each([false, true])('mounts current team metadata only when admitted: %s', async available => {
+    f.instructions = true; f.activity = true; f.execution = available;
+    const { nativeWorkApp } = await import('./delegated-runtime'); await nativeWorkApp();
+    if (available) {
+      expect(f.createExecution).toHaveBeenCalledExactlyOnceWith(f.delegated, 'development');
+      expect(f.createApp.mock.calls[0]![0].nativeWorkTeamActivityRepository).toBeDefined();
+    } else {
+      expect(f.createExecution).not.toHaveBeenCalled();
+      expect(f.createApp.mock.calls[0]![0].nativeWorkTeamActivityRepository).toBeUndefined();
+    }
   });
   it('mounts activity only when the complete activity profile is admitted', async () => {
     f.instructions = true; f.activity = true;

@@ -42,7 +42,7 @@ const states = { ready: 'queued', running: 'working', yielded: 'working', waitin
   cancelled: 'cancelled', completed: 'completed', blocked: 'needs_review' } as const;
 const statusText = { ready: 'Queued for the agent team', running: 'The agent team is working', yielded: 'Continuing saved work',
   waiting_children: 'Waiting for specialist results', paused: 'Paused by you', cancelled: 'Work cancelled',
-  completed: 'Advice is ready', blocked: 'This work needs review before it can continue' } as const;
+  completed: 'Advice is ready', blocked: 'This work needs your review. Check its saved status and receipt.' } as const;
 function actions(raw: z.infer<typeof RawView>, actor: ActorContext): NativeAgentWorkControl['action'][] {
   if (!writeAccess(actor, raw.scope.siteId) || ['completed', 'cancelled', 'blocked'].includes(raw.state)) return [];
   return raw.state === 'paused' ? ['resume', 'cancel'] : ['pause', 'cancel'];

@@ -5,7 +5,7 @@ import { DelegatedInterrupted, DelegatedPersistenceUnknown } from './delegated-l
 import { DelegatedOutputRejected } from './delegated-output';
 
 export type DelegatedStage = 'claim' | 'materials' | 'memory' | 'source' | 'plan' | 'checkpoint' |
-  'handoff' | 'yield' | 'inputs' | 'model' | 'output' | 'publication' | 'completion' | 'failure_publication';
+  'handoff' | 'yield' | 'inputs' | 'paid_equipment' | 'model' | 'output' | 'publication' | 'completion' | 'failure_publication';
 export type DelegatedDiagnostic = {
   runner: 'coordinator' | 'specialist';
   stage: DelegatedStage;

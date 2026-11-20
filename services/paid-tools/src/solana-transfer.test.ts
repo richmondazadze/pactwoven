@@ -69,6 +69,21 @@ describe('exact finalized transfer evidence', () => {
     expect(await inspectPaidTransferFinality(f.wire, evidence.genesis, evidence.status, evidence.transaction, now)).toMatchObject({
       status: 'finalized_transfer', signature: f.wire.signature, amountBaseUnits: '10000', feeLamports: f.intent.feeLamports });
   });
+  it('accepts bounded transaction index metadata through complete raw finality revalidation', async () => {
+    const f = transferFixture();
+    for (const transactionIndex of [0, 5, Number.MAX_SAFE_INTEGER]) {
+      const evidence = await finalityFixture(f, tx => { Object.assign(tx, { transactionIndex }); });
+      expect(await inspectPaidTransferFinality(f.wire, evidence.genesis, evidence.status, evidence.transaction, now)).toMatchObject({
+        status: 'finalized_transfer', signature: f.wire.signature, amountBaseUnits: '10000', feeLamports: f.intent.feeLamports,
+        transactionEvidenceHash: evidence.transaction.evidence!.sha256 });
+    }
+    for (const transactionIndex of [null, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '5', false, {}, []]) {
+      const evidence = await finalityFixture(f, tx => { Object.assign(tx, { transactionIndex }); });
+      await expect(inspectPaidTransferFinality(f.wire, evidence.genesis, evidence.status, evidence.transaction, now)).rejects.toThrow();
+    }
+    const wrongDelta = await finalityFixture(f, tx => { Object.assign(tx, { transactionIndex: 5 }); tx.meta.postTokenBalances[1]!.uiTokenAmount.amount = '9999'; });
+    await expect(inspectPaidTransferFinality(f.wire, wrongDelta.genesis, wrongDelta.status, wrongDelta.transaction, now)).rejects.toThrow();
+  });
   it('rejects recipient delta, hidden fee delta, header/blockhash and extra instruction changes', async () => {
     const f = transferFixture();
     for (const mutation of [

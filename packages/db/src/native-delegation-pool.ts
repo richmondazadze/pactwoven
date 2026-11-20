@@ -88,6 +88,19 @@ export function nativeDelegationExpectedSignatures(purpose: NativeDelegationPool
       ...(profile === 'delegation-root-paid' ? ['pactwoven.paid_tool_root_wait(jsonb,jsonb)', 'pactwoven.paid_tool_root_read(jsonb)', 'pactwoven.paid_tool_root_consume(jsonb,jsonb)', 'pactwoven.paid_tool_root_policy(jsonb)'] : [])];
 }
 
+// Fixed compatibility window for the additive paid-source revalidation protocol.
+// Only the paid coordinator may acquire these routines; all other profiles keep
+// their existing exact privilege boundary.
+export function nativeDelegationOptionalSignatures(purpose: NativeDelegationPoolPurpose,
+  profile: NativeDelegationPoolProfile = 'delegation'): readonly string[] {
+  if (purpose === 'api' && profile === 'delegation-workspace-activity') return ['pactwoven.native_work_execution_read(jsonb,text,text)'];
+  return purpose === 'coordinator' && profile === 'delegation-root-paid' ? [
+    'pactwoven.paid_tool_root_revalidation(jsonb)',
+    'pactwoven.paid_tool_root_revalidate(jsonb,jsonb)',
+    'pactwoven.paid_tool_root_revalidation_park(jsonb,jsonb)',
+  ] : [];
+}
+
 export async function assertNativeDelegationPool(pool: Pool, environment: Environment, purpose: NativeDelegationPoolPurpose,
   profile: NativeDelegationPoolProfile = 'delegation'): Promise<void> {
   EnvironmentSchema.parse(environment);
@@ -106,7 +119,9 @@ export async function assertNativeDelegationPool(pool: Pool, environment: Enviro
         WHERE n.nspname='pactwoven' AND c.relkind IN ('r','p','v','m','f')
       ), routines AS (
         SELECT p.oid,p.proowner,p.prosecdef,p.proconfig FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='pactwoven'
-      ), expected AS (SELECT pg_catalog.to_regprocedure(s) AS oid FROM pg_catalog.unnest($3::text[]) s)
+      ), optional AS (SELECT pg_catalog.to_regprocedure(s) AS oid FROM pg_catalog.unnest($4::text[]) s),
+      expected AS (SELECT pg_catalog.to_regprocedure(s) AS oid FROM pg_catalog.unnest($3::text[]) s
+        UNION SELECT oid FROM optional WHERE oid IS NOT NULL AND pg_catalog.has_function_privilege(CURRENT_USER,oid,'EXECUTE'))
       SELECT CURRENT_USER=SESSION_USER
         AND pactwoven.native_delegation_binding($1,$2)
         AND NOT EXISTS(SELECT 1 FROM reachable x JOIN pg_catalog.pg_roles r ON r.oid=x.oid WHERE r.rolsuper OR r.rolbypassrls OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication)
@@ -120,7 +135,7 @@ export async function assertNativeDelegationPool(pool: Pool, environment: Enviro
         AND NOT EXISTS(SELECT 1 FROM expected e LEFT JOIN routines f ON f.oid=e.oid WHERE f.oid IS NULL
           OR NOT f.prosecdef OR NOT ('search_path=pg_catalog'=ANY(coalesce(f.proconfig,'{}'::text[])))
           OR NOT pg_catalog.has_function_privilege(CURRENT_USER,f.oid,'EXECUTE')) AS safe
-    `, [environment, purpose, expectedSignatures]);
+    `, [environment, purpose, expectedSignatures, nativeDelegationOptionalSignatures(purpose, profile)]);
     if (result.rows.length !== 1 || result.rows[0]?.safe !== true) {
       throw new DomainError('UNSAFE_DATABASE_ROLE', 503, 'Delegated tasks require an enrolled, isolated service role.');
     }

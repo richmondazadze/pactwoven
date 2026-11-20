@@ -46,6 +46,20 @@ function rules(root: string) { return checkBoundaries({ root }).findings.map((fi
 afterEach(() => { temporary.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })); });
 
 describe('dependency and import boundaries', () => {
+  it('admits the paid gateway type without admitting its runtime or test-fixture backdoors', () => {
+    const root = workspace();
+    write(root, 'services/paid-tools/package.json', JSON.stringify({ name: '@pactwoven/paid-tools' }));
+    write(root, 'services/paid-tools/src/selection.ts', 'import type { NativeModelGateway } from "../../coordinator/src/azure-gateway.js";');
+    expect(rules(root)).toEqual([]);
+    write(root, 'services/paid-tools/src/selection.ts', 'import { NativeModelGateway } from "../../coordinator/src/azure-gateway.js";');
+    expect(rules(root)).toContain('forbidden dependency: services/paid-tools -> services/coordinator');
+    write(root, 'services/paid-tools/src/selection.ts', 'import "./helpers.test-fixture";');
+    write(root, 'services/paid-tools/src/helpers.test-fixture.ts', 'import { vi } from "vitest";');
+    expect(rules(root)).toContain('production source cannot import a test fixture');
+    write(root, 'apps/web/src/index.ts', 'import "../../../services/paid-tools/src/selection";');
+    expect(rules(root)).toContain('forbidden dependency: apps/web -> services/paid-tools');
+  });
+
   it('accepts only the two reviewed patch inputs and rejects executable additions', () => {
     const root = workspace();
     write(root, 'packages/security-patches/picomatch-4.0.7.patch', 'reviewed patch input');

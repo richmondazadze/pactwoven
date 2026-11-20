@@ -36,6 +36,19 @@ describe('inert paid-tool RPC request/response helpers', () => {
     expect(decodePaidToolRpc(request, envelope('send', f.wire.signature), 'evidence')).toMatchObject({ disposition: 'acknowledged_not_finalized', signature: f.wire.signature });
     expect(() => decodePaidToolRpc(request, envelope('send', '1'.repeat(64)), 'evidence')).toThrow();
   });
+  it('accepts modern simulation metadata only with empty legacy loaded addresses', () => {
+    const f = transferFixture(), request = preparePaidToolRpc('simulation', { method: 'simulateTransaction', wire: f.wire });
+    const value = { accounts: null, err: null, fee: 5000, innerInstructions: null, loadedAccountsDataSize: 182,
+      loadedAddresses: { readonly: [], writable: [] }, logs: [], postBalances: null, postTokenBalances: null,
+      preBalances: null, preTokenBalances: null, replacementBlockhash: null, returnData: null, unitsConsumed: 105 };
+    expect(decodePaidToolRpc(request, envelope('simulation', { context: { slot: 120 }, value }), 'evidence')).toMatchObject({ simulated: true, finalized: false });
+    for (const loadedAddresses of [null, {}, { readonly: [] }, { readonly: [], writable: [], unexpected: [] },
+      { readonly: [publicAddress(4)], writable: [] }, { readonly: [], writable: [publicAddress(5)] }, { readonly: {}, writable: [] }]) {
+      expect(() => decodePaidToolRpc(request, envelope('simulation', { context: { slot: 120 }, value: { ...value, loadedAddresses } }), 'evidence')).toThrow();
+    }
+    expect(() => decodePaidToolRpc(request, envelope('simulation', { context: { slot: 120 }, value: { ...value, err: 'BlockhashNotFound' } }), 'evidence')).toThrow();
+    expect(() => decodePaidToolRpc(request, envelope('simulation', { context: { slot: 120 }, value: { ...value, replacementBlockhash: { blockhash: publicAddress(6), lastValidBlockHeight: 301 } } }), 'evidence')).toThrow();
+  });
   it('rejects affinity, duplicate JSON keys, errors and unprepared request objects', () => {
     const request = preparePaidToolRpc('height', { method: 'getBlockHeight', minimumSlot: '100' });
     for (const bytes of [envelope('wrong', 150), Buffer.from('{"jsonrpc":"2.0","id":"height","result":150,"result":151}'),

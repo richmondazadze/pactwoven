@@ -82,8 +82,14 @@ export function decodePaidToolRpc(request: PreparedPaidToolRpc, bytesInput: Uint
     }
     case 'simulateTransaction': {
       const { result, slot } = contextual(), value = solanaJsonObject(result.value,
-        ['err', 'logs', 'accounts', 'unitsConsumed', 'returnData', 'innerInstructions', 'replacementBlockhash', 'loadedAccountsDataSize', 'fee', 'preBalances', 'postBalances', 'preTokenBalances', 'postTokenBalances'], ['err']);
+        ['err', 'logs', 'accounts', 'unitsConsumed', 'returnData', 'innerInstructions', 'replacementBlockhash', 'loadedAccountsDataSize', 'loadedAddresses', 'fee', 'preBalances', 'postBalances', 'preTokenBalances', 'postTokenBalances'], ['err']);
       assert(value.err === null, 'SIMULATION_FAILED'); assert(value.replacementBlockhash === undefined || value.replacementBlockhash === null);
+      // The retained transfer is a legacy message with no lookup tables. Newer
+      // RPC nodes return this field even when no addresses were loaded.
+      if (value.loadedAddresses !== undefined) {
+        const loaded = solanaJsonObject(value.loadedAddresses, ['readonly', 'writable'], ['readonly', 'writable']);
+        assert(solanaJsonArray(loaded.readonly, 1).length === 0 && solanaJsonArray(loaded.writable, 1).length === 0, 'RESPONSE_INVALID');
+      }
       if (value.logs !== undefined && value.logs !== null) for (const log of solanaJsonArray(value.logs, 256)) solanaJsonString(log, 4096);
       if (value.unitsConsumed !== undefined) solanaIntegerText(value.unitsConsumed);
       assert(value.accounts === undefined || value.accounts === null); // No unrequested account snapshots.

@@ -6,6 +6,9 @@ import { PostgresPaidToolHumanRepository } from '../../../packages/db/src/paid-t
 import { PostgresPaidToolRootRepository } from '../../../packages/db/src/paid-tool-root-repository';
 import { PostgresPaidToolIntentRepository } from '../../../packages/db/src/paid-tool-intent-repository';
 import { NativePaidQuoteService } from '../../api/src/native-paid-quote-service';
+import { NativePaidEquipmentService } from '../../api/src/native-paid-equipment-service';
+import { PostgresPaidToolContributorsRepository } from '../../../packages/db/src/paid-tool-contributors-repository';
+import { PostgresPaidToolHistoryRepository } from '../../../packages/db/src/paid-tool-history-repository';
 import { readNativePaidApiConfig } from './config';
 import { nativeWorkApp } from './delegated-runtime';
 type Pool=Awaited<ReturnType<typeof createRuntimePool>>;
@@ -36,6 +39,9 @@ export async function nativePaidWorkApp(deadlineAt=Date.now()+15000):Promise<App
         const app=createNativeTaskApp({allowedOrigins:config.allowedOrigins,repository:new PostgresFoundationRepository(foundation,config.environment),
           verifyObservedIdentity:createClerkIdentityObservationVerifier(config.identity),nativePaidWorkIntentRepository:new PostgresPaidToolIntentRepository(paid),
           nativePaidToolHumanRepository:human,nativePaidQuoteGateway:new NativePaidQuoteService(roots,human,{sourceKey:config.sourceKey,feeKey:config.feeKey}),
+          nativePaidEquipmentReader:new NativePaidEquipmentService(roots,human),
+          nativePaidContributorsReader:new PostgresPaidToolContributorsRepository(paid),
+          nativePaidHistoryReader:new PostgresPaidToolHistoryRepository(paid),
           ...(config.allowNewWork?{nativePaidWorkOrganizationId:config.organizationId,nativePaidWorkPolicy:{serviceId:'equipment_optimizer_v1' as const,maximumComputationBaseUnits:'10000',maximumFeeLamports:'10000',authorization:'separate_quote_required' as const}}:{})});
         if(Date.now()>=deadline)throw unavailable();attachDatabasePool(foundation);attachDatabasePool(paid);return app;
       }catch{await closePools(owned);throw unavailable();}

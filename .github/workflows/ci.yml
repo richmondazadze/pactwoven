@@ -50,7 +50,7 @@ jobs:
       - name: Generate Next route declarations
         run: pnpm --filter @pactwoven/web exec next typegen
       - name: Build native Node entry points
-        run: pnpm --filter @pactwoven/native-host --filter @pactwoven/native-api build
+        run: pnpm --filter @pactwoven/native-host --filter @pactwoven/native-api --filter @pactwoven/paid-signer build
       - name: Check import and dependency boundaries
         run: pnpm check:boundaries
       - name: Check reviewed chain build inputs

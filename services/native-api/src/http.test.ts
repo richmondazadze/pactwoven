@@ -76,6 +76,7 @@ describe('native HTTP hosting boundary', () => {
     ['/v1/agent-work/confirm', 'POST', 503, false],
     ['/v1/agent-work/root?siteId=office', 'GET', 200, false],
     ['/v1/agent-work/root/activity?siteId=office', 'GET', 200, false],
+    ['/v1/agent-work/root/team-activity?siteId=office', 'GET', 200, false],
     ['/v1/voice/transcribe', 'POST', 200, false],
     ['/v1/voice/speak', 'POST', 200, false],
     ['/v1/agent-work/operations/original_request_key?siteId=office', 'GET', 200, false],

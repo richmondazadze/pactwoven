@@ -15,12 +15,12 @@ vi.mock('./native-agent-work-hooks',()=>({canObserveAgentWork:()=>visible,useAge
 beforeEach(()=>{vi.stubEnv('NEXT_PUBLIC_NATIVE_API_BASE_URL','http://localhost:3108');work=agentWorkFixture();visible=true;});
 afterEach(()=>vi.unstubAllEnvs());
 const render=()=>renderToStaticMarkup(createElement(QueryClientProvider,{client:new QueryClient()},createElement(NativeAgentWorkDetail,{siteId:'site_one',id:'root_internal'})));
-it.each(['awaiting_calendar','waiting_external'] as const)('renders only cancel for %s without pause, resume or start controls',state=>{
- work=NativeAgentWorkSchema.parse({...work,state,statusText:state==='awaiting_calendar'?'Finish calendar setup':'Waiting for an update',progress:null,availableActions:['cancel']});
+it.each(['Finish calendar setup','Waiting for an update'])('renders only cancel for normalized waiting work: %s',statusText=>{
+ work=NativeAgentWorkSchema.parse({...work,state:'waiting',statusText,progress:null,availableActions:['cancel']});
  const html=render();expect(html).toContain('Cancel work');expect(html).not.toContain('Pause work');expect(html).not.toContain('Resume work');expect(html).not.toContain('Start work');
 });
 it('offers no cancellation without a returned authoritative action',()=>{
- work=NativeAgentWorkSchema.parse({...work,state:'awaiting_calendar',progress:null,availableActions:[]});expect(render()).not.toContain('Cancel work');
+ work=NativeAgentWorkSchema.parse({...work,state:'waiting',progress:null,availableActions:[]});expect(render()).not.toContain('Cancel work');
 });
 it('preserves pause for ordinary work and resume for ordinary paused work',()=>{
  expect(render()).toContain('Pause work');work={...work,state:'paused',availableActions:['resume','cancel']};expect(render()).toContain('Resume work');

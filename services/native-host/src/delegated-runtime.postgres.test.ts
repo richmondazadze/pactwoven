@@ -3,10 +3,11 @@ import { createDelegatedRuntime } from './delegated-runtime';
 import { DelegatedQueueMessageSchema, type DelegatedQueueMessage } from './delegated-dispatch';
 import { DelegatedCoordinator } from '../../coordinator/src/delegated-coordinator';
 import { DelegatedSpecialist } from '../../coordinator/src/delegated-specialist';
-import { NativeGatewayError, azureDeployments, type NativeModelGateway, type ModelRequest } from '../../coordinator/src/azure-gateway';
+import type { DelegatedDiagnosticReporter } from '../../coordinator/src/delegated-diagnostics';
+import { NativeGatewayError, createAzureGateway, azureDeployments, type NativeModelGateway, type ModelRequest } from '../../coordinator/src/azure-gateway';
 import { randomBytes,randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
-import type { z } from 'zod';
+import { z } from 'zod';
 import { beforeAll,afterAll,describe,it,expect,vi } from 'vitest';
 import type { ActorContext } from '../../../packages/contracts/src/core';
 import { commandDigest } from '../../../packages/contracts/src/canonical';
@@ -49,7 +50,7 @@ describe.skipIf(!url)('actual delegated coordinator and specialist PostgreSQL in
   dispatcher=new PostgresNativeRootDispatchRepository(dispatcherPool,'simulation');notes=new PostgresNativeMemoryNotesRepository(apiPool,'simulation');memory=new PostgresNativeMemoryTaskRepository(workerPool,'simulation');
  });
  afterAll(async()=>{await Promise.allSettled([admin,apiPool,coordinatorPool,workerPool,dispatcherPool].filter(Boolean).map(p=>p.end()));});
- async function fixture(maxAttempts=4,withNote=false,bind=true,noRootAccess=false,prompt='Compare office chairs'){
+ async function fixture(maxAttempts=4,withNote=false,bind=true,noRootAccess=false,prompt='Compare office chairs',childLimit=32){
   const org=id(),actorId=id(),siteId=id(),legacy=id(),rootId=id();
   await admin.query("INSERT INTO pactwoven.organizations(environment,id,external_organization_id,name) VALUES('simulation',$1,$1,'Delegated runtime fixture')",[org]);
   await admin.query("INSERT INTO pactwoven.memberships(environment,organization_id,actor_id,external_subject,external_membership_id,grant_basis,roles,display_name) VALUES('simulation',$1,$2,$2,$3,'internal',ARRAY['owner'],'Operator')",[org,actorId,'member_'+id()]);
@@ -61,7 +62,7 @@ describe.skipIf(!url)('actual delegated coordinator and specialist PostgreSQL in
   const member=(await admin.query('SELECT external_membership_id FROM pactwoven.memberships WHERE organization_id=$1',[org])).rows[0];
   const scope={environment:'simulation' as const,organizationId:org,issuer:{actorId,providerIssuer:issuer,subject:actorId,externalOrganizationId:org,externalMembershipId:member.external_membership_id,membershipVersion:1},
    organizationEpoch:0,policyVersion:1,purpose:'Compare office chairs',sites:[{siteId,siteVersion:1}],capabilityVersion:1,capabilities:['draft_advice','read_scoped_memory','research_public_sources'],
-   limits:{maxDepth:3,maxConcurrentChildren:3,maxChildren:32,maxAttempts,taskTimeoutMs:300000}};
+   limits:{maxDepth:3,maxConcurrentChildren:Math.min(3,childLimit),maxChildren:childLimit,maxAttempts,taskTimeoutMs:300000}};
   const request={grantId:id(),requestKey:id(),mode:'advise',externalEffects:'forbidden',scope,expiresAt:at(600000),continuesAfterSignOut:true};
   const grant=NativeAdvisoryGrantSchema.parse({schemaVersion:1,id:request.grantId,version:1,revocationEpoch:0,mode:'advise',externalEffects:'forbidden',scope,issuedAt:at(),expiresAt:request.expiresAt,
    issuance:{requestKey:request.requestKey,sessionId:actor.sessionId,authenticatedAt:actor.authenticatedAt,confirmedAt:at(-20),scopeDigest:await commandDigest(request),continuesAfterSignOut:true},revocation:null});
@@ -91,18 +92,23 @@ describe.skipIf(!url)('actual delegated coordinator and specialist PostgreSQL in
  const modelCalls: Array<{role:string;input:string;schemaName:string}>=[];
  const defaultAdvice={title:'Chair review',summary:'Review the options before choosing.',findings:[],recommendations:['Confirm dimensions.'],limitations:['No order was placed.'],question:null};
  const plan={objective:'Compare office chair options',steps:[{title:'Review available evidence',brief:'Compare the operator evidence.',role:'research'},{title:'Compare options',brief:'Explain practical tradeoffs.',role:'planning'}],limitations:[],question:null};
+ const qualityCategories=['deliverables','consistency','grounding','scope'];
+ function qualityReview(data:any,reject=false){
+  const criteria=data.frozenCriteria??qualityCategories.map(category=>({category,requirement:`Evaluate ${category}.`}));
+  return {verdict:reject?'reject':'accept',checks:criteria.map((criterion:any,index:number)=>({...('criterionId' in criterion?{criterionId:criterion.criterionId}:criterion),status:reject&&index===0?'missing':'satisfied',passageIds:[data.candidate.passages[0].id]})),repairGuidance:reject?'Supply the actual requested advice.':null};
+ }
  const gateway:NativeModelGateway={async complete<T>(request:ModelRequest<T>){
   modelCalls.push({role:request.role,input:request.input,schemaName:request.schemaName});
   const data=JSON.parse(request.input),excerpts=data.evidenceExcerpts as Array<{id:string;text:string}>|undefined;
   const evidence=excerpts?.[0];
-  const value=request.schemaName==='delegated_operator_plan'?plan:evidence?{...defaultAdvice,findings:[{kind:'source_statement',text:'A preference was recorded.',citations:[{id:evidence.id,quote:evidence.text.slice(0,Math.min(30,evidence.text.length))}]}]}:defaultAdvice;
+  const value=request.schemaName==='delegated_advice_quality'?qualityReview(data):request.schemaName==='delegated_operator_plan'?plan:evidence?{...defaultAdvice,findings:[{kind:'source_statement',text:'A preference was recorded.',citations:[{id:evidence.id,quote:evidence.text.slice(0,Math.min(30,evidence.text.length))}]}]}:defaultAdvice;
   return {value:request.schema.parse(value),usage:{inputTokens:7,outputTokens:3,totalTokens:10},deployment:azureDeployments[request.role]};
  }};
  const observer=async(target:NativeDelegationTarget)=>{
   const result=await allow(target);
   return {result,usableUntil:result.state==='allowed'?Math.min(Date.parse(result.validUntil!),Date.now()+15000):null};
  };
- function engine(model:NativeModelGateway=gateway,repo=coordinator){return new DelegatedCoordinator({environment:'simulation',services,repository:repo,renewal:genericCoordinator,gateway:model,observe:observer});}
+ function engine(model:NativeModelGateway=gateway,repo=coordinator,onDiagnostic?:DelegatedDiagnosticReporter){return new DelegatedCoordinator({environment:'simulation',services,repository:repo,renewal:genericCoordinator,gateway:model,observe:observer,...(onDiagnostic?{onDiagnostic}:{})});}
  function specialist(model:NativeModelGateway=gateway,repo=worker){return new DelegatedSpecialist({environment:'simulation',identity:workerId,repository:repo,materials,memory,gateway:model,observe:observer});}
  const slice=()=>({deadlineAt:Date.now()+60000});
  async function children(f:Awaited<ReturnType<typeof fixture>>){
@@ -111,6 +117,41 @@ describe.skipIf(!url)('actual delegated coordinator and specialist PostgreSQL in
  }
  async function completeChildren(f:Awaited<ReturnType<typeof fixture>>,model:NativeModelGateway=gateway){for(const child of await children(f))if(child.state==='ready')expect(await specialist(model).run({organizationId:child.organizationId,taskId:child.taskId,generation:child.generation},slice())).toMatchObject({state:'settled'});}
  async function nextTarget(f:Awaited<ReturnType<typeof fixture>>){return {...f.target,generation:(await roots.read(f.actor,f.rootId)).generation};}
+ it.each([
+  {withNote:true,childLimit:32,specialistLimit:5}, {withNote:false,childLimit:32,specialistLimit:6},
+  {withNote:true,childLimit:2,specialistLimit:1}, {withNote:false,childLimit:2,specialistLimit:2},
+  {withNote:true,childLimit:1,specialistLimit:0},
+ ])('enforces planner capacity before dispatch and completes every assignment: $withNote/$childLimit',async({withNote,childLimit,specialistLimit})=>{
+  const f=await fixture(4,withNote,true,false,'Compare all workshop options and produce one complete recommendation',childLimit);
+  let offered=-1,modelInput:Record<string,unknown>={},syntheses=0;
+  const capacityModel:NativeModelGateway={async complete<T>(request:ModelRequest<T>){
+   if(request.schemaName==='delegated_operator_plan'){
+    const steps=z.toJSONSchema(request.schema).properties?.['steps'];offered=steps&&typeof steps==='object'?steps.maxItems??-1:-1;
+    modelInput=JSON.parse(request.input);
+    return {value:request.schema.parse({...plan,steps:Array.from({length:offered},(_,i)=>({title:`Work area ${i+1}`,brief:`Cover objective area ${i+1} completely.`,role:'planning'}))}),usage:{inputTokens:1,outputTokens:1,totalTokens:2},deployment:'gpt-6.1-sol'};
+   }
+   if(request.schemaName==='delegated_root_advice')syntheses++;
+   return gateway.complete(request);
+  }};
+  expect(await engine(capacityModel).run(f.target,slice())).toMatchObject({state:'yielded'});
+  for(let n=0;n<8;n++){
+   await completeChildren(f,capacityModel);await engine(capacityModel).run(await nextTarget(f),slice());
+   if(['completed','blocked'].includes((await roots.read(f.actor,f.rootId)).state))break;
+  }
+  const view=await roots.read(f.actor,f.rootId);
+  expect(view.state).toBe('completed');expect(syntheses).toBe(1);expect(offered).toBe(specialistLimit);
+  expect(modelInput.specialistLimit).toBe(specialistLimit);expect(modelInput.prompt).toBe('Compare all workshop options and produce one complete recommendation');
+  expect(await children(f)).toHaveLength(specialistLimit+(withNote?1:0));expect(view.coverage.every(item=>item.disposition==='advice_ready')).toBe(true);
+  const checkpoints=(await admin.query('SELECT planner_state FROM pactwoven.native_delegation_root_checkpoints WHERE root_task_id=$1',[f.rootId])).rows;
+  expect(checkpoints.every((row:{planner_state:string})=>JSON.parse(row.planner_state).bounded===false)).toBe(true);
+ });
+ it('rejects an over-capacity planner response before any checkpoint or child is dispatched',async()=>{
+  const f=await fixture(4,true),diagnostic=vi.fn();let calls=0;
+  const invalid:NativeModelGateway={async complete<T>(){calls++;return {value:{...plan,steps:Array.from({length:6},(_,i)=>({title:`Unbounded ${i}`,brief:'A required area of the complete objective.',role:'planning'}))} as T,usage:{inputTokens:1,outputTokens:1,totalTokens:2},deployment:'gpt-6.1-sol'};}};
+  expect(await engine(invalid,coordinator,diagnostic).run(f.target,slice())).toMatchObject({state:'interrupted'});
+  expect(calls).toBe(1);expect(await children(f)).toHaveLength(0);expect((await roots.read(f.actor,f.rootId)).checkpointVersion).toBe(0);
+  expect(diagnostic.mock.calls).toEqual([[{runner:'coordinator',stage:'plan',failure:'invalid_shape'}]]);
+ });
  it('executes plan, durable handoffs, child models, fresh input consumption and root advice using real SQL',async()=>{
   modelCalls.length=0;const f=await fixture(4,true);
   expect(await engine().run(f.target,slice())).toMatchObject({state:'yielded'});
@@ -118,12 +159,82 @@ describe.skipIf(!url)('actual delegated coordinator and specialist PostgreSQL in
   expect((await children(f)).length).toBe(3);await completeChildren(f);
   expect(await engine().run(await nextTarget(f),slice())).toMatchObject({state:'settled'});
   view=await roots.read(f.actor,f.rootId);expect(view).toMatchObject({state:'completed',attempt:1,domainCompletion:false});expect(view.coverage.every(x=>x.disposition==='advice_ready')).toBe(true);
-  expect(modelCalls.map(call=>call.role).sort()).toEqual(['coordinator','coordinator','planning','research','research']);
+  expect(modelCalls.map(call=>call.role).sort()).toEqual(['coordinator','coordinator','escalation','planning','research','research']);
   const planCall=modelCalls.find(call=>call.schemaName==='delegated_operator_plan')!;expect(planCall.input).not.toContain('Prefer blue chairs');
   const specialistInputs=modelCalls.filter(call=>call.schemaName==='delegated_specialist_advice');expect(specialistInputs.filter(call=>call.input.includes('Prefer blue chairs')).length).toBe(1);
   expect((await admin.query('SELECT count(*)::int n FROM pactwoven.native_memory_usages WHERE organization_id=$1',[f.actor.organizationId])).rows[0].n).toBe(1);
   expect((await admin.query('SELECT count(*)::int n FROM pactwoven.native_delegation_root_inputs WHERE root_task_id=$1',[f.rootId])).rows[0].n).toBe(1);
   expect((await admin.query('SELECT status FROM pactwoven.native_tasks WHERE id=$1',[f.legacy])).rows[0].status).toBe('paused');
+ });
+ async function rootUsage(f:Awaited<ReturnType<typeof fixture>>){
+  const rows=(await admin.query('SELECT planner_state FROM pactwoven.native_delegation_root_checkpoints WHERE root_task_id=$1 ORDER BY version DESC LIMIT 1',[f.rootId])).rows;
+  return JSON.parse(rows[0].planner_state).usage;
+ }
+ function qualityModel(outcome:'repair'|'reject_twice'|'unknown_review',calls:string[]):NativeModelGateway{
+  let reviews=0;
+  return {async complete<T>(request:ModelRequest<T>){
+   calls.push(request.schemaName);
+   if(request.schemaName==='delegated_root_advice')return {value:request.schema.parse({...defaultAdvice,recommendations:[':00']}),usage:{inputTokens:7,outputTokens:3,totalTokens:10},deployment:azureDeployments[request.role]};
+   if(request.schemaName==='delegated_advice_quality'){
+    if(outcome==='unknown_review')throw new NativeGatewayError('NETWORK');
+    if(++reviews===1||outcome==='reject_twice')return {value:request.schema.parse(qualityReview(JSON.parse(request.input),true)),usage:{inputTokens:7,outputTokens:3,totalTokens:10},deployment:azureDeployments[request.role]};
+   }
+   return gateway.complete(request);
+  }};
+ }
+ it('repairs one confirmed semantic fragment then requires review before publishing and preserves all known root usage',async()=>{
+  const f=await fixture(),calls:string[]=[],model=qualityModel('repair',calls);
+  await engine(model).run(f.target,slice());await completeChildren(f);calls.length=0;
+  expect(await engine(model).run(await nextTarget(f),slice())).toMatchObject({state:'settled'});
+  expect(calls).toEqual(['delegated_root_advice','delegated_advice_quality','delegated_root_advice_repair','delegated_advice_quality']);
+  const view=await roots.read(f.actor,f.rootId);expect(view.state).toBe('completed');expect(view.result?.artifacts[0]?.text).toContain('Confirm dimensions.');expect(view.result?.artifacts[0]?.text).not.toContain(':00');
+  expect(await rootUsage(f)).toEqual({inputTokens:35,outputTokens:15,totalTokens:50});
+ });
+ it('settles a second semantic rejection as fixed blocked, retains usage and does not replay it',async()=>{
+  const f=await fixture(),calls:string[]=[],model=qualityModel('reject_twice',calls);
+  await engine(model).run(f.target,slice());await completeChildren(f);calls.length=0;const target=await nextTarget(f);
+  expect(await engine(model).run(target,slice())).toMatchObject({state:'settled'});
+  expect((await roots.read(f.actor,f.rootId)).result).toEqual(NATIVE_ROOT_BLOCKED_RESULT);
+  expect(await rootUsage(f)).toEqual({inputTokens:35,outputTokens:15,totalTokens:50});
+  expect(calls).toEqual(['delegated_root_advice','delegated_advice_quality','delegated_root_advice_repair','delegated_advice_quality']);
+  expect(await engine(model).run(target,slice())).toMatchObject({state:'interrupted'});expect(calls).toHaveLength(4);expect(await dispatcher.route(target)).toBeNull();
+ });
+ it('settles an unknown reviewer network outcome as fixed blocked without retry or fabricated usage',async()=>{
+  const f=await fixture(),calls:string[]=[],model=qualityModel('unknown_review',calls);
+  await engine(model).run(f.target,slice());await completeChildren(f);calls.length=0;
+  expect(await engine(model).run(await nextTarget(f),slice())).toMatchObject({state:'settled'});
+  expect((await roots.read(f.actor,f.rootId)).result).toEqual(NATIVE_ROOT_BLOCKED_RESULT);
+  expect(await rootUsage(f)).toEqual({inputTokens:14,outputTokens:6,totalTokens:20});
+  expect(calls).toEqual(['delegated_root_advice','delegated_advice_quality']);
+ });
+ it.each(['delegated_root_advice','delegated_advice_quality','delegated_root_advice_repair'])('persists actual Azure malformed-envelope usage at %s before fixed blocked output',async(schemaName)=>{
+  const f=await fixture(),calls:string[]=[],model=qualityModel('repair',calls);await engine().run(f.target,slice());await completeChildren(f);
+  let requests=0;const actual=createAzureGateway({endpoint:'https://fixture.openai.azure.com/openai/v1',apiKey:'synthetic'},async()=>{requests++;return new Response(JSON.stringify({status:'completed',output:[{type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:'{"invalid":true}'}]}],usage:{input_tokens:7,output_tokens:3,total_tokens:10}}));});
+  const wrapped:NativeModelGateway={complete:request=>request.schemaName===schemaName?actual.complete(request):model.complete(request)};
+  expect(await engine(wrapped).run(await nextTarget(f),slice())).toMatchObject({state:'settled'});
+  expect((await roots.read(f.actor,f.rootId)).result).toEqual(NATIVE_ROOT_BLOCKED_RESULT);expect(requests).toBe(1);
+  const known=schemaName==='delegated_root_advice'?20:schemaName==='delegated_advice_quality'?30:40;
+  expect((await rootUsage(f)).totalTokens).toBe(known);
+ });
+ it('aborts a pending semantic review on cancellation with no publication, repair or post-abort checkpoint',async()=>{
+  const f=await fixture();await engine().run(f.target,slice());await completeChildren(f);
+  let started!:()=>void;const ready=new Promise<void>(resolve=>{started=resolve;});let signal:AbortSignal|undefined,writes=0;const calls:string[]=[];
+  const model:NativeModelGateway={complete:request=>{calls.push(request.schemaName);if(request.schemaName==='delegated_advice_quality'){signal=request.signal;started();return new Promise(()=>{});}return gateway.complete(request);}};
+  const wrapped=new PostgresNativeRootCoordinatorRepository({query:async(...args:unknown[])=>{if(String(args[0]).includes('root_checkpoint')||String(args[0]).includes('root_complete'))writes++;return (coordinatorPool.query as (...args:unknown[])=>Promise<unknown>)(...args);}} as unknown as Pool,'simulation');
+  const controller=new AbortController(),pending=engine(model,wrapped).run(await nextTarget(f),{...slice(),signal:controller.signal});
+  await ready;await roots.control(f.actor,id(),{rootTaskId:f.rootId,expectedVersion:1,action:'cancel'});controller.abort();
+  expect(await pending).toMatchObject({state:'interrupted'});expect(signal?.aborted).toBe(true);expect(writes).toBe(0);
+  expect(calls).toEqual(['delegated_root_advice','delegated_advice_quality']);
+  expect((await admin.query('SELECT count(*)::int n FROM pactwoven.native_delegation_root_completions WHERE root_task_id=$1',[f.rootId])).rows[0].n).toBe(0);
+ });
+ it('never retries a lost quality-usage checkpoint acknowledgement or publishes after it',async()=>{
+  const f=await fixture();await engine().run(f.target,slice());await completeChildren(f);let writes=0,completions=0;
+  const wrapped=new PostgresNativeRootCoordinatorRepository({query:async(...args:unknown[])=>{if(String(args[0]).includes('root_complete'))completions++;const result=await (coordinatorPool.query as (...args:unknown[])=>Promise<unknown>)(...args);if(String(args[0]).includes('root_checkpoint')){writes++;throw new Error('Synthetic committed quality usage response loss');}return result;}} as unknown as Pool,'simulation');
+  const diagnostic=vi.fn();
+  expect(await engine(gateway,wrapped,diagnostic).run(await nextTarget(f),slice())).toMatchObject({state:'unconfirmed'});
+  expect(writes).toBe(1);expect(completions).toBe(0);expect((await roots.read(f.actor,f.rootId)).result).toBeNull();
+  expect(await rootUsage(f)).toEqual({inputTokens:21,outputTokens:9,totalTokens:30});
+  expect(diagnostic.mock.calls).toEqual([[{runner:'coordinator',stage:'checkpoint',failure:'persistence_unknown'}]]);
  });
  it('keeps normal yielding on the same logical attempt without replanning or duplicate handoffs',async()=>{
   modelCalls.length=0;const f=await fixture();await engine().run(f.target,slice());const before=await children(f);
@@ -146,8 +257,10 @@ describe.skipIf(!url)('actual delegated coordinator and specialist PostgreSQL in
   const f=await fixture(4,true);await engine().run(f.target,slice());
   const assigned=(await admin.query("SELECT t.id,t.generation FROM pactwoven.native_delegation_tasks t JOIN pactwoven.native_delegation_root_assignments a ON(a.environment,a.organization_id,a.task_id,a.generation)=(t.environment,t.organization_id,t.id,t.generation) WHERE t.parent_task_id=$1 AND jsonb_array_length(a.assignment->'memoryReferences')>0",[f.rootId])).rows[0];
   let reads=0;const lostMemory={read:async(...args:Parameters<typeof memory.read>)=>{reads++;await memory.read(...args);throw new Error('Synthetic response loss');}};
-  const runner=new DelegatedSpecialist({environment:'simulation',identity:workerId,repository:worker,materials,memory:lostMemory,gateway,observe:observer});
+  const diagnostic=vi.fn(()=>{throw new Error('Diagnostic sink unavailable');});
+  const runner=new DelegatedSpecialist({environment:'simulation',identity:workerId,repository:worker,materials,memory:lostMemory,gateway,observe:observer,onDiagnostic:diagnostic});
   expect(await runner.run({organizationId:f.actor.organizationId,taskId:assigned.id,generation:Number(assigned.generation)},slice())).toMatchObject({state:'unconfirmed'});expect(reads).toBe(1);
+  expect(diagnostic.mock.calls).toEqual([[{runner:'specialist',stage:'memory',failure:'persistence_unknown'}]]);
   expect((await admin.query('SELECT count(*)::int n FROM pactwoven.native_delegation_results WHERE organization_id=$1',[f.actor.organizationId])).rows[0].n).toBe(0);
  });
  it('settles blocked without rereading revoked child evidence or calling the aggregate model',async()=>{
@@ -168,7 +281,9 @@ describe.skipIf(!url)('actual delegated coordinator and specialist PostgreSQL in
  it('does not replay a checkpoint after its acknowledgement is lost',async()=>{
   const f=await fixture();let writes=0;
   const uncertain=new PostgresNativeRootCoordinatorRepository({query:async(...args:unknown[])=>{const result=await (coordinatorPool.query as (...args:unknown[])=>Promise<unknown>)(...args);if(String(args[0]).includes('root_checkpoint')){writes++;throw new Error('Synthetic response loss');}return result;}} as unknown as Pool,'simulation');
-  expect(await engine(gateway,uncertain).run(f.target,slice())).toMatchObject({state:'unconfirmed'});expect(writes).toBe(1);expect(await children(f)).toHaveLength(0);
+  const diagnostic=vi.fn();
+  expect(await engine(gateway,uncertain,diagnostic).run(f.target,slice())).toMatchObject({state:'unconfirmed'});expect(writes).toBe(1);expect(await children(f)).toHaveLength(0);
+  expect(diagnostic.mock.calls).toEqual([[{runner:'coordinator',stage:'checkpoint',failure:'persistence_unknown'}]]);
   expect((await roots.read(f.actor,f.rootId)).checkpointVersion).toBe(1);
  });
  it('publishes actual failed child result for model rejection and a generic blocked root',async()=>{
@@ -183,7 +298,7 @@ describe.skipIf(!url)('actual delegated coordinator and specialist PostgreSQL in
   await admin.query("UPDATE pactwoven.native_delegation_tasks SET lease_until=clock_timestamp()-interval '1 second' WHERE id=$1",[f.rootId]);
   expect((await dispatcher.recover(20)).find(row=>row.rootTaskId===f.rootId)).toMatchObject({attempt:2,action:'recovered'});
   modelCalls.length=0;expect(await engine().run(await nextTarget(f),slice())).toMatchObject({state:'settled'});
-  expect(modelCalls.map(call=>call.schemaName)).toEqual(['delegated_root_advice']);expect((await roots.read(f.actor,f.rootId)).attempt).toBe(2);
+  expect(modelCalls.map(call=>call.schemaName)).toEqual(['delegated_root_advice','delegated_advice_quality']);expect((await roots.read(f.actor,f.rootId)).attempt).toBe(2);
   await expect(coordinator.checkpoint(claim.selector,{requestKey:id(),expectedCheckpointVersion:2,checkpoint:{stage:'ready',summary:'Old',steps:[]},plannerState:'{}',inputReceipts:[]})).rejects.toBeDefined();
  });
  it('consumes new generation receipts after a normal yield and never reuses generated synthesis',async()=>{
@@ -195,7 +310,7 @@ describe.skipIf(!url)('actual delegated coordinator and specialist PostgreSQL in
   expect(await engine().run(await nextTarget(f),slice())).toMatchObject({state:'settled'});
   const receipts=(await admin.query('SELECT id,generation FROM pactwoven.native_delegation_root_inputs WHERE root_task_id=$1 ORDER BY generation',[f.rootId])).rows;
   expect(receipts).toHaveLength(2);expect(receipts[0].id).not.toBe(receipts[1].id);expect(Number(receipts[1].generation)).toBe(Number(receipts[0].generation)+1);
-  expect(modelCalls.map(call=>call.schemaName)).toEqual(['delegated_root_advice']);
+  expect(modelCalls.map(call=>call.schemaName)).toEqual(['delegated_root_advice','delegated_advice_quality']);
  });
  it('does not retry after accepted handoff, input or final publication acknowledgements are lost',async()=>{
   for(const operation of ['root_handoff','root_inputs','root_complete']){
@@ -263,11 +378,11 @@ describe.skipIf(!url)('actual delegated coordinator and specialist PostgreSQL in
   await completeChildren(f);expect(await engine().run(await nextTarget(f),slice())).toMatchObject({state:'settled'});expect((await roots.read(f.actor,f.rootId)).result).toEqual(NATIVE_ROOT_BLOCKED_RESULT);
  });
 
- it('uses Astra only for an immutable escalation assignment while keeping the coordinator on Sol',async()=>{
+ it('uses Astra for immutable escalation assignments and root review while keeping drafting on Sol',async()=>{
   const f=await fixture(),roles:string[]=[];
   const model:NativeModelGateway={async complete<T>(request:ModelRequest<T>){roles.push(request.role);if(request.schemaName==='delegated_operator_plan')return {value:request.schema.parse({...plan,steps:[{title:'Resolve ambiguity',brief:'Explain the uncertain tradeoff.',role:'escalation'}]}),usage:{inputTokens:1,outputTokens:1,totalTokens:2},deployment:'gpt-6.1-sol'};return gateway.complete(request);}};
   await engine(model).run(f.target,slice());await completeChildren(f,model);await engine(model).run(await nextTarget(f),slice());
-  expect(roles).toEqual(['coordinator','escalation','coordinator']);expect((await roots.read(f.actor,f.rootId)).state).toBe('completed');
+  expect(roles).toEqual(['coordinator','escalation','coordinator','escalation']);expect((await roots.read(f.actor,f.rootId)).state).toBe('completed');
  });
  it('reads only original operator URLs and never fetches a model-suggested URL',async()=>{
   const f=await fixture(4,false,true,false,'Review https://example.com/chairs'),urls:string[]=[];
@@ -292,5 +407,32 @@ describe.skipIf(!url)('actual delegated coordinator and specialist PostgreSQL in
   const retained=(await admin.query("SELECT publication->'result' AS result FROM pactwoven.native_delegation_root_completions WHERE organization_id=$1 AND root_task_id=$2",[f.actor.organizationId,f.rootId])).rows[0];
   expect(retained.result).toEqual(NATIVE_ROOT_BLOCKED_RESULT);
   expect(JSON.stringify(view.result)).not.toContain('Prefer blue chairs');
+ });
+ it('waits for an in-flight authority preparation before publishing the exact completed child',async()=>{
+  const f=await fixture();await engine().run(f.target,slice());const original=await children(f),child=original[0]!;
+  let releaseModel!:()=>void,releaseObservation!:()=>void,prepared!:()=>void,published!:()=>void,modelFinished!:()=>void;
+  const modelGate=new Promise<void>(resolve=>{releaseModel=resolve;}),observationGate=new Promise<void>(resolve=>{releaseObservation=resolve;});
+  const modelFinishedSignal=new Promise<void>(resolve=>{modelFinished=resolve;});
+  const preparedSignal=new Promise<void>(resolve=>{prepared=resolve;}),publicationSignal=new Promise<void>(resolve=>{published=resolve;});
+  let observations=0,publications=0;const diagnostics:unknown[]=[];
+  const heldObserver=async(target:NativeDelegationTarget)=>{
+   if(++observations!==2)return observer(target);
+   const challenge=await api.prepare(target,issuer);if(challenge.kind!=='prepared')throw Error('Fresh authority preparation required');
+   prepared();await observationGate;
+   const result=await api.finish(challenge.nonce,{state:'allowed',reason:'current',observationStartedAt:at(-10),observationCompletedAt:at()});
+   return {result,usableUntil:result.state==='allowed'?Math.min(Date.parse(result.validUntil!),Date.now()+15000):null};
+  };
+  const slow:NativeModelGateway={async complete<T>(request:ModelRequest<T>){await modelGate;const result=await gateway.complete(request);modelFinished();return result;}};
+  const publication={claim:worker.claim.bind(worker),renew:worker.renew.bind(worker),result:async(...args:Parameters<typeof worker.result>)=>{publications++;try{return await worker.result(...args);}finally{published();}}};
+  const runner=new DelegatedSpecialist({environment:'simulation',identity:workerId,repository:publication,materials,memory,gateway:slow,observe:heldObserver,onDiagnostic:event=>{diagnostics.push(event);}});
+  const pending=runner.run({organizationId:child.organizationId,taskId:child.taskId,generation:child.generation},slice());
+  await preparedSignal;
+  const heldProof=(await admin.query('SELECT verdict,valid_until FROM pactwoven.native_delegation_proofs WHERE task_id=$1',[child.taskId])).rows[0];
+  releaseModel();await modelFinishedSignal;await Promise.race([publicationSignal,new Promise<void>(resolve=>setTimeout(resolve,200))]);const enteredWhileUnknown=publications>0;
+  releaseObservation();const outcome=await pending;
+  const resultCount=(await admin.query('SELECT count(*)::int n FROM pactwoven.native_delegation_results WHERE organization_id=$1 AND handoff_id=(SELECT handoff_id FROM pactwoven.native_delegation_tasks WHERE id=$2)',[f.actor.organizationId,child.taskId])).rows[0].n;
+  expect((await children(f)).map(item=>item.taskId)).toEqual(original.map(item=>item.taskId));
+  expect(heldProof).toEqual({verdict:'unknown',valid_until:null});expect(enteredWhileUnknown).toBe(false);
+  expect(outcome.state).toBe('settled');expect(publications).toBe(1);expect(resultCount).toBe(1);expect(diagnostics).toEqual([]);
  });
 });

@@ -88,3 +88,26 @@ describe('Calendar provider observation timing',()=>{
   const retained=await f.provider.fetchVerified(selector,signal());expect(Date.parse(retained.verification.observedAt)).toBe(fetchedAt);expect(Date.parse(retained.verification.validUntil)).toBe(fetchedAt+15000);
  });
 });
+
+describe('OAuth interaction window independent of short session proofs',()=>{
+ afterEach(()=>vi.useRealTimers());
+ it('retains exactly five minutes when the initial signed proof expires in one minute',async()=>{
+  vi.useFakeTimers({toFake:['Date']});const f=await setup(),started=Date.now();f.session.expiresAt=new Date(started+60000).toISOString();
+  await f.service.begin('signed',signal());expect(Date.parse(f.attempt.expiresAt)-Date.parse(f.attempt.createdAt)).toBe(300000);
+  expect(f.attempt.session.expiresAt).toBe(new Date(started+60000).toISOString());
+ });
+ it('uses fresh same-session proof after initial proof expiry without moving the original deadline',async()=>{
+  vi.useFakeTimers({toFake:['Date']});const f=await setup(),started=Date.now();f.session.expiresAt=new Date(started+60000).toISOString();
+  const state=new URL((await f.service.begin('signed',signal())).authorizationUrl).searchParams.get('state')!,deadline=f.attempt.expiresAt;
+  vi.setSystemTime(started+90000);f.session.proofId='fresh_same_session_proof';f.session.verifiedAt=new Date(Date.now()).toISOString();f.session.expiresAt=new Date(Date.now()+60000).toISOString();
+  await f.service.callback('fresh_signed',{state,code:'test_code'},signal());expect(f.store.completeAttempt).toHaveBeenCalledOnce();expect(f.attempt.expiresAt).toBe(deadline);
+ });
+ it('still rejects an expired initial proof before creating pending state',async()=>{
+  const f=await setup();f.session.expiresAt=new Date(Date.now()-1).toISOString();await expect(f.service.begin('signed',signal())).rejects.toMatchObject({code:'GOOGLE_DENIED'});expect(f.store.createAttempt).not.toHaveBeenCalled();
+ });
+ it('fresh callback proof cannot extend the original five-minute deadline',async()=>{
+  vi.useFakeTimers({toFake:['Date']});const f=await setup(),started=Date.now(),state=new URL((await f.service.begin('signed',signal())).authorizationUrl).searchParams.get('state')!;
+  vi.setSystemTime(started+300000);f.session.verifiedAt=new Date(Date.now()).toISOString();f.session.expiresAt=new Date(Date.now()+60000).toISOString();
+  await expect(f.service.callback('fresh_signed',{state,code:'test_code'},signal())).rejects.toMatchObject({code:'GOOGLE_DENIED'});expect(f.transport.exchange).not.toHaveBeenCalled();
+ });
+});

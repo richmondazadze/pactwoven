@@ -5,6 +5,7 @@ import {createPaidToolPool,type PaidToolPoolLane} from '../../../packages/db/src
 import {PostgresPaidToolPrivateRepository} from '../../../packages/db/src/paid-tool-repository';
 import {PostgresPaidToolEvidenceRepository,PostgresPaidToolDispatchRepository} from '../../../packages/db/src/paid-tool-dispatch-repository';
 import {PostgresPaidToolRootRepository} from '../../../packages/db/src/paid-tool-root-repository';
+import {PostgresPaidToolRevalidationRepository} from '../../../packages/db/src/paid-tool-revalidation-repository';
 import {PaidToolPrivateReadSchema} from '../../../packages/db/src/paid-tool-schema';
 import {DelegatedPaidEquipmentCoordinator} from '../../coordinator/src/delegated-paid-equipment';
 import {PrivateEquipmentQuoteProducer} from '../../paid-tools/src/equipment-quote';
@@ -54,7 +55,7 @@ export function createPaidHostRuntime(options:{values:()=>Record<string,string|u
    // proposes its quote; ordinary advisory roots retain their existing path.
    return {beforeSynthesis:(async(context)=>{if(context.scope.organizationId!==settings.organizationId)return {kind:'ordinary' as const};
     const quote={propose:async(input:Parameters<PrivateEquipmentQuoteProducer['propose']>[0],signal:AbortSignal)=>{signal.throwIfAborted();const policy=new PostgresPaidToolPrivateRepository(await pool('policy',context.lease.usableUntil));signal.throwIfAborted();return new PrivateEquipmentQuoteProducer(policy,definition).propose(input,signal);}};
-    const bridge=new DelegatedPaidEquipmentCoordinator({repository:new PostgresPaidToolRootRepository(coordinatorPool),quote,catalogue:definition.catalogue});return bridge.beforeSynthesis(context);
+    const bridge=new DelegatedPaidEquipmentCoordinator({repository:new PostgresPaidToolRootRepository(coordinatorPool),revalidation:new PostgresPaidToolRevalidationRepository(coordinatorPool),quote,catalogue:definition.catalogue});return bridge.beforeSynthesis(context);
    }) as DelegatedPaidEquipmentCoordinator['beforeSynthesis']};
   },
   async consume(payload:unknown,deadlineAt:number):Promise<'discarded'|'settled'>{const parsed=PaidToolQueueMessageSchema.safeParse(payload);if(!parsed.success)return 'discarded';if(!enabled()||deadlineAt-now()<75000)throw new NativeDeliveryRetry();

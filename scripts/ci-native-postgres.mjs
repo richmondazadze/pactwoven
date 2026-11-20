@@ -23,7 +23,7 @@ try {
   fixture = new Pool({ connectionString: url.href, max: 1, connectionTimeoutMillis: 5_000 });
   const directory = new URL('../packages/db/migrations/', import.meta.url);
   const files = (await readdir(directory)).filter(file => /^\d{4}_[a-z0-9_]+\.sql$/.test(file)).sort();
-  if (files.length !== 35 || files.at(-1) !== '0035_native_google_discovery.sql') throw new Error('Review the native upgrade CI sequence for new migrations.');
+  if (files.length !== 49 || files.at(-1) !== '0049_native_work_execution.sql') throw new Error('Review the native upgrade CI sequence for new migrations.');
   for (const file of files.filter(file => file < '0022_')) {
     migration = file;
     await fixture.query(await readFile(new URL(file, directory), 'utf8'));

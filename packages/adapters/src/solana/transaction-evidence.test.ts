@@ -38,6 +38,21 @@ describe('inert transaction metadata and original instruction positions', () => 
     expect(result.transactionStatus).toBe('succeeded'); expect(Object.isFrozen(result.innerInstructions)).toBe(true);
     expect(result).not.toHaveProperty('fact'); expect(result).not.toHaveProperty('execution');
   });
+  it('accepts only a bounded nonnegative integer transaction index without changing evidence meaning', () => {
+    for (const version of ['legacy', 0] as const) {
+      const source = fixture(version), baseline = decode(source);
+      for (const transactionIndex of [0, 5, Number.MAX_SAFE_INTEGER]) expect(decode({ ...source, transactionIndex })).toEqual(baseline);
+      for (const transactionIndex of [null, false, '5', [], {}, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+        expect(() => decode({ ...source, transactionIndex })).toThrow();
+      }
+      expect(() => decode({ ...source, transactionIndex: 5, unexpectedIndex: 1 })).toThrow();
+      const text = JSON.stringify({ ...source, transactionIndex: 5 });
+      for (const numeric of ['5e0', '5.0', '-0', 'NaN', 'Infinity', '9007199254740992', '18446744073709551615']) {
+        expect(() => decodeSolanaTransactionEvidence(parseSolanaJson(new TextEncoder().encode(text.replace('"transactionIndex":5', `"transactionIndex":${numeric}`))), signature)).toThrow();
+      }
+      expect(() => decodeSolanaTransactionEvidence(parseSolanaJson(new TextEncoder().encode(text.replace('"transactionIndex":5', '"transactionIndex":5,"transactionIndex":6'))), signature)).toThrow();
+    }
+  });
   it('resolves v0 in static then all writable then all readonly order', () => {
     const source = fixture(0);
     source.transaction.message.instructions[0]!.accounts = [3, 4];

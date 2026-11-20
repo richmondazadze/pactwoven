@@ -11,11 +11,16 @@ type ToolPurchase=ReturnType<typeof ToolPurchaseBindingSchema.parse>;
  * separate current human review/approval remains mandatory before spending. */
 export class PrivateEquipmentQuoteProducer{
  private readonly catalogue:EquipmentCatalogue;
- constructor(private readonly repository:Pick<PostgresPaidToolPrivateRepository,'quote'>,private readonly config:{catalogue:EquipmentCatalogue;payee:ToolPurchase['challenge']['payee'];allowlistPolicy:ToolPurchase['allowlistPolicy'];deliveryPolicy:ToolPurchase['deliveryPolicy'];priceBaseUnits:string}){
+ constructor(private readonly repository:Pick<PostgresPaidToolPrivateRepository,'quote'>,private readonly config:{catalogue:EquipmentCatalogue;payee:ToolPurchase['challenge']['payee'];allowlistPolicy:ToolPurchase['allowlistPolicy'];deliveryPolicy:ToolPurchase['deliveryPolicy'];priceBaseUnits:string},private readonly clock:()=>number=Date.now){
   this.catalogue=parseEquipmentCatalogue(config.catalogue);this.config=structuredClone(config);BaseUnitsSchema.parse(config.priceBaseUnits);
  }
- async propose(input:{selection:unknown;rootDeadlineAt:string;maximumSpendBaseUnits:string},signal:AbortSignal){
-  signal.throwIfAborted();const selection=PaidToolRootSelectionSchema.parse(input.selection),candidate=selection.candidate,expiresAt=InstantSchema.parse(input.rootDeadlineAt),maximum=BaseUnitsSchema.parse(input.maximumSpendBaseUnits);
+ async propose(input:{selection:unknown;rootDeadlineAt:string;quoteIssuedAt:string;maximumSpendBaseUnits:string},signal:AbortSignal){
+  signal.throwIfAborted();const selection=PaidToolRootSelectionSchema.parse(input.selection),candidate=selection.candidate,rootDeadline=Date.parse(InstantSchema.parse(input.rootDeadlineAt)),issuedAt=Date.parse(InstantSchema.parse(input.quoteIssuedAt)),now=this.clock(),expires= Math.min(rootDeadline,issuedAt+5*60_000),maximum=BaseUnitsSchema.parse(input.maximumSpendBaseUnits);
+  // The issuance instant is explicit input, so a repeated identical proposal
+  // retains its exact ID/body. A later root generation may leave an inert
+  // unattached quote; it cannot replace the unique attachment or authorize spend.
+  if(!Number.isSafeInteger(now)||issuedAt>now||expires<=now)throw new PaidToolExecutionError('ORIGINAL_MESSAGE_MISMATCH');
+  const expiresAt=new Date(expires).toISOString();
   if(selection.selectionHash!==await commandDigest({namespace:'pactwoven.equipment-selection.v1',candidate})||candidate.resourceHash!==await equipmentResourceHash(this.catalogue)||candidate.requestHash!==await equipmentRequestHash(candidate.request)||BigInt(this.config.priceBaseUnits)<=0n||BigInt(this.config.priceBaseUnits)>BigInt(maximum))throw new PaidToolExecutionError('ORIGINAL_MESSAGE_MISMATCH');
   const suffix=await commandDigest({namespace:'pactwoven.equipment-quote.v1',scope:candidate.scope,requestHash:candidate.requestHash,resourceHash:candidate.resourceHash,expiresAt}),id=`equipment_quote_${suffix}`;
   const challenge={id,providerId:candidate.serviceId,resourceHash:candidate.resourceHash,requestHash:candidate.requestHash,payee:this.config.payee,amountBaseUnits:this.config.priceBaseUnits,expiresAt};

@@ -25,11 +25,15 @@ import type { NativeTaskRepository, NativeMemoryNotesRepository } from '@pactwov
 import { registerNativeTaskRoutes } from './native-task-routes.js';
 import { registerNativeMemoryRoutes } from './native-memory-routes.js';
 import { isNativePaidWorkIntentRoute, registerNativePaidWorkIntentRoutes, type NativePaidWorkIntentRepository, type NativePaidWorkPolicy } from './native-paid-work-intent-routes';
-import { isNativePaidToolHttpRoute, registerNativePaidToolRoutes, type NativePaidToolHumanRepository } from './native-paid-tool-routes';
+import { isNativePaidToolHttpRoute, registerNativePaidToolRoutes, type NativePaidToolHumanRepository, type NativePaidHistoryReader } from './native-paid-tool-routes';
+import type { NativePaidEquipmentService } from './native-paid-equipment-service';
+import type { NativePaidContributorsReader } from './native-paid-quote-routes';
 import { registerNativeWorkIntentRoutes } from './native-work-intent-routes.js';
 import type { NativeWorkIntentRepository } from '../../../packages/contracts/src/native-work-intent';
 import { registerNativeAgentWorkRoutes, type NativeAgentWorkRepository } from './native-agent-work-routes.js';
 import { registerNativeWorkActivityRoutes, type NativeWorkActivityRepository } from './native-work-activity-routes.js';
+import { registerNativeWorkTeamActivityRoutes, type NativeWorkTeamActivityRepository } from './native-work-team-activity-routes';
+import { isNativeWorkTeamActivityHttpRoute } from '../../../packages/contracts/src/native-work-team-activity';
 import { isNativeWorkActivityHttpRoute } from '../../../packages/contracts/src/native-work-activity';
 import { isNativeVoiceHttpRoute, VOICE_MAX_REQUEST_BYTES } from '../../../packages/contracts/src/native-voice';
 import { registerNativeVoiceRoutes } from './native-voice-routes';
@@ -67,9 +71,13 @@ export type AppDependencies = {
   nativePaidWorkOrganizationId?: string;
   nativePaidQuoteGateway?: NativePaidQuoteGateway;
   nativePaidToolHumanRepository?: NativePaidToolHumanRepository;
+  nativePaidEquipmentReader?: Pick<NativePaidEquipmentService, 'read'>;
+  nativePaidContributorsReader?: NativePaidContributorsReader;
+  nativePaidHistoryReader?: NativePaidHistoryReader;
   nativeTaskProvenance?: Pick<NativeWorkIntentRepository, 'provenance'>;
   nativeAgentWorkRepository?: NativeAgentWorkRepository;
   nativeWorkActivityRepository?: NativeWorkActivityRepository;
+  nativeWorkTeamActivityRepository?: NativeWorkTeamActivityRepository;
   nativeVoiceGateway?: NativeVoiceGateway;
   nativeAgentWorkListRepository?: NativeAgentWorkListRepository;
   nativeWorkConversationRepository?: NativeWorkConversationRepository;
@@ -164,6 +172,7 @@ export function createApp(dependencies: AppDependencies, options: { surface?: 'w
       !/^\/v1\/agent-work(?:\/(?:[A-Za-z0-9_-]+(?:\/(?:control|controls\/[A-Za-z0-9_-]+))?|operations\/[A-Za-z0-9_-]+))?$/.test(path) &&
       !isNativeAgentConversationRoute(path, c.req.method) &&
       !isNativeWorkActivityHttpRoute(path, c.req.method) &&
+      !isNativeWorkTeamActivityHttpRoute(path, c.req.method) &&
       !isNativeVoiceHttpRoute(path, c.req.method) &&
       !isNativePaidWorkIntentRoute(path, c.req.method) &&
       !isNativePaidToolHttpRoute(path, c.req.method) &&
@@ -237,11 +246,12 @@ export function createApp(dependencies: AppDependencies, options: { surface?: 'w
   registerNativeMemoryRoutes(app, dependencies.nativeMemoryNotesRepository);
   registerNativeWorkIntentRoutes(app, dependencies.nativeWorkIntentRepository);
   registerNativePaidWorkIntentRoutes(app, dependencies.nativePaidWorkIntentRepository, dependencies.nativePaidWorkPolicy, dependencies.nativePaidWorkOrganizationId);
-  registerNativePaidToolRoutes(app, dependencies.nativePaidToolHumanRepository);
-  registerNativePaidQuoteRoutes(app, dependencies.nativePaidQuoteGateway);
+  registerNativePaidToolRoutes(app, dependencies.nativePaidToolHumanRepository, undefined, dependencies.nativePaidEquipmentReader, dependencies.nativePaidHistoryReader);
+  registerNativePaidQuoteRoutes(app, dependencies.nativePaidQuoteGateway, dependencies.nativePaidContributorsReader);
   registerNativeAgentAttentionRoutes(app, dependencies.nativeAgentWorkListRepository);
   registerNativeAgentWorkRoutes(app, dependencies.nativeAgentWorkRepository, dependencies.nativeAgentWorkListRepository);
   registerNativeWorkActivityRoutes(app, dependencies.nativeWorkActivityRepository);
+  registerNativeWorkTeamActivityRoutes(app, dependencies.nativeWorkTeamActivityRepository);
   registerNativeVoiceRoutes(app, dependencies.nativeVoiceGateway, dependencies.nativeAgentWorkRepository);
   registerNativeAgentConversationRoutes(app, dependencies.nativeWorkConversationRepository);
   if (dependencies.nativeGoogleGateway) registerNativeGoogleRoutes(app, dependencies.nativeGoogleGateway);

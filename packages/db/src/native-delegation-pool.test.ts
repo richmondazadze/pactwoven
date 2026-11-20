@@ -169,3 +169,41 @@ describe('delegation repository transport boundary',()=>{
     await expect(repo.prepare({...target,authority:'invented'} as never,'https://fixture.clerk.accounts.dev')).rejects.toThrow();expect(query).not.toHaveBeenCalled();
   });
 });
+
+
+describe('paid revalidation compatibility boundary', () => {
+  it('admits only the three fixed optional routines for the paid coordinator', async () => {
+    const f = fakePool(true);
+    await assertNativeDelegationPool(f.pool, 'development', 'coordinator', 'delegation-root-paid');
+    const call = f.query.mock.calls.find(([sql]) => sql.includes('WITH RECURSIVE')) as unknown as [string, unknown[]];
+    expect(call[1][3]).toEqual([
+      'pactwoven.paid_tool_root_revalidation(jsonb)',
+      'pactwoven.paid_tool_root_revalidate(jsonb,jsonb)',
+      'pactwoven.paid_tool_root_revalidation_park(jsonb,jsonb)',
+    ]);
+    expect(call[0]).toContain("oid IS NOT NULL AND pg_catalog.has_function_privilege(CURRENT_USER,oid,'EXECUTE')");
+    expect(call[0]).toContain("'search_path=pg_catalog'");
+  });
+  it.each(['api','worker','dispatcher','coordinator'] as const)('does not broaden ordinary %s privileges', async purpose => {
+    const f = fakePool(true);
+    await assertNativeDelegationPool(f.pool, 'development', purpose);
+    const call = f.query.mock.calls.find(([sql]) => sql.includes('WITH RECURSIVE')) as unknown as [string, unknown[]];
+    expect(call[1][3]).toEqual([]);
+  });
+});
+
+
+describe('current execution optional profile boundary', () => {
+  it('admits only the metadata reader on the workspace activity API profile', async () => {
+    const f = fakePool(true);
+    await assertNativeDelegationPool(f.pool, 'development', 'api', 'delegation-workspace-activity');
+    const call = f.query.mock.calls.find(([sql]) => sql.includes('WITH RECURSIVE')) as unknown as [string, unknown[]];
+    expect(call[1][3]).toEqual(['pactwoven.native_work_execution_read(jsonb,text,text)']);
+  });
+  it.each(['delegation-workspace', 'delegation-workspace-instructions'] as const)('does not broaden the %s profile', async profile => {
+    const f = fakePool(true);
+    await assertNativeDelegationPool(f.pool, 'development', 'api', profile);
+    const call = f.query.mock.calls.find(([sql]) => sql.includes('WITH RECURSIVE')) as unknown as [string, unknown[]];
+    expect(call[1][3]).toEqual([]);
+  });
+});

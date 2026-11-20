@@ -285,6 +285,7 @@ export class DelegatedCoordinator {
       if (slice.deadlineAt - now() < 15000) return await yieldWork([]);
       let purchasedEquipment: unknown = null;
       if (this.options.paidEquipment) {
+        stage = 'paid_equipment';
         if (!instructed) throw new DelegatedOutputRejected();
         try {
           const paid = await this.options.paidEquipment.beforeSynthesis({ lease: active,
@@ -292,11 +293,13 @@ export class DelegatedCoordinator {
             refreshEpoch:instructed.epoch,rootDeadlineAt:new Date(instructed.deadlineAt).toISOString(),
             operatorPrompt:JSON.stringify({original:work.prompt,...instructionContext}),inputReceipt:paidInputReceipt,accepted:paidContributions,
             checkpoint:()=>({requestKey:id(),expectedCheckpointVersion:work.checkpointVersion,checkpoint:checkpoint(state,work),plannerState:serialized(state),inputReceipts:work.inputReceipts}),
+            persistSelectionUsage:save,
             gateway:{complete:async<T>(request:ModelRequest<T>)=>{const result=await runDelegatedModel(active,this.options.gateway,request,Math.min(executionUntil,dataUntil),now);recordReturned('coordinator',result);if(result.deployment!=='gpt-6.1-sol')throw new DelegatedOutputRejected();return result;}},now });
           if (paid.kind === 'waiting') return {state:'yielded',taskId:target.taskId};
           if (paid.kind === 'unavailable') return await completeBlocked();
           if (paid.kind === 'ready') { purchasedEquipment=paid.input;dataUntil=Math.min(dataUntil,Date.parse(paid.dataValidUntil)); }
         } catch(error) {
+          reportDelegatedFailure(this.options.onDiagnostic, 'coordinator', 'paid_equipment', error);
           if (error instanceof DelegatedPersistenceUnknown || error instanceof DelegatedInterrupted) throw error;
           if (error instanceof NativeGatewayError && error.measurement) recordReturned('coordinator',{value:undefined,...error.measurement});
           if (error instanceof DomainError && ['EVIDENCE_STALE','FORBIDDEN'].includes(error.code)) {

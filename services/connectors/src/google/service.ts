@@ -38,8 +38,10 @@ export class NativeGoogleConnectionService {
   async begin(bearer: string, signal: AbortSignal): Promise<{ authorizationUrl: string }> {
     const session = await this.session(bearer,signal), state = randomBytes(32).toString('base64url'), verifier = randomBytes(32).toString('base64url'), now=this.now();
     const binding: NativeGoogleBinding = { environment: session.actor.environment, organizationId: session.actor.organizationId, actorId: session.actor.actorId, connectionId: randomUUID(), connectionVersion: 1, credentialVersion: 1 };
+    // The OAuth interaction has a fixed five-minute window. A short initial
+    // session proof authorizes creation only; callback obtains fresh same-session proofs.
     const attempt = NativeGoogleAttemptSchema.parse({ id: randomUUID(), stateHash:hash(state), session, binding, ...this.config,
-      createdAt:at(now), expiresAt:at(Math.min(now+300000,Date.parse(session.expiresAt))), verifier:this.vault.seal({ verifier },binding,'oauth_pkce') });
+      createdAt:at(now), expiresAt:at(now+300000), verifier:this.vault.seal({ verifier },binding,'oauth_pkce') });
     await this.store.createAttempt(attempt); signal.throwIfAborted();
     const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
     url.search = new URLSearchParams({ client_id:this.config.clientId, redirect_uri:this.config.redirectUri, response_type:'code', scope:GOOGLE_READ_SCOPES.join(' '),

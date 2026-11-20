@@ -9,21 +9,27 @@ import type { PostgresPaidToolHumanRepository } from '../../../packages/db/src/p
 import { commandDigest } from '../../../packages/domain/src/canonical';
 import { projectNativePaidTool } from './native-paid-tool-presentation';
 import type { ApiEnv } from './app';
+import type { NativePaidEquipmentService } from './native-paid-equipment-service';
+import { NativePaidEquipmentResponseSchema } from '../../../packages/contracts/src/native-paid-equipment';
+import { NativePaidHistoryResponseSchema } from '../../../packages/contracts/src/native-paid-history';
+import type { PostgresPaidToolHistoryRepository } from '../../../packages/db/src/paid-tool-history-repository';
 
 export type NativePaidToolHumanRepository = Pick<PostgresPaidToolHumanRepository, 'list' | 'read' | 'control' | 'recover'>;
+export type NativePaidHistoryReader = Pick<PostgresPaidToolHistoryRepository, 'read'>;
 const Query = z.strictObject({ siteId: IdSchema });
 const Control = PaidToolHumanControlSchema.omit({ operationId: true }).extend({ siteId: IdSchema });
 const Recover = z.strictObject({ siteId: IdSchema, commandKey: IdSchema, commandHash: HashSchema });
 const base = '/v1/agent-work/:root/purchases';
 export function isNativePaidToolHttpRoute(path: string, method: string) {
   const root = '/v1/agent-work/[A-Za-z0-9_-]+/purchases';
-  return (new RegExp('^'+root+'(?:/[A-Za-z0-9_-]+)?$').test(path) && ['GET','OPTIONS'].includes(method)) ||
+  return (new RegExp('^'+root+'(?:/[A-Za-z0-9_-]+(?:/(?:equipment|history))?)?$').test(path) && ['GET','OPTIONS'].includes(method)) ||
     (new RegExp('^'+root+'/[A-Za-z0-9_-]+/(?:control|recover)$').test(path) && ['POST','OPTIONS'].includes(method));
 }
 /** Mount behind real session authentication. No signing, broadcast, quote
  * creation or paid-tool approval is exposed by these read/control routes. */
 export function registerNativePaidToolRoutes(app: Hono<ApiEnv>, repository?: NativePaidToolHumanRepository,
-  now: () => string = () => new Date().toISOString()) {
+  now: () => string = () => new Date().toISOString(), equipment?: Pick<NativePaidEquipmentService, 'read'>,
+  history?: NativePaidHistoryReader) {
   const access = (session: Session, siteId: string, mutation = false) => {
     const actor = session.actor;
     if (actor.environment !== 'development' || actor.principalKind !== 'human' || !actor.siteIds.includes(siteId) ||
@@ -49,6 +55,29 @@ export function registerNativePaidToolRoutes(app: Hono<ApiEnv>, repository?: Nat
     if (raw.rootTaskId!==rootTaskId || new Set(raw.items.map(x=>x.operationId)).size!==raw.items.length)
       throw new DomainError('EVIDENCE_STALE',409,'Refresh the original work and payments.');
     return c.json({scope,rootTaskId,purchases:await Promise.all(raw.items.map(value=>project(session,rootTaskId,siteId,value)))});
+  });
+  app.get(base+'/:id/equipment', async c => {
+    c.header('Cache-Control','private, no-store');
+    const rootTaskId=IdSchema.parse(c.req.param('root')), id=IdSchema.parse(c.req.param('id')),
+      {siteId}=query(c.req.url), session=c.get('session');
+    access(session,siteId);
+    if (!equipment) throw new DomainError('SETUP_REQUIRED',503,'Selected equipment details are not connected yet.');
+    const result=NativePaidEquipmentResponseSchema.parse(await equipment.read(session,rootTaskId,siteId,id));
+    if (result.rootTaskId!==rootTaskId || result.operationId!==id || result.scope.organizationId!==session.actor.organizationId || result.scope.siteId!==siteId)
+      throw new DomainError('EVIDENCE_STALE',409,'The selected equipment did not match this purchase.');
+    return c.json(result);
+  });
+  app.get(base+'/:id/history', async c => {
+    c.header('Cache-Control','private, no-store');
+    const rootTaskId=IdSchema.parse(c.req.param('root')), id=IdSchema.parse(c.req.param('id')),
+      {siteId}=query(c.req.url), session=c.get('session');
+    access(session,siteId);
+    if (!history) throw new DomainError('SETUP_REQUIRED',503,'Saved computation results are not connected yet.');
+    const result=NativePaidHistoryResponseSchema.parse(await history.read(session.actor,rootTaskId,siteId,id));
+    if (result.scope.environment!==session.actor.environment || result.scope.organizationId!==session.actor.organizationId ||
+      result.scope.siteId!==siteId || result.rootTaskId!==rootTaskId || result.operationId!==id)
+      throw new DomainError('EVIDENCE_STALE',409,'The saved result did not match this work and payment.');
+    return c.json(result);
   });
   app.get(base+'/:id', async c => {
     c.header('Cache-Control','private, no-store');

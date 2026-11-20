@@ -3,6 +3,7 @@ import { isNativePaidWorkIntentRoute } from '../../api/src/native-paid-work-inte
 import { isNativePaidToolHttpRoute } from '../../api/src/native-paid-tool-routes';
 import { isNativeAgentConversationRoute } from '../../api/src/native-agent-conversation-http';
 import { isNativeGoogleHttpRoute } from '../../../packages/contracts/src/native-google-http';
+import { isNativeWorkTeamActivityHttpRoute } from '../../../packages/contracts/src/native-work-team-activity';
 import { isNativeWorkActivityHttpRoute } from '../../../packages/contracts/src/native-work-activity';
 import { isNativeVoiceHttpRoute } from '../../../packages/contracts/src/native-voice';
 
@@ -45,7 +46,7 @@ export function createNativeHttpHandler(dependencies: Dependencies) {
       try { return await (await dependencies.memoryApp()).fetch(request); }
       catch { return failure(503, 'DURABLE_SERVICE_UNAVAILABLE', 'The saved memory request has not been confirmed.'); }
     }
-    if (/^\/v1\/agent-work(?:\/(?:[A-Za-z0-9_-]+(?:\/(?:control|controls\/[A-Za-z0-9_-]+))?|operations\/[A-Za-z0-9_-]+))?$/.test(path) || isNativeAgentConversationRoute(path, request.method) || isNativeWorkActivityHttpRoute(path, request.method) || isNativeVoiceHttpRoute(path, request.method) || isNativePaidWorkIntentRoute(path, request.method) || isNativePaidToolHttpRoute(path, request.method) || isNativePaidQuoteRoute(path, request.method)) {
+    if (/^\/v1\/agent-work(?:\/(?:[A-Za-z0-9_-]+(?:\/(?:control|controls\/[A-Za-z0-9_-]+))?|operations\/[A-Za-z0-9_-]+))?$/.test(path) || isNativeAgentConversationRoute(path, request.method) || isNativeWorkActivityHttpRoute(path, request.method) || isNativeWorkTeamActivityHttpRoute(path, request.method) || isNativeVoiceHttpRoute(path, request.method) || isNativePaidWorkIntentRoute(path, request.method) || isNativePaidToolHttpRoute(path, request.method) || isNativePaidQuoteRoute(path, request.method)) {
       const selectedApp=(isNativePaidWorkIntentRoute(path,request.method)||isNativePaidToolHttpRoute(path,request.method)||isNativePaidQuoteRoute(path,request.method))&&dependencies.paidApp ? dependencies.paidApp : dependencies.workApp;
       if (!selectedApp) return failure(503, 'SETUP_REQUIRED', 'Background advisory work is not connected yet.');
       let response: Response;
